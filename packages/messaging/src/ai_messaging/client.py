@@ -77,6 +77,14 @@ class RedisClient:
             logger.error("Redis health check failed", error=str(e))
             return False
 
+    async def ping(self) -> bool:
+        """Ping Redis server."""
+        return await self.client.ping()
+
+    def pubsub(self) -> redis.client.PubSub:
+        """Get a PubSub instance for subscribing to channels."""
+        return self.client.pubsub()
+
     # Key-Value Operations
     async def get(self, key: str) -> str | None:
         """Get value by key."""
@@ -109,9 +117,21 @@ class RedisClient:
         """Get hash field value."""
         return await self.client.hget(name, key)
 
-    async def hset(self, name: str, key: str, value: str) -> int:
-        """Set hash field."""
-        return await self.client.hset(name, key, value)
+    async def hset(
+        self,
+        name: str,
+        key: str | None = None,
+        value: str | None = None,
+        mapping: dict[str, str] | None = None,
+    ) -> int:
+        """
+        Set hash field(s).
+
+        Can be called with either:
+        - key and value for a single field
+        - mapping for multiple fields
+        """
+        return await self.client.hset(name, key=key, value=value, mapping=mapping)
 
     async def hgetall(self, name: str) -> dict[str, str]:
         """Get all hash fields."""
@@ -120,6 +140,10 @@ class RedisClient:
     async def hdel(self, name: str, *keys: str) -> int:
         """Delete hash fields."""
         return await self.client.hdel(name, *keys)
+
+    async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
+        """Increment hash field by amount."""
+        return await self.client.hincrby(name, key, amount)
 
     # List Operations
     async def lpush(self, name: str, *values: str) -> int:
