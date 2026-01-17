@@ -546,3 +546,341 @@ async def docker_compose_logs(
     except Exception as e:
         logger.error("Docker compose logs failed", error=str(e))
         return ToolResult.fail(f"Docker compose logs failed: {e}")
+
+
+@tool(
+    name="docker_images",
+    description="List Docker images",
+    parameters={
+        "type": "object",
+        "properties": {
+            "filter": {
+                "type": "string",
+                "description": "Filter images by name pattern",
+            },
+            "all": {
+                "type": "boolean",
+                "description": "Show all images (including intermediate)",
+                "default": False,
+            },
+        },
+    },
+)
+async def docker_images(
+    filter: str | None = None,
+    all: bool = False,
+) -> ToolResult:
+    """List Docker images."""
+    try:
+        args = [
+            "images",
+            "--format",
+            '{"repository":"{{.Repository}}","tag":"{{.Tag}}","id":"{{.ID}}","size":"{{.Size}}","created":"{{.CreatedSince}}"}',
+        ]
+
+        if all:
+            args.insert(1, "-a")
+
+        if filter:
+            args.extend(["--filter", f"reference={filter}"])
+
+        code, stdout, stderr = await _run_docker_command(args)
+
+        if code != 0:
+            return ToolResult.fail(f"Docker error: {stderr}")
+
+        # Parse JSON lines
+        images = []
+        for line in stdout.splitlines():
+            if line.strip():
+                images.append(json.loads(line))
+
+        return ToolResult.ok(
+            images,
+            count=len(images),
+        )
+
+    except Exception as e:
+        logger.error("Docker images failed", error=str(e))
+        return ToolResult.fail(f"Docker images failed: {e}")
+
+
+@tool(
+    name="docker_pull",
+    description="Pull a Docker image from registry",
+    parameters={
+        "type": "object",
+        "properties": {
+            "image": {
+                "type": "string",
+                "description": "Image name with optional tag (e.g., 'nginx:latest')",
+            },
+        },
+        "required": ["image"],
+    },
+    permission_level=2,
+)
+async def docker_pull(image: str) -> ToolResult:
+    """Pull a Docker image."""
+    try:
+        args = ["pull", image]
+
+        code, stdout, stderr = await _run_docker_command(args)
+
+        if code != 0:
+            return ToolResult.fail(f"Pull failed: {stderr}")
+
+        return ToolResult.ok(
+            f"Successfully pulled: {image}",
+            image=image,
+            output=stdout,
+        )
+
+    except Exception as e:
+        logger.error("Docker pull failed", image=image, error=str(e))
+        return ToolResult.fail(f"Docker pull failed: {e}")
+
+
+@tool(
+    name="docker_build",
+    description="Build a Docker image from a Dockerfile",
+    parameters={
+        "type": "object",
+        "properties": {
+            "tag": {
+                "type": "string",
+                "description": "Tag for the image (e.g., 'myapp:latest')",
+            },
+            "dockerfile": {
+                "type": "string",
+                "description": "Path to Dockerfile (relative to infrastructure dir)",
+                "default": "Dockerfile",
+            },
+            "context": {
+                "type": "string",
+                "description": "Build context path",
+                "default": ".",
+            },
+            "no_cache": {
+                "type": "boolean",
+                "description": "Build without cache",
+                "default": False,
+            },
+        },
+        "required": ["tag"],
+    },
+    permission_level=2,
+)
+async def docker_build(
+    tag: str,
+    dockerfile: str = "Dockerfile",
+    context: str = ".",
+    no_cache: bool = False,
+) -> ToolResult:
+    """Build a Docker image."""
+    try:
+        dockerfile_path = COMPOSE_DIR / dockerfile
+        context_path = COMPOSE_DIR / context
+
+        args = ["build", "-t", tag, "-f", str(dockerfile_path)]
+
+        if no_cache:
+            args.append("--no-cache")
+
+        args.append(str(context_path))
+
+        code, stdout, stderr = await _run_docker_command(args)
+
+        if code != 0:
+            return ToolResult.fail(f"Build failed: {stderr}")
+
+        return ToolResult.ok(
+            f"Successfully built: {tag}",
+            tag=tag,
+            output=stdout[-2000:] if len(stdout) > 2000 else stdout,
+        )
+
+    except Exception as e:
+        logger.error("Docker build failed", tag=tag, error=str(e))
+        return ToolResult.fail(f"Docker build failed: {e}")
+
+
+@tool(
+    name="docker_stats",
+    description="Get resource usage statistics for containers",
+    parameters={
+        "type": "object",
+        "properties": {
+            "container": {
+                "type": "string",
+                "description": "Specific container name (all if not specified)",
+            },
+        },
+    },
+)
+async def docker_stats(container: str | None = None) -> ToolResult:
+    """Get container resource usage."""
+    try:
+        args = [
+            "stats",
+            "--no-stream",
+            "--format",
+            '{"name":"{{.Name}}","cpu":"{{.CPUPerc}}","memory":"{{.MemUsage}}","mem_percent":"{{.MemPerc}}","net_io":"{{.NetIO}}","block_io":"{{.BlockIO}}","pids":"{{.PIDs}}"}',
+        ]
+
+        if container:
+            if not _is_allowed_container(container):
+                return ToolResult.fail(f"Container not in allowed list: {container}")
+            args.append(container)
+
+        code, stdout, stderr = await _run_docker_command(args)
+
+        if code != 0:
+            return ToolResult.fail(f"Docker error: {stderr}")
+
+        # Parse JSON lines
+        stats = []
+        for line in stdout.splitlines():
+            if line.strip():
+                stat = json.loads(line)
+                # Only include allowed containers
+                if _is_allowed_container(stat["name"]):
+                    stats.append(stat)
+
+        return ToolResult.ok(
+            stats,
+            count=len(stats),
+        )
+
+    except Exception as e:
+        logger.error("Docker stats failed", error=str(e))
+        return ToolResult.fail(f"Docker stats failed: {e}")
+
+
+@tool(
+    name="docker_health_check",
+    description="Check health status of containers",
+    parameters={
+        "type": "object",
+        "properties": {
+            "container": {
+                "type": "string",
+                "description": "Specific container to check (all if not specified)",
+            },
+        },
+    },
+)
+async def docker_health_check(container: str | None = None) -> ToolResult:
+    """Check container health status."""
+    try:
+        args = [
+            "ps",
+            "--format",
+            '{"name":"{{.Names}}","status":"{{.Status}}","health":"{{.Status}}"}',
+        ]
+
+        if container:
+            if not _is_allowed_container(container):
+                return ToolResult.fail(f"Container not in allowed list: {container}")
+            args.extend(["--filter", f"name={container}"])
+
+        code, stdout, stderr = await _run_docker_command(args)
+
+        if code != 0:
+            return ToolResult.fail(f"Docker error: {stderr}")
+
+        # Parse and enrich with health info
+        containers = []
+        for line in stdout.splitlines():
+            if line.strip():
+                info = json.loads(line)
+                if not _is_allowed_container(info["name"]):
+                    continue
+
+                # Extract health status from status string
+                status = info["status"].lower()
+                if "healthy" in status:
+                    health = "healthy"
+                elif "unhealthy" in status:
+                    health = "unhealthy"
+                elif "starting" in status:
+                    health = "starting"
+                elif "up" in status:
+                    health = "running"
+                else:
+                    health = "unknown"
+
+                info["health_status"] = health
+                containers.append(info)
+
+        # Summary
+        healthy = sum(1 for c in containers if c["health_status"] == "healthy")
+        unhealthy = sum(1 for c in containers if c["health_status"] == "unhealthy")
+        running = sum(1 for c in containers if c["health_status"] in ("running", "healthy"))
+
+        return ToolResult.ok(
+            containers,
+            count=len(containers),
+            summary={
+                "healthy": healthy,
+                "unhealthy": unhealthy,
+                "running": running,
+                "total": len(containers),
+            },
+        )
+
+    except Exception as e:
+        logger.error("Docker health check failed", error=str(e))
+        return ToolResult.fail(f"Docker health check failed: {e}")
+
+
+@tool(
+    name="docker_system_prune",
+    description="Remove unused Docker data (images, containers, volumes, networks)",
+    parameters={
+        "type": "object",
+        "properties": {
+            "all": {
+                "type": "boolean",
+                "description": "Remove all unused images, not just dangling ones",
+                "default": False,
+            },
+            "volumes": {
+                "type": "boolean",
+                "description": "Also remove unused volumes",
+                "default": False,
+            },
+        },
+    },
+    permission_level=2,
+    requires_confirmation=True,
+)
+async def docker_system_prune(
+    all: bool = False,
+    volumes: bool = False,
+) -> ToolResult:
+    """Remove unused Docker data."""
+    try:
+        args = ["system", "prune", "-f"]
+
+        if all:
+            args.append("-a")
+
+        if volumes:
+            args.append("--volumes")
+
+        code, stdout, stderr = await _run_docker_command(args)
+
+        if code != 0:
+            return ToolResult.fail(f"Prune failed: {stderr}")
+
+        return ToolResult.ok(
+            "System prune completed",
+            output=stdout,
+            all_images=all,
+            volumes_removed=volumes,
+        )
+
+    except Exception as e:
+        logger.error("Docker system prune failed", error=str(e))
+        return ToolResult.fail(f"Docker system prune failed: {e}")
