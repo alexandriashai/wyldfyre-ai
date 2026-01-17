@@ -36,7 +36,7 @@ async def post_task_hook(
     # Store task completion in HOT memory
     await memory.store_task_trace(
         task_id=correlation_id,
-        phase="verify",
+        phase=PAIPhase.VERIFY,
         data={
             "agent_type": agent_type,
             "task_type": task_type,
