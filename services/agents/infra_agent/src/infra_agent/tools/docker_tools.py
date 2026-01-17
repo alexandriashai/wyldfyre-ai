@@ -53,12 +53,12 @@ async def _run_docker_command(
     parameters={
         "type": "object",
         "properties": {
-            "all": {
+            "show_all": {
                 "type": "boolean",
                 "description": "Show all containers (including stopped)",
                 "default": False,
             },
-            "filter": {
+            "name_filter": {
                 "type": "string",
                 "description": "Filter by name pattern",
             },
@@ -66,8 +66,8 @@ async def _run_docker_command(
     },
 )
 async def docker_ps(
-    all: bool = False,
-    filter: str | None = None,
+    show_all: bool = False,
+    name_filter: str | None = None,
 ) -> ToolResult:
     """List Docker containers."""
     try:
@@ -77,11 +77,11 @@ async def docker_ps(
             '{"id":"{{.ID}}","name":"{{.Names}}","image":"{{.Image}}","status":"{{.Status}}","ports":"{{.Ports}}"}',
         ]
 
-        if all:
+        if show_all:
             args.insert(1, "-a")
 
-        if filter:
-            args.extend(["--filter", f"name={filter}"])
+        if name_filter:
+            args.extend(["--filter", f"name={name_filter}"])
 
         code, stdout, stderr = await _run_docker_command(args)
 
@@ -554,11 +554,11 @@ async def docker_compose_logs(
     parameters={
         "type": "object",
         "properties": {
-            "filter": {
+            "name_filter": {
                 "type": "string",
                 "description": "Filter images by name pattern",
             },
-            "all": {
+            "show_all": {
                 "type": "boolean",
                 "description": "Show all images (including intermediate)",
                 "default": False,
@@ -567,8 +567,8 @@ async def docker_compose_logs(
     },
 )
 async def docker_images(
-    filter: str | None = None,
-    all: bool = False,
+    name_filter: str | None = None,
+    show_all: bool = False,
 ) -> ToolResult:
     """List Docker images."""
     try:
@@ -578,11 +578,11 @@ async def docker_images(
             '{"repository":"{{.Repository}}","tag":"{{.Tag}}","id":"{{.ID}}","size":"{{.Size}}","created":"{{.CreatedSince}}"}',
         ]
 
-        if all:
+        if show_all:
             args.insert(1, "-a")
 
-        if filter:
-            args.extend(["--filter", f"reference={filter}"])
+        if name_filter:
+            args.extend(["--filter", f"reference={name_filter}"])
 
         code, stdout, stderr = await _run_docker_command(args)
 
@@ -840,7 +840,7 @@ async def docker_health_check(container: str | None = None) -> ToolResult:
     parameters={
         "type": "object",
         "properties": {
-            "all": {
+            "prune_all": {
                 "type": "boolean",
                 "description": "Remove all unused images, not just dangling ones",
                 "default": False,
@@ -856,14 +856,14 @@ async def docker_health_check(container: str | None = None) -> ToolResult:
     requires_confirmation=True,
 )
 async def docker_system_prune(
-    all: bool = False,
+    prune_all: bool = False,
     volumes: bool = False,
 ) -> ToolResult:
     """Remove unused Docker data."""
     try:
         args = ["system", "prune", "-f"]
 
-        if all:
+        if prune_all:
             args.append("-a")
 
         if volumes:
@@ -877,7 +877,7 @@ async def docker_system_prune(
         return ToolResult.ok(
             "System prune completed",
             output=stdout,
-            all_images=all,
+            all_images=prune_all,
             volumes_removed=volumes,
         )
 

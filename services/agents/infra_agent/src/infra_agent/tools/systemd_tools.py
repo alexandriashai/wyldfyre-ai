@@ -705,7 +705,7 @@ async def systemd_read_unit_file(unit: str, user: bool = False) -> ToolResult:
                 "items": {"type": "string"},
                 "description": "Units this service wants",
             },
-            "type": {
+            "service_type": {
                 "type": "string",
                 "enum": ["simple", "exec", "forking", "oneshot", "dbus", "notify", "idle"],
                 "description": "Service type",
@@ -734,7 +734,7 @@ async def systemd_create_service(
     environment_file: str | None = None,
     after: list[str] | None = None,
     wants: list[str] | None = None,
-    type: str = "simple",
+    service_type: str = "simple",
     user_unit: bool = False,
 ) -> ToolResult:
     """Create a new systemd service unit file."""
@@ -754,7 +754,7 @@ async def systemd_create_service(
         if wants:
             lines.append(f"Wants={' '.join(wants)}")
 
-        lines.extend(["", "[Service]", f"Type={type}", f"ExecStart={exec_start}"])
+        lines.extend(["", "[Service]", f"Type={service_type}", f"ExecStart={exec_start}"])
 
         if working_directory:
             lines.append(f"WorkingDirectory={working_directory}")
@@ -915,7 +915,7 @@ async def systemd_create_timer(
     parameters={
         "type": "object",
         "properties": {
-            "all": {
+            "show_all": {
                 "type": "boolean",
                 "description": "Show all timers (including inactive)",
                 "default": False,
@@ -929,13 +929,13 @@ async def systemd_create_timer(
     },
 )
 async def systemd_list_timers(
-    all: bool = False,
+    show_all: bool = False,
     user: bool = False,
 ) -> ToolResult:
     """List all timers."""
     try:
         args = ["list-timers", "--no-pager", "--no-legend"]
-        if all:
+        if show_all:
             args.append("--all")
 
         code, stdout, stderr = await _run_systemctl(*args, user=user)
