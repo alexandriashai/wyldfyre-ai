@@ -70,6 +70,9 @@ web/.next/
 web/out/
 web/.swc/
 
+# Exception for web src lib (frontend utilities)
+!web/src/lib/
+
 # Build artifacts
 *.log
 *.tmp

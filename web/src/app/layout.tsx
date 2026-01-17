@@ -6,8 +6,9 @@ import { Providers } from "./providers";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "AI Infrastructure",
-  description: "Multi-Agent AI Infrastructure with PAI Integration",
+  title: "Wyld Fyre AI",
+  description: "Multi-Agent AI Infrastructure powered by Claude",
+  keywords: ["AI", "multi-agent", "Claude", "infrastructure", "automation"],
 };
 
 export default function RootLayout({

@@ -1,10 +1,10 @@
-# Claude.md - AI Infrastructure Project Context
+# Claude.md - Wyld Fyre AI Project Context
 
 ## Project Overview
 
-AI Infrastructure is a self-hosted, installable multi-agent AI system that enables autonomous Claude agents to collaborate, learn, and manage server resources. It integrates Daniel Miessler's PAI (Personal AI Infrastructure) framework for continuous self-improvement through a 7-phase algorithmic cycle.
+Wyld Fyre AI is a self-hosted, installable multi-agent AI system that enables autonomous Claude agents to collaborate, learn, and manage server resources. The user-facing supervisor agent is named **Wyld**. It integrates Daniel Miessler's PAI (Personal AI Infrastructure) framework for continuous self-improvement through a 7-phase algorithmic cycle.
 
-**Status**: Planning & Architecture phase (no code implementation yet)
+**Status**: Implementation phase
 
 **License**: MIT (Copyright 2026 by Allie Eden)
 
@@ -16,7 +16,7 @@ The system uses 6 specialized agents coordinated by a Supervisor:
 
 | Agent | Purpose | Permission Level |
 |-------|---------|------------------|
-| Supervisor | Task routing, orchestration, escalation | 3 (highest) |
+| Wyld (Supervisor) | Task routing, orchestration, user interaction | 3 (highest) |
 | Code Agent | Git, file operations, code analysis, testing | 2 |
 | Data Agent | SQL, data analysis, ETL, backups | 2 |
 | Infra Agent | Docker, Nginx, SSL, domain management | 2 |

@@ -7,7 +7,7 @@ COLD (File): Immutable historical reference, 365-day retention
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -60,7 +60,7 @@ class Learning:
         self.agent_type = agent_type
         self.confidence = confidence
         self.metadata = metadata or {}
-        self.created_at = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -167,7 +167,7 @@ class PAIMemory:
         trace_key = f"task:{task_id}:trace:{phase.value}"
         trace_data = {
             "phase": phase.value,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             **data,
         }
         await self.store_hot(trace_key, trace_data)
@@ -255,7 +255,7 @@ class PAIMemory:
         archive_data = {
             **learning.to_dict(),
             "summary": summary,
-            "archived_at": datetime.utcnow().isoformat(),
+            "archived_at": datetime.now(timezone.utc).isoformat(),
         }
 
         async with aiofiles.open(filepath, "w") as f:
@@ -381,7 +381,7 @@ class PAIMemory:
         if not self._qdrant:
             return 0
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         standard_cutoff = now - timedelta(days=older_than_days)
         high_confidence_cutoff = now - timedelta(days=high_confidence_days)
 
@@ -527,7 +527,7 @@ class PAIMemory:
         Returns:
             Number of files deleted
         """
-        cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
         deleted_count = 0
 
         for phase in PAIPhase:

@@ -1,23 +1,25 @@
-# Agent Configuration
+# Wyld Fyre AI - Agent Configuration
 # Defines all agents and their capabilities
 
 agents:
-  - name: supervisor
+  - name: wyld
     type: supervisor
     permission_level: 3
     command: python -m services.supervisor
     working_dir: /app
     environment:
-      AGENT_NAME: supervisor
+      AGENT_NAME: wyld
       LOG_LEVEL: INFO
     description: |
-      Task routing, orchestration, and escalation.
-      Receives all incoming tasks and routes to appropriate agents.
+      Wyld is the primary AI assistant and supervisor for Wyld Fyre AI.
+      It handles task routing, orchestration, and escalation.
+      All incoming requests go through Wyld first.
     capabilities:
       - task_routing
       - agent_coordination
       - escalation
       - status_monitoring
+      - user_interaction
 
   - name: code-agent
     type: code

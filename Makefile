@@ -1,12 +1,12 @@
-# AI Infrastructure Makefile
+# Wyld Fyre AI Makefile
 # Common commands for development, building, and deployment
 
 .PHONY: help install dev build test lint format clean docker-up docker-down agents-start agents-stop
 
 # Default target
 help:
-	@echo "AI Infrastructure - Available Commands"
-	@echo "======================================="
+	@echo "Wyld Fyre AI - Available Commands"
+	@echo "=================================="
 	@echo ""
 	@echo "Development:"
 	@echo "  make install      - Install all dependencies"
@@ -166,8 +166,8 @@ docker-clean:
 
 agents-start:
 	./infrastructure/scripts/start-agents.sh
-	@echo "✓ Agents started in tmux session 'ai-infrastructure'"
-	@echo "Run 'tmux attach -t ai-infrastructure' to view"
+	@echo "✓ Agents started in tmux session 'wyld-fyre-ai'"
+	@echo "Run 'tmux attach -t wyld-fyre-ai' to view"
 
 agents-stop:
 	./infrastructure/scripts/stop-agents.sh
@@ -177,7 +177,7 @@ agents-status:
 	./infrastructure/scripts/agent-status.sh
 
 agents-attach:
-	tmux attach -t ai-infrastructure
+	tmux attach -t wyld-fyre-ai
 
 # =============================================================================
 # Database

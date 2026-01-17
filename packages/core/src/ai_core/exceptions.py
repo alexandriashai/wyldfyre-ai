@@ -65,7 +65,7 @@ class DatabaseError(AIInfraError):
     status_code = 500
 
 
-class ConnectionError(DatabaseError):
+class DatabaseConnectionError(DatabaseError):
     """Failed to connect to database."""
     error_code = "CONNECTION_ERROR"
 

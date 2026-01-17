@@ -103,8 +103,8 @@ def create_app() -> FastAPI:
     config = get_api_config()
 
     app = FastAPI(
-        title="AI Infrastructure API",
-        description="Backend API for AI Infrastructure multi-agent system",
+        title="Wyld Fyre AI API",
+        description="Backend API for Wyld Fyre AI - Multi-Agent AI Infrastructure powered by Claude",
         version="0.1.0",
         docs_url="/docs",
         redoc_url="/redoc",

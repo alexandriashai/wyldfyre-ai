@@ -1,5 +1,5 @@
 {
-  "name": "ai-infrastructure-web",
+  "name": "wyld-fyre-ai-web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "type-check": "tsc --noEmit"
+    "lint:fix": "next lint --fix",
+    "type-check": "tsc --noEmit",
+    "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\""
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",
@@ -51,6 +54,7 @@
     "eslint": "^8.56.0",
     "eslint-config-next": "14.1.0",
     "postcss": "^8.4.33",
+    "prettier": "^3.2.4",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.3.3"
   }
