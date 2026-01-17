@@ -11,8 +11,15 @@ class RegisterRequest(BaseModel):
     """User registration request."""
 
     email: EmailStr
-    username: str = Field(min_length=3, max_length=50, pattern=r"^[a-zA-Z0-9_-]+$")
+    username: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=50,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+        description="Optional username. If not provided, derived from email.",
+    )
     password: str = Field(min_length=8, max_length=128)
+    display_name: str | None = Field(default=None, max_length=100)
 
 
 class LoginRequest(BaseModel):

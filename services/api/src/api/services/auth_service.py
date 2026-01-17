@@ -198,6 +198,7 @@ class AuthService:
         username: str,
         password: str,
         is_admin: bool = False,
+        display_name: str | None = None,
     ) -> Any:
         """
         Create a new user.
@@ -207,6 +208,7 @@ class AuthService:
             username: User username
             password: Plain text password (will be hashed)
             is_admin: Whether user is an admin
+            display_name: Optional display name
 
         Returns:
             Created User object
@@ -231,6 +233,7 @@ class AuthService:
             username=username,
             password_hash=self.hash_password(password),
             is_admin=is_admin,
+            display_name=display_name,
         )
 
         self.db.add(user)

@@ -23,6 +23,22 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+def _generate_username_from_email(email: str) -> str:
+    """Generate a username from an email address."""
+    import re
+    import uuid
+
+    # Take the part before @ and sanitize it
+    local_part = email.split("@")[0]
+    # Remove any characters that don't match the username pattern
+    username = re.sub(r"[^a-zA-Z0-9_-]", "", local_part)
+    # Ensure minimum length
+    if len(username) < 3:
+        username = username + str(uuid.uuid4().hex[:6])
+    # Truncate to max length
+    return username[:50]
+
+
 @router.post("/register", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     request: RegisterRequest,
@@ -32,12 +48,25 @@ async def register(
     Register a new user.
 
     Returns access and refresh tokens on successful registration.
+    Username is optional - if not provided, it will be derived from email.
     """
     try:
+        # Generate username from email if not provided
+        username = request.username
+        if not username:
+            username = _generate_username_from_email(request.email)
+            # If the generated username is taken, append a random suffix
+            existing = await auth_service.get_user_by_username(username)
+            if existing:
+                import uuid
+
+                username = f"{username[:44]}_{uuid.uuid4().hex[:5]}"
+
         user = await auth_service.create_user(
             email=request.email,
-            username=request.username,
+            username=username,
             password=request.password,
+            display_name=request.display_name,
         )
 
         tokens = auth_service.create_token_pair(

@@ -226,8 +226,8 @@ async def transcribe_stream(websocket: WebSocket) -> None:
                 "type": "error",
                 "message": str(e),
             })
-        except:
-            pass
+        except Exception:
+            pass  # Connection already closed
 
     finally:
         logger.info(
