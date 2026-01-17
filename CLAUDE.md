@@ -233,3 +233,149 @@ Note: Agents are I/O-bound (waiting on Claude API), not CPU-bound.
 5. **API & Backend**: FastAPI, authentication, WebSocket, domains API
 6. **Web Portal**: Next.js frontend, chat, dashboards
 7. **Voice & Polish**: Voice capabilities, installer, documentation
+
+---
+
+## Installation Guide for Claude Code
+
+This section is specifically for Claude Code to help users install Wyld Fyre AI.
+
+### Quick Start
+
+When a user asks you to help install this application:
+
+1. **First, run the pre-flight check** to assess the server:
+   ```bash
+   bash infrastructure/scripts/preflight-check.sh
+   ```
+
+2. **Review the results** and discuss with the user what was found
+
+3. **Determine the installation approach** based on findings:
+   - **Fresh Install** (`--fresh`): Clean server, standard installation
+   - **Clean Install** (`--fresh --clean`): Remove existing installations first
+   - **Upgrade** (`--upgrade`): Keep existing data, update code
+   - **Parallel** (`--parallel`): Run alongside existing services
+
+### Installation Decision Tree
+
+**If user says "redo everything" or "fresh install":**
+```bash
+bash infrastructure/scripts/install.sh --fresh --clean -y
+```
+This will remove all existing Wyld Fyre data and installations, then do a clean install.
+
+**If user has existing data they want to keep:**
+```bash
+bash infrastructure/scripts/install.sh --upgrade
+```
+
+**If user wants to keep other services running:**
+```bash
+bash infrastructure/scripts/install.sh --parallel
+```
+This uses alternative ports (3010, 8010, etc.)
+
+### Pre-Installation Requirements
+
+Before installing, ensure the user has:
+1. A Linux server (Ubuntu 22.04+ recommended)
+2. Root or sudo access
+3. At least 16GB RAM (64GB recommended)
+4. At least 50GB free disk space
+5. The following API keys ready:
+   - **ANTHROPIC_API_KEY** (required) - For Claude agents
+   - **OPENAI_API_KEY** (optional) - For embeddings and speech
+
+### Installation Steps (Manual)
+
+If the automated installer doesn't work, follow these manual steps:
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/alexandriashai/AI-Infrastructure.git
+cd AI-Infrastructure
+
+# 2. Copy and configure environment
+cp .env.example .env
+# Edit .env and add API keys
+
+# 3. Install Docker (if not installed)
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+# Log out and back in for group changes
+
+# 4. Start services
+docker-compose up -d
+
+# 5. Run database migrations
+docker-compose exec api python -m alembic upgrade head
+
+# 6. Verify installation
+docker-compose ps
+```
+
+### Troubleshooting
+
+**Port already in use:**
+```bash
+# Find what's using the port
+sudo lsof -i :3000
+# Or use parallel mode
+bash infrastructure/scripts/install.sh --parallel
+```
+
+**Docker permission denied:**
+```bash
+sudo usermod -aG docker $USER
+# Then log out and back in
+```
+
+**Not enough memory:**
+- Reduce agent count in `config/agents.yaml`
+- Use swap space: `sudo fallocate -l 8G /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
+
+**Database connection failed:**
+```bash
+# Check database logs
+docker-compose logs db
+# Restart database
+docker-compose restart db
+```
+
+### Post-Installation
+
+After successful installation:
+1. Access the web portal at http://localhost:3000 (or :3010 for parallel mode)
+2. Create an admin account
+3. Configure your Anthropic API key in settings
+4. Start interacting with Wyld
+
+### Useful Commands
+
+```bash
+# View all logs
+docker-compose logs -f
+
+# View specific service logs
+docker-compose logs -f api
+docker-compose logs -f web
+
+# Restart all services
+docker-compose restart
+
+# Stop all services
+docker-compose down
+
+# Stop and remove volumes (DATA LOSS)
+docker-compose down -v
+
+# Update to latest version
+git pull
+docker-compose build
+docker-compose up -d
+```
+
+### Slash Command
+
+Users can also use the `/install` command which provides interactive installation guidance.
