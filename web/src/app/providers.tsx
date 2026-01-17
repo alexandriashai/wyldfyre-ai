@@ -4,6 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
 import { useAuthStore } from "@/stores/auth-store";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Toaster } from "@/components/ui/toaster";
+import { CommandPalette } from "@/components/command-palette";
+import { PWAInstallPrompt } from "@/components/pwa/install-prompt";
+import { PWAUpdatePrompt } from "@/components/pwa/update-prompt";
+import { NetworkStatus } from "@/components/pwa/network-status";
+import { FlameLoader } from "@/components/brand/logo";
 
 // Service Worker Registration
 function useServiceWorker() {
@@ -41,12 +47,33 @@ function useServiceWorker() {
   }, []);
 }
 
+// Theme initialization
+function useTheme() {
+  useEffect(() => {
+    const stored = localStorage.getItem("theme");
+    const root = document.documentElement;
+
+    if (stored === "dark" || stored === "light") {
+      root.classList.add(stored);
+    } else {
+      // System preference
+      const systemDark = window.matchMedia(
+        "(prefers-color-scheme: dark)"
+      ).matches;
+      root.classList.add(systemDark ? "dark" : "light");
+    }
+  }, []);
+}
+
 function AuthInitializer({ children }: { children: React.ReactNode }) {
   const { initialize } = useAuthStore();
   const [isInitialized, setIsInitialized] = useState(false);
 
   // Register service worker
   useServiceWorker();
+
+  // Initialize theme
+  useTheme();
 
   useEffect(() => {
     initialize().finally(() => setIsInitialized(true));
@@ -56,8 +83,10 @@ function AuthInitializer({ children }: { children: React.ReactNode }) {
     return (
       <div className="flex h-screen items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-4">
-          <div className="h-12 w-12 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="text-sm text-muted-foreground">Loading Wyld Fyre...</p>
+          <FlameLoader className="h-16 w-16" />
+          <p className="text-sm text-muted-foreground animate-pulse">
+            Loading Wyld Fyre...
+          </p>
         </div>
       </div>
     );
@@ -82,7 +111,14 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <AuthInitializer>{children}</AuthInitializer>
+        <AuthInitializer>
+          {children}
+          <CommandPalette />
+          <PWAInstallPrompt />
+          <PWAUpdatePrompt />
+          <NetworkStatus />
+          <Toaster />
+        </AuthInitializer>
       </TooltipProvider>
     </QueryClientProvider>
   );

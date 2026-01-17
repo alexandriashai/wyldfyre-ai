@@ -1,10 +1,11 @@
 // Wyld Fyre AI Service Worker
-const CACHE_NAME = 'wyld-fyre-v1';
+const CACHE_NAME = 'wyld-fyre-v2';
 const OFFLINE_URL = '/offline';
 
 // Assets to cache immediately on install
 const PRECACHE_ASSETS = [
   '/',
+  '/offline',
   '/manifest.json',
   '/icons/icon.svg',
 ];
@@ -17,8 +18,7 @@ self.addEventListener('install', (event) => {
       return cache.addAll(PRECACHE_ASSETS);
     })
   );
-  // Activate immediately
-  self.skipWaiting();
+  // Don't auto-activate - wait for SKIP_WAITING message
 });
 
 // Activate event - clean up old caches
@@ -27,7 +27,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames
-          .filter((name) => name !== CACHE_NAME)
+          .filter((name) => name.startsWith('wyld-fyre-') && name !== CACHE_NAME)
           .map((name) => {
             console.log('[SW] Deleting old cache:', name);
             return caches.delete(name);
@@ -37,6 +37,13 @@ self.addEventListener('activate', (event) => {
   );
   // Take control immediately
   self.clients.claim();
+});
+
+// Handle messages from the client
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 // Fetch event - network first, fallback to cache
@@ -56,6 +63,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Skip chrome-extension and other non-http(s) requests
+  if (!event.request.url.startsWith('http')) {
+    return;
+  }
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {
@@ -71,41 +83,59 @@ self.addEventListener('fetch', (event) => {
 
         return response;
       })
-      .catch(() => {
+      .catch(async () => {
         // Network failed, try cache
-        return caches.match(event.request).then((cachedResponse) => {
-          if (cachedResponse) {
-            return cachedResponse;
-          }
+        const cachedResponse = await caches.match(event.request);
+        if (cachedResponse) {
+          return cachedResponse;
+        }
 
-          // If it's a navigation request, return offline page
-          if (event.request.mode === 'navigate') {
-            return caches.match('/');
+        // If it's a navigation request, return offline page
+        if (event.request.mode === 'navigate') {
+          const offlineResponse = await caches.match(OFFLINE_URL);
+          if (offlineResponse) {
+            return offlineResponse;
           }
+          // Fallback to root if offline page not cached
+          const rootResponse = await caches.match('/');
+          if (rootResponse) {
+            return rootResponse;
+          }
+        }
 
-          // Return a simple offline response for other requests
-          return new Response('Offline', {
-            status: 503,
-            statusText: 'Service Unavailable',
-          });
+        // Return a simple offline response for other requests
+        return new Response('Offline', {
+          status: 503,
+          statusText: 'Service Unavailable',
+          headers: { 'Content-Type': 'text/plain' },
         });
       })
   );
 });
 
-// Handle push notifications (for future use)
+// Handle push notifications
 self.addEventListener('push', (event) => {
   if (!event.data) return;
 
-  const data = event.data.json();
+  let data;
+  try {
+    data = event.data.json();
+  } catch (e) {
+    data = { body: event.data.text() };
+  }
+
   const options = {
     body: data.body || 'New notification from Wyld',
     icon: '/icons/icon-192x192.png',
     badge: '/icons/icon-72x72.png',
     vibrate: [100, 50, 100],
+    tag: data.tag || 'wyld-fyre-notification',
+    renotify: true,
     data: {
       url: data.url || '/',
+      timestamp: Date.now(),
     },
+    actions: data.actions || [],
   };
 
   event.waitUntil(
@@ -117,18 +147,45 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
+  const urlToOpen = event.notification.data?.url || '/';
+
   event.waitUntil(
-    clients.matchAll({ type: 'window' }).then((clientList) => {
-      // If a window is already open, focus it
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // Check if a window is already open
       for (const client of clientList) {
-        if (client.url === event.notification.data.url && 'focus' in client) {
+        const clientUrl = new URL(client.url);
+        if (clientUrl.pathname === urlToOpen && 'focus' in client) {
           return client.focus();
         }
       }
       // Otherwise open a new window
       if (clients.openWindow) {
-        return clients.openWindow(event.notification.data.url);
+        return clients.openWindow(urlToOpen);
       }
     })
   );
 });
+
+// Background sync for offline actions (future use)
+self.addEventListener('sync', (event) => {
+  if (event.tag === 'sync-messages') {
+    event.waitUntil(syncMessages());
+  }
+});
+
+async function syncMessages() {
+  // Future: Sync offline messages when back online
+  console.log('[SW] Syncing messages...');
+}
+
+// Periodic background sync (future use)
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag === 'check-updates') {
+    event.waitUntil(checkForUpdates());
+  }
+});
+
+async function checkForUpdates() {
+  // Future: Check for app updates
+  console.log('[SW] Checking for updates...');
+}
