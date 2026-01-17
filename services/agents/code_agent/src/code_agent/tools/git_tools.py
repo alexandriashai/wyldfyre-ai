@@ -14,6 +14,19 @@ logger = get_logger(__name__)
 WORKSPACE_DIR = Path(os.environ.get("WORKSPACE_DIR", "/app/workspace"))
 
 
+def _validate_repo_path(path: str) -> Path:
+    """Validate repository path is within workspace."""
+    workspace_resolved = WORKSPACE_DIR.resolve()
+    resolved = (WORKSPACE_DIR / path).resolve()
+
+    try:
+        resolved.relative_to(workspace_resolved)
+    except ValueError:
+        raise ValueError(f"Path escapes workspace: {path}")
+
+    return resolved
+
+
 async def _run_git_command(
     args: list[str],
     cwd: Path | None = None,
@@ -54,7 +67,7 @@ async def _run_git_command(
 async def git_status(path: str = ".") -> ToolResult:
     """Get git status."""
     try:
-        repo_path = WORKSPACE_DIR / path
+        repo_path = _validate_repo_path(path)
         code, stdout, stderr = await _run_git_command(
             ["status", "--porcelain", "-b"],
             cwd=repo_path,
@@ -136,7 +149,7 @@ async def git_diff(
 ) -> ToolResult:
     """Show git diff."""
     try:
-        repo_path = WORKSPACE_DIR / path
+        repo_path = _validate_repo_path(path)
         args = ["diff"]
 
         if staged:
@@ -189,7 +202,7 @@ async def git_log(
 ) -> ToolResult:
     """Show git log."""
     try:
-        repo_path = WORKSPACE_DIR / path
+        repo_path = _validate_repo_path(path)
         args = ["log", f"-{count}"]
 
         if oneline:
@@ -244,7 +257,7 @@ async def git_add(
 ) -> ToolResult:
     """Stage files for commit."""
     try:
-        repo_path = WORKSPACE_DIR / path
+        repo_path = _validate_repo_path(path)
         args = ["add"] + files
 
         code, stdout, stderr = await _run_git_command(args, cwd=repo_path)
@@ -285,7 +298,7 @@ async def git_commit(
 ) -> ToolResult:
     """Create a commit."""
     try:
-        repo_path = WORKSPACE_DIR / path
+        repo_path = _validate_repo_path(path)
         args = ["commit", "-m", message]
 
         code, stdout, stderr = await _run_git_command(args, cwd=repo_path)
@@ -338,7 +351,7 @@ async def git_branch(
 ) -> ToolResult:
     """List or create branches."""
     try:
-        repo_path = WORKSPACE_DIR / path
+        repo_path = _validate_repo_path(path)
 
         if name:
             # Create branch
@@ -408,7 +421,7 @@ async def git_checkout(
 ) -> ToolResult:
     """Checkout a branch or commit."""
     try:
-        repo_path = WORKSPACE_DIR / path
+        repo_path = _validate_repo_path(path)
         args = ["checkout", target]
 
         code, stdout, stderr = await _run_git_command(args, cwd=repo_path)
@@ -454,7 +467,7 @@ async def git_pull(
 ) -> ToolResult:
     """Pull changes from remote."""
     try:
-        repo_path = WORKSPACE_DIR / path
+        repo_path = _validate_repo_path(path)
         args = ["pull", remote]
 
         if branch:
@@ -509,7 +522,7 @@ async def git_push(
 ) -> ToolResult:
     """Push changes to remote."""
     try:
-        repo_path = WORKSPACE_DIR / path
+        repo_path = _validate_repo_path(path)
         args = ["push"]
 
         if set_upstream:

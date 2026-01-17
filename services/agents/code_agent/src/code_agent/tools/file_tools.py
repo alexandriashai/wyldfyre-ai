@@ -18,10 +18,17 @@ WORKSPACE_DIR = Path(os.environ.get("WORKSPACE_DIR", "/app/workspace"))
 
 def _validate_path(path: str) -> Path:
     """Validate and resolve a file path within workspace."""
+    # Resolve workspace to absolute path
+    workspace_resolved = WORKSPACE_DIR.resolve()
+
+    # Resolve the target path
     resolved = (WORKSPACE_DIR / path).resolve()
 
-    # Ensure path is within workspace
-    if not str(resolved).startswith(str(WORKSPACE_DIR.resolve())):
+    # Use is_relative_to for proper containment check (Python 3.9+)
+    # This prevents path traversal attacks like "../workspace-evil/file"
+    try:
+        resolved.relative_to(workspace_resolved)
+    except ValueError:
         raise ValueError(f"Path escapes workspace: {path}")
 
     return resolved
