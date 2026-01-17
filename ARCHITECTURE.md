@@ -1354,13 +1354,13 @@ CREATE TABLE audit_logs (
     action VARCHAR(20) NOT NULL,
     outcome VARCHAR(20) NOT NULL,
     details JSONB,
-    risk_level VARCHAR(20) DEFAULT 'low',
+    risk_level VARCHAR(20) DEFAULT 'low'
+) PARTITION BY RANGE (timestamp);
 
-    -- Indexes for common queries
-    INDEX idx_audit_timestamp (timestamp DESC),
-    INDEX idx_audit_actor (actor_type, actor_id),
-    INDEX idx_audit_risk (risk_level, timestamp DESC)
-);
+-- Indexes for common queries (created separately - inline INDEX syntax is not valid PostgreSQL)
+CREATE INDEX idx_audit_timestamp ON audit_logs(timestamp DESC);
+CREATE INDEX idx_audit_actor ON audit_logs(actor_type, actor_id);
+CREATE INDEX idx_audit_risk ON audit_logs(risk_level, timestamp DESC);
 
 -- Retention: Partition by month, retain 12 months
 CREATE TABLE audit_logs_y2025m01 PARTITION OF audit_logs
@@ -2090,9 +2090,9 @@ class CostTracker:
         # Check daily budget
         await self._check_budget_alert()
 
-    async def get_daily_summary(self, date: date = None) -> dict:
+    async def get_daily_summary(self, target_date: date = None) -> dict:
         """Get usage summary for a specific day."""
-        date = date or date.today()
+        target_date = target_date or date.today()
 
         result = await self.db.fetch("""
             SELECT
@@ -2104,10 +2104,10 @@ class CostTracker:
             FROM api_usage
             WHERE DATE(timestamp) = $1
             GROUP BY provider, model
-        """, date)
+        """, target_date)
 
         return {
-            "date": date.isoformat(),
+            "date": target_date.isoformat(),
             "breakdown": [dict(r) for r in result],
             "total_cost": sum(r["total_cost"] for r in result)
         }
@@ -2204,12 +2204,12 @@ class EmbeddingCache:
                 model=model
             )
 
-            for idx, embedding_data in zip(uncached_indices, response.data):
+            for i, (idx, embedding_data) in enumerate(zip(uncached_indices, response.data)):
                 embedding = embedding_data.embedding
                 results[idx] = embedding
 
-                # Cache
-                cache_key = f"{self.CACHE_PREFIX}{model}:{self._hash_content(uncached_texts[uncached_indices.index(idx)])}"
+                # Cache (use enumerate index to avoid O(n²) lookup)
+                cache_key = f"{self.CACHE_PREFIX}{model}:{self._hash_content(uncached_texts[i])}"
                 await self.redis.setex(cache_key, self.TTL, json.dumps(embedding))
 
         return results
@@ -3286,7 +3286,7 @@ echo "Start Agents: python scripts/start-agents-dev.py"
 
 ```yaml
 # docker-compose.dev.yml
-version: "3.8"
+# Note: 'version' key is omitted as it's deprecated in Docker Compose v2.0+
 
 services:
   postgres:
@@ -3628,7 +3628,7 @@ def mock_openai_embeddings():
 
 ## Implementation Phases
 
-### Phase 1: Foundation
+### Phase 1: Foundation (Week 1-2)
 - [ ] Project setup, Docker Compose (Redis, Qdrant, PostgreSQL)
 - [ ] Core packages: config, logging, messaging
 - [ ] Memory package with OpenAI embeddings + Qdrant
