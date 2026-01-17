@@ -1,0 +1,130 @@
+# Agent Configuration
+# Defines all agents and their capabilities
+
+agents:
+  - name: supervisor
+    type: supervisor
+    permission_level: 3
+    command: python -m services.supervisor
+    working_dir: /app
+    environment:
+      AGENT_NAME: supervisor
+      LOG_LEVEL: INFO
+    description: |
+      Task routing, orchestration, and escalation.
+      Receives all incoming tasks and routes to appropriate agents.
+    capabilities:
+      - task_routing
+      - agent_coordination
+      - escalation
+      - status_monitoring
+
+  - name: code-agent
+    type: code
+    permission_level: 2
+    command: python -m services.agents.code_agent
+    working_dir: /app
+    environment:
+      AGENT_NAME: code-agent
+      LOG_LEVEL: INFO
+    description: |
+      Git operations, file operations, code analysis, and testing.
+    capabilities:
+      - git_operations
+      - file_read_write
+      - code_analysis
+      - test_execution
+      - linting
+    tools:
+      - git
+      - file_reader
+      - file_writer
+      - code_analyzer
+      - test_runner
+
+  - name: data-agent
+    type: data
+    permission_level: 2
+    command: python -m services.agents.data_agent
+    working_dir: /app
+    environment:
+      AGENT_NAME: data-agent
+      LOG_LEVEL: INFO
+    description: |
+      SQL queries, data analysis, ETL operations, and backups.
+    capabilities:
+      - sql_queries
+      - data_analysis
+      - etl_operations
+      - database_backup
+    tools:
+      - sql_executor
+      - data_analyzer
+      - backup_manager
+
+  - name: infra-agent
+    type: infra
+    permission_level: 2
+    command: python -m services.agents.infra_agent
+    working_dir: /app
+    environment:
+      AGENT_NAME: infra-agent
+      LOG_LEVEL: INFO
+    description: |
+      Docker management, Nginx configuration, SSL, and domain management.
+    capabilities:
+      - docker_management
+      - nginx_configuration
+      - ssl_management
+      - domain_provisioning
+    tools:
+      - docker_manager
+      - nginx_manager
+      - certbot_manager
+      - cloudflare_api
+
+  - name: research-agent
+    type: research
+    permission_level: 1
+    command: python -m services.agents.research_agent
+    working_dir: /app
+    environment:
+      AGENT_NAME: research-agent
+      LOG_LEVEL: INFO
+    description: |
+      Web search, documentation lookup, and information synthesis.
+    capabilities:
+      - web_search
+      - documentation_lookup
+      - information_synthesis
+    tools:
+      - web_search
+      - documentation_reader
+
+  - name: qa-agent
+    type: qa
+    permission_level: 1
+    command: python -m services.agents.qa_agent
+    working_dir: /app
+    environment:
+      AGENT_NAME: qa-agent
+      LOG_LEVEL: INFO
+    description: |
+      Testing, code review, security scanning, and validation.
+    capabilities:
+      - test_execution
+      - code_review
+      - security_scanning
+      - validation
+    tools:
+      - test_runner
+      - code_reviewer
+      - security_scanner
+
+# Default settings
+defaults:
+  auto_restart: true
+  restart_delay: 5
+  max_restarts: 3
+  health_check_interval: 30
+  log_retention_days: 7
