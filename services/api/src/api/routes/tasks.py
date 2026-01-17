@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_core import TaskStatus, get_logger
-from ai_messaging import MessageBus, RedisClient
+from ai_messaging import PubSubManager, RedisClient
 
 from ..database import get_db_session
 from ..dependencies import CurrentUserDep, get_redis
@@ -31,7 +31,7 @@ async def list_tasks(
     """
     List tasks for the current user.
     """
-    from database.models import Task
+    from ai_db import Task
 
     # Build query
     query = select(Task).where(Task.user_id == current_user.sub)
@@ -75,7 +75,7 @@ async def get_task(
     """
     Get task details by ID.
     """
-    from database.models import Task
+    from ai_db import Task
 
     result = await db.execute(
         select(Task).where(Task.id == task_id, Task.user_id == current_user.sub)
@@ -101,7 +101,7 @@ async def cancel_task(
     """
     Request task cancellation.
     """
-    from database.models import Task
+    from ai_db import Task
 
     result = await db.execute(
         select(Task).where(Task.id == task_id, Task.user_id == current_user.sub)
@@ -123,8 +123,8 @@ async def cancel_task(
 
     # Publish cancellation request
     try:
-        message_bus = MessageBus(redis)
-        await message_bus.publish(
+        pubsub = PubSubManager(redis)
+        await pubsub.publish(
             channel="system:commands",
             message={
                 "command": "cancel_task",

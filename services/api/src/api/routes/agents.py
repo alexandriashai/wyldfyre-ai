@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ai_core import AgentStatus, AgentType, get_logger
-from ai_messaging import MessageBus, RedisClient
+from ai_messaging import PubSubManager, RedisClient
 
 from ..dependencies import AdminUserDep, CurrentUserDep, get_redis
 
@@ -227,8 +227,8 @@ async def restart_agent(
 
     try:
         # Publish restart command
-        message_bus = MessageBus(redis)
-        await message_bus.publish(
+        pubsub = PubSubManager(redis)
+        await pubsub.publish(
             channel="system:commands",
             message={
                 "command": "restart_agent",

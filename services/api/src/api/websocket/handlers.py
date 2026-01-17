@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from ai_core import get_logger
-from ai_messaging import MessageBus, RedisClient
+from ai_messaging import PubSubManager, RedisClient
 
 from .manager import Connection, ConnectionManager
 
@@ -27,7 +27,7 @@ class MessageHandler:
     ):
         self.manager = manager
         self.redis = redis
-        self.message_bus = MessageBus(redis)
+        self.pubsub = PubSubManager(redis)
 
     async def handle_message(
         self,
@@ -128,7 +128,7 @@ class MessageHandler:
         # Route to supervisor agent
         correlation_id = str(uuid4())
 
-        await self.message_bus.publish(
+        await self.pubsub.publish(
             channel="supervisor:tasks",
             message={
                 "type": "task_request",

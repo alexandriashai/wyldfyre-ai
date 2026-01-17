@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_core import DomainStatus, get_logger
-from ai_messaging import MessageBus, RedisClient
+from ai_messaging import PubSubManager, RedisClient
 
 logger = get_logger(__name__)
 
@@ -22,7 +22,7 @@ class DomainService:
     def __init__(self, db: AsyncSession, redis: RedisClient):
         self.db = db
         self.redis = redis
-        self.message_bus = MessageBus(redis)
+        self.pubsub = PubSubManager(redis)
 
     async def list_domains(
         self,
@@ -41,7 +41,7 @@ class DomainService:
         Returns:
             List of Domain objects
         """
-        from database.models import Domain
+        from ai_db import Domain
 
         query = select(Domain).order_by(Domain.domain_name)
 
@@ -54,7 +54,7 @@ class DomainService:
 
     async def get_domain(self, domain_name: str) -> Any | None:
         """Get a domain by name."""
-        from database.models import Domain
+        from ai_db import Domain
 
         result = await self.db.execute(
             select(Domain).where(Domain.domain_name == domain_name)
@@ -63,7 +63,7 @@ class DomainService:
 
     async def get_domain_by_id(self, domain_id: str) -> Any | None:
         """Get a domain by ID."""
-        from database.models import Domain
+        from ai_db import Domain
 
         result = await self.db.execute(
             select(Domain).where(Domain.id == domain_id)
@@ -92,7 +92,7 @@ class DomainService:
         Raises:
             ValueError: If domain already exists
         """
-        from database.models import Domain
+        from ai_db import Domain
 
         # Check for existing domain
         existing = await self.get_domain(domain_name)
@@ -195,8 +195,10 @@ class DomainService:
             domain_name: The domain to provision
 
         Returns:
-            Task submission result
+            Task submission result with task_id for tracking
         """
+        from uuid import uuid4
+
         domain = await self.get_domain(domain_name)
         if not domain:
             raise ValueError(f"Domain {domain_name} not found")
@@ -205,24 +207,35 @@ class DomainService:
         domain.status = DomainStatus.PROVISIONING
         await self.db.flush()
 
-        # Send task to infra agent via message bus
-        task_result = await self.message_bus.request(
-            target="infra-agent",
-            action="provision_domain",
-            payload={
-                "domain": domain_name,
-                "proxy_target": domain.proxy_target,
-                "ssl_enabled": domain.ssl_enabled,
+        # Generate task ID for tracking
+        task_id = str(uuid4())
+
+        # Publish task to infra agent channel
+        await self.pubsub.publish(
+            channel="infra-agent:tasks",
+            message={
+                "task_id": task_id,
+                "action": "provision_domain",
+                "payload": {
+                    "domain": domain_name,
+                    "proxy_target": domain.proxy_target,
+                    "ssl_enabled": domain.ssl_enabled,
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             },
-            timeout=120.0,  # Domain provisioning can take time
         )
 
         logger.info(
             "Domain provisioning requested",
             domain=domain_name,
-            task_id=task_result.get("task_id"),
+            task_id=task_id,
         )
-        return task_result
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "message": f"Provisioning started for {domain_name}",
+        }
 
     async def verify_domain(self, domain_name: str) -> dict[str, Any]:
         """
@@ -232,22 +245,34 @@ class DomainService:
             domain_name: The domain to verify
 
         Returns:
-            Verification results
+            Task submission result with task_id for tracking
         """
-        task_result = await self.message_bus.request(
-            target="infra-agent",
-            action="verify_domain",
-            payload={"domain": domain_name},
-            timeout=30.0,
+        from uuid import uuid4
+
+        task_id = str(uuid4())
+
+        # Publish verification task
+        await self.pubsub.publish(
+            channel="infra-agent:tasks",
+            message={
+                "task_id": task_id,
+                "action": "verify_domain",
+                "payload": {"domain": domain_name},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
         )
 
-        # Update domain status based on verification
-        domain = await self.get_domain(domain_name)
-        if domain and task_result.get("success"):
-            domain.status = DomainStatus.ACTIVE
-            await self.db.flush()
+        logger.info(
+            "Domain verification requested",
+            domain=domain_name,
+            task_id=task_id,
+        )
 
-        return task_result
+        return {
+            "success": True,
+            "task_id": task_id,
+            "message": f"Verification started for {domain_name}",
+        }
 
     async def renew_ssl(self, domain_name: str) -> dict[str, Any]:
         """
@@ -257,25 +282,34 @@ class DomainService:
             domain_name: The domain to renew SSL for
 
         Returns:
-            Task submission result
+            Task submission result with task_id for tracking
         """
-        task_result = await self.message_bus.request(
-            target="infra-agent",
-            action="renew_certificate",
-            payload={"domain": domain_name},
-            timeout=60.0,
+        from uuid import uuid4
+
+        task_id = str(uuid4())
+
+        # Publish renewal task
+        await self.pubsub.publish(
+            channel="infra-agent:tasks",
+            message={
+                "task_id": task_id,
+                "action": "renew_certificate",
+                "payload": {"domain": domain_name},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
         )
 
-        # Update SSL expiry if successful
-        if task_result.get("success") and task_result.get("expires_at"):
-            domain = await self.get_domain(domain_name)
-            if domain:
-                domain.ssl_expires_at = datetime.fromisoformat(
-                    task_result["expires_at"]
-                )
-                await self.db.flush()
+        logger.info(
+            "SSL renewal requested",
+            domain=domain_name,
+            task_id=task_id,
+        )
 
-        return task_result
+        return {
+            "success": True,
+            "task_id": task_id,
+            "message": f"SSL renewal started for {domain_name}",
+        }
 
     def _validate_domain_name(self, domain_name: str) -> bool:
         """Validate domain name format."""

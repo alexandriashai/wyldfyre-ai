@@ -167,7 +167,7 @@ class AuthService:
     async def get_user_by_email(self, email: str) -> Any | None:
         """Get a user by email address."""
         # Import here to avoid circular imports
-        from database.models import User
+        from ai_db import User
 
         result = await self.db.execute(
             select(User).where(User.email == email)
@@ -176,7 +176,7 @@ class AuthService:
 
     async def get_user_by_id(self, user_id: str) -> Any | None:
         """Get a user by ID."""
-        from database.models import User
+        from ai_db import User
 
         result = await self.db.execute(
             select(User).where(User.id == user_id)
@@ -185,7 +185,7 @@ class AuthService:
 
     async def get_user_by_username(self, username: str) -> Any | None:
         """Get a user by username."""
-        from database.models import User
+        from ai_db import User
 
         result = await self.db.execute(
             select(User).where(User.username == username)
@@ -214,7 +214,7 @@ class AuthService:
         Raises:
             ValueError: If email or username already exists
         """
-        from database.models import User
+        from ai_db import User
 
         # Check for existing user
         existing = await self.get_user_by_email(email)
