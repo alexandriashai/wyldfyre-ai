@@ -1318,6 +1318,2792 @@ schedules:
 
 ---
 
+## Advanced Features
+
+### Agent Isolation with Namespaced Workspaces
+
+Each agent has isolated scratch space to prevent conflicts while sharing the main codebase.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      WORKSPACE ISOLATION                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+/workspace/                           # Shared codebase
+├── services/                         # Read-only for most agents
+├── packages/
+├── web/
+└── .agent-scratch/                   # Per-agent isolated workspaces
+    ├── supervisor/
+    │   ├── working/                  # Current task files
+    │   ├── temp/                     # Temporary files
+    │   └── cache/                    # Agent-specific cache
+    ├── code_agent/
+    │   ├── working/
+    │   ├── temp/
+    │   ├── cache/
+    │   └── git-worktrees/           # Isolated git operations
+    ├── data_agent/
+    │   ├── working/
+    │   ├── temp/
+    │   ├── exports/                  # Data exports
+    │   └── cache/
+    ├── infra_agent/
+    │   ├── working/
+    │   ├── temp/
+    │   └── backups/                  # Config backups before changes
+    ├── research_agent/
+    │   ├── working/
+    │   ├── temp/
+    │   ├── downloads/                # Downloaded resources
+    │   └── summaries/                # Generated summaries
+    └── qa_agent/
+        ├── working/
+        ├── temp/
+        ├── reports/                  # Test reports
+        └── coverage/                 # Coverage data
+```
+
+```python
+# packages/core/src/ai_core/workspace.py
+from pathlib import Path
+from typing import Literal
+
+class AgentWorkspace:
+    """Manages isolated workspace for each agent."""
+
+    def __init__(self, agent_id: str, base_path: Path = Path("/workspace")):
+        self.agent_id = agent_id
+        self.base_path = base_path
+        self.scratch_path = base_path / ".agent-scratch" / agent_id
+
+        # Create workspace directories
+        for subdir in ["working", "temp", "cache"]:
+            (self.scratch_path / subdir).mkdir(parents=True, exist_ok=True)
+
+    @property
+    def working_dir(self) -> Path:
+        return self.scratch_path / "working"
+
+    @property
+    def temp_dir(self) -> Path:
+        return self.scratch_path / "temp"
+
+    def can_write(self, path: Path) -> bool:
+        """Check if agent can write to path."""
+        # Agents can always write to their scratch space
+        if path.is_relative_to(self.scratch_path):
+            return True
+        # Check permission level for other paths
+        return self._check_permissions(path)
+
+    def cleanup_temp(self, max_age_hours: int = 24):
+        """Clean up old temporary files."""
+        # Implementation
+        pass
+```
+
+### Task DAG with Priority & Dependencies
+
+Replace simple pub/sub with a proper Directed Acyclic Graph for task orchestration.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         TASK DAG SYSTEM                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Example: "Build and deploy a new feature"
+
+                    ┌─────────────────┐
+                    │   User Request  │
+                    │   Priority: 10  │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │   Supervisor    │
+                    │   Decompose     │
+                    └────────┬────────┘
+                             │
+        ┌────────────────────┼────────────────────┐
+        │                    │                    │
+        ▼                    ▼                    ▼
+┌───────────────┐   ┌───────────────┐   ┌───────────────┐
+│ Task A        │   │ Task B        │   │ Task C        │
+│ Research API  │   │ Design Schema │   │ Write Tests   │
+│ Agent: research│   │ Agent: data   │   │ Agent: qa     │
+│ Priority: 8   │   │ Priority: 8   │   │ Priority: 7   │
+│ Deps: none    │   │ Deps: none    │   │ Deps: none    │
+└───────┬───────┘   └───────┬───────┘   └───────┬───────┘
+        │                   │                   │
+        └─────────┬─────────┘                   │
+                  │                             │
+                  ▼                             │
+        ┌───────────────┐                       │
+        │ Task D        │                       │
+        │ Implement API │                       │
+        │ Agent: code   │                       │
+        │ Priority: 9   │                       │
+        │ Deps: [A, B]  │◀──────────────────────┘
+        └───────┬───────┘        (waits for D)
+                │
+                ▼
+        ┌───────────────┐
+        │ Task E        │
+        │ Run Tests     │
+        │ Agent: qa     │
+        │ Priority: 9   │
+        │ Deps: [C, D]  │
+        └───────┬───────┘
+                │
+                ▼
+        ┌───────────────┐
+        │ Task F        │
+        │ Deploy        │
+        │ Agent: infra  │
+        │ Priority: 10  │
+        │ Deps: [E]     │
+        └───────────────┘
+```
+
+```python
+# packages/messaging/src/ai_messaging/task_dag.py
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional
+from uuid import UUID, uuid4
+import asyncio
+import heapq
+
+class TaskState(Enum):
+    PENDING = "pending"
+    READY = "ready"           # Dependencies satisfied
+    ASSIGNED = "assigned"
+    IN_PROGRESS = "in_progress"
+    BLOCKED = "blocked"       # Waiting for dependency
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+@dataclass
+class Task:
+    id: UUID = field(default_factory=uuid4)
+    name: str = ""
+    description: str = ""
+    agent_type: str = ""
+    priority: int = 5         # 1-10, higher = more urgent
+    state: TaskState = TaskState.PENDING
+    depends_on: list[UUID] = field(default_factory=list)
+    created_at: float = field(default_factory=lambda: asyncio.get_event_loop().time())
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    result: Optional[dict] = None
+    error: Optional[str] = None
+    retry_count: int = 0
+    max_retries: int = 3
+    timeout_seconds: int = 300
+
+    def __lt__(self, other):
+        # For priority queue: higher priority first, then older tasks
+        return (-self.priority, self.created_at) < (-other.priority, other.created_at)
+
+class TaskDAG:
+    """Directed Acyclic Graph for task dependencies."""
+
+    def __init__(self, redis_client):
+        self.redis = redis_client
+        self.tasks: dict[UUID, Task] = {}
+        self.dependents: dict[UUID, set[UUID]] = {}  # task -> tasks that depend on it
+        self.ready_queue: list[Task] = []  # Priority queue of ready tasks
+
+    async def submit(self, task: Task) -> UUID:
+        """Submit a task to the DAG."""
+        self.tasks[task.id] = task
+
+        # Track reverse dependencies
+        for dep_id in task.depends_on:
+            if dep_id not in self.dependents:
+                self.dependents[dep_id] = set()
+            self.dependents[dep_id].add(task.id)
+
+        # Check if ready immediately
+        if self._dependencies_satisfied(task):
+            task.state = TaskState.READY
+            heapq.heappush(self.ready_queue, task)
+            await self._notify_ready(task)
+        else:
+            task.state = TaskState.BLOCKED
+
+        await self._persist_task(task)
+        return task.id
+
+    async def get_ready_tasks(self, agent_type: str, limit: int = 5) -> list[Task]:
+        """Get tasks ready for a specific agent type."""
+        ready = []
+        for task in self.ready_queue:
+            if task.agent_type == agent_type and task.state == TaskState.READY:
+                ready.append(task)
+                if len(ready) >= limit:
+                    break
+        return ready
+
+    async def complete_task(self, task_id: UUID, result: dict):
+        """Mark task as completed and unblock dependents."""
+        task = self.tasks[task_id]
+        task.state = TaskState.COMPLETED
+        task.result = result
+        task.completed_at = asyncio.get_event_loop().time()
+
+        # Check if any dependent tasks are now ready
+        for dependent_id in self.dependents.get(task_id, []):
+            dependent = self.tasks[dependent_id]
+            if self._dependencies_satisfied(dependent):
+                dependent.state = TaskState.READY
+                heapq.heappush(self.ready_queue, dependent)
+                await self._notify_ready(dependent)
+
+        await self._persist_task(task)
+
+    async def fail_task(self, task_id: UUID, error: str):
+        """Mark task as failed, potentially retry."""
+        task = self.tasks[task_id]
+        task.retry_count += 1
+
+        if task.retry_count < task.max_retries:
+            task.state = TaskState.READY
+            heapq.heappush(self.ready_queue, task)
+        else:
+            task.state = TaskState.FAILED
+            task.error = error
+            # Cancel all dependent tasks
+            await self._cancel_dependents(task_id)
+
+        await self._persist_task(task)
+
+    def _dependencies_satisfied(self, task: Task) -> bool:
+        """Check if all dependencies are completed."""
+        for dep_id in task.depends_on:
+            dep = self.tasks.get(dep_id)
+            if not dep or dep.state != TaskState.COMPLETED:
+                return False
+        return True
+
+    async def _notify_ready(self, task: Task):
+        """Notify agent that a task is ready."""
+        await self.redis.publish(f"agent:{task.agent_type}:tasks", task.id.hex)
+
+    async def _cancel_dependents(self, task_id: UUID):
+        """Recursively cancel all dependent tasks."""
+        for dependent_id in self.dependents.get(task_id, []):
+            dependent = self.tasks[dependent_id]
+            dependent.state = TaskState.CANCELLED
+            await self._cancel_dependents(dependent_id)
+
+    async def _persist_task(self, task: Task):
+        """Persist task state to Redis."""
+        await self.redis.hset(f"task:{task.id}", mapping=task.__dict__)
+```
+
+### Agent Hot-Reload
+
+Update agent prompts and tools without restarting.
+
+```python
+# packages/core/src/ai_core/hot_reload.py
+import asyncio
+import hashlib
+from pathlib import Path
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+class AgentHotReloader:
+    """Watches for changes and reloads agent configuration."""
+
+    def __init__(self, agent, config_paths: list[Path]):
+        self.agent = agent
+        self.config_paths = config_paths
+        self.file_hashes: dict[Path, str] = {}
+        self.observer = Observer()
+
+    def start(self):
+        """Start watching for file changes."""
+        handler = ReloadHandler(self)
+        for path in self.config_paths:
+            self.observer.schedule(handler, str(path.parent), recursive=False)
+            self.file_hashes[path] = self._hash_file(path)
+        self.observer.start()
+
+    async def check_and_reload(self):
+        """Check for changes and reload if needed."""
+        for path in self.config_paths:
+            current_hash = self._hash_file(path)
+            if current_hash != self.file_hashes.get(path):
+                self.file_hashes[path] = current_hash
+                await self._reload_component(path)
+
+    async def _reload_component(self, path: Path):
+        """Reload specific component based on file type."""
+        if path.name == "AGENT.md":
+            await self._reload_system_prompt(path)
+        elif path.suffix == ".py" and "tools" in str(path):
+            await self._reload_tools(path)
+        elif path.suffix in [".yaml", ".yml"]:
+            await self._reload_config(path)
+
+    async def _reload_system_prompt(self, path: Path):
+        """Reload system prompt without losing conversation."""
+        new_prompt = path.read_text()
+        self.agent.system_prompt = new_prompt
+        self.agent.logger.info(f"Reloaded system prompt from {path}")
+
+    async def _reload_tools(self, path: Path):
+        """Reload tool definitions."""
+        # Re-import tools module
+        import importlib
+        module_name = str(path.with_suffix('')).replace('/', '.')
+        module = importlib.import_module(module_name)
+        importlib.reload(module)
+        self.agent.tools = self.agent.discover_tools()
+        self.agent.logger.info(f"Reloaded tools from {path}")
+
+    def _hash_file(self, path: Path) -> str:
+        return hashlib.md5(path.read_bytes()).hexdigest()
+
+class ReloadHandler(FileSystemEventHandler):
+    def __init__(self, reloader: AgentHotReloader):
+        self.reloader = reloader
+
+    def on_modified(self, event):
+        asyncio.create_task(self.reloader.check_and_reload())
+```
+
+### Command Allowlist/Blocklist Security
+
+```yaml
+# config/agent_permissions.yaml
+permissions:
+  default: &default_permissions
+    max_file_size_mb: 50
+    max_execution_time_seconds: 300
+    blocked_patterns:
+      - "rm -rf /"
+      - "rm -rf /*"
+      - ":(){ :|:& };:"          # Fork bomb
+      - "> /dev/sda"
+      - "mkfs"
+      - "dd if="
+      - "chmod -R 777 /"
+      - "chown -R"
+    blocked_commands:
+      - "shutdown"
+      - "reboot"
+      - "init"
+      - "poweroff"
+      - "halt"
+
+  supervisor:
+    <<: *default_permissions
+    allowed_commands: "*"        # Full access
+    requires_approval:
+      - "rm -rf"
+      - "DROP DATABASE"
+      - "systemctl stop"
+
+  code_agent:
+    <<: *default_permissions
+    allowed_commands:
+      - git
+      - npm
+      - npx
+      - yarn
+      - pip
+      - pip3
+      - python
+      - python3
+      - node
+      - pytest
+      - cargo
+      - go
+      - make
+    allowed_paths:
+      - /workspace
+      - /tmp
+    denied_paths:
+      - /etc
+      - /var
+      - /root
+
+  data_agent:
+    <<: *default_permissions
+    allowed_commands:
+      - psql
+      - redis-cli
+      - python
+      - pip
+    allowed_sql_operations:
+      - SELECT
+      - INSERT
+      - UPDATE
+      - CREATE TABLE
+      - CREATE INDEX
+    denied_sql_operations:
+      - DROP DATABASE
+      - TRUNCATE
+      - DELETE FROM  # Without WHERE clause
+    requires_approval:
+      - DROP TABLE
+      - ALTER TABLE
+
+  infra_agent:
+    <<: *default_permissions
+    allowed_commands:
+      - docker
+      - docker-compose
+      - nginx
+      - certbot
+      - systemctl
+      - journalctl
+      - htop
+      - df
+      - du
+      - free
+      - ufw
+    allowed_systemctl_units:
+      - nginx
+      - docker
+      - redis
+      - postgresql
+      - ai-infrastructure
+    requires_approval:
+      - systemctl stop
+      - systemctl disable
+      - docker rm
+      - docker system prune
+      - ufw disable
+
+  research_agent:
+    <<: *default_permissions
+    allowed_commands:
+      - curl
+      - wget
+      - python
+    network_allowlist:
+      - "*.github.com"
+      - "*.stackoverflow.com"
+      - "*.wikipedia.org"
+      - "api.anthropic.com"
+      - "api.openai.com"
+    max_download_size_mb: 100
+
+  qa_agent:
+    <<: *default_permissions
+    allowed_commands:
+      - pytest
+      - npm
+      - node
+      - python
+      - coverage
+      - bandit         # Security scanner
+      - safety         # Dependency checker
+      - trivy          # Container scanner
+```
+
+```python
+# packages/core/src/ai_core/permissions.py
+import re
+import shlex
+from pathlib import Path
+from typing import Optional
+import yaml
+
+class PermissionDenied(Exception):
+    """Raised when an agent attempts an unauthorized action."""
+    pass
+
+class CommandValidator:
+    """Validates commands against agent permissions."""
+
+    def __init__(self, config_path: Path = Path("config/agent_permissions.yaml")):
+        with open(config_path) as f:
+            self.config = yaml.safe_load(f)
+
+    def validate_command(self, agent_id: str, command: str) -> tuple[bool, Optional[str]]:
+        """
+        Validate a command for an agent.
+        Returns (allowed, reason) tuple.
+        """
+        permissions = self.config["permissions"].get(agent_id, self.config["permissions"]["default"])
+
+        # Check blocked patterns first
+        for pattern in permissions.get("blocked_patterns", []):
+            if re.search(pattern, command, re.IGNORECASE):
+                return False, f"Command matches blocked pattern: {pattern}"
+
+        # Parse command
+        try:
+            parts = shlex.split(command)
+            base_command = parts[0] if parts else ""
+        except ValueError:
+            return False, "Invalid command syntax"
+
+        # Check blocked commands
+        if base_command in permissions.get("blocked_commands", []):
+            return False, f"Command '{base_command}' is blocked"
+
+        # Check allowed commands
+        allowed = permissions.get("allowed_commands", [])
+        if allowed != "*" and base_command not in allowed:
+            return False, f"Command '{base_command}' is not in allowlist"
+
+        # Check if requires approval
+        for pattern in permissions.get("requires_approval", []):
+            if pattern in command:
+                return "approval_required", f"Command requires human approval: {pattern}"
+
+        return True, None
+
+    def validate_path(self, agent_id: str, path: Path, operation: str = "read") -> tuple[bool, Optional[str]]:
+        """Validate file path access for an agent."""
+        permissions = self.config["permissions"].get(agent_id, {})
+
+        # Check denied paths
+        for denied in permissions.get("denied_paths", []):
+            if path.is_relative_to(denied):
+                return False, f"Access to {denied} is denied"
+
+        # Check allowed paths for write operations
+        if operation == "write":
+            allowed = permissions.get("allowed_paths", [])
+            if not any(path.is_relative_to(a) for a in allowed):
+                return False, f"Write access not allowed to {path}"
+
+        return True, None
+
+    def validate_sql(self, agent_id: str, query: str) -> tuple[bool, Optional[str]]:
+        """Validate SQL query for an agent."""
+        permissions = self.config["permissions"].get(agent_id, {})
+        query_upper = query.upper().strip()
+
+        # Check denied operations
+        for denied in permissions.get("denied_sql_operations", []):
+            if query_upper.startswith(denied):
+                return False, f"SQL operation '{denied}' is not allowed"
+
+        # Check allowed operations
+        allowed = permissions.get("allowed_sql_operations", [])
+        if allowed:
+            if not any(query_upper.startswith(op) for op in allowed):
+                return False, "SQL operation not in allowlist"
+
+        return True, None
+```
+
+### Audit Trail System
+
+```python
+# packages/core/src/ai_core/audit.py
+import hashlib
+import json
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Optional, Any
+from uuid import UUID, uuid4
+import asyncio
+
+class AuditEventType(Enum):
+    COMMAND_EXECUTED = "command_executed"
+    FILE_READ = "file_read"
+    FILE_WRITE = "file_write"
+    FILE_DELETE = "file_delete"
+    API_CALL = "api_call"
+    TASK_STARTED = "task_started"
+    TASK_COMPLETED = "task_completed"
+    TASK_FAILED = "task_failed"
+    PERMISSION_DENIED = "permission_denied"
+    PERMISSION_ESCALATION = "permission_escalation"
+    AGENT_STARTED = "agent_started"
+    AGENT_STOPPED = "agent_stopped"
+    USER_LOGIN = "user_login"
+    USER_LOGOUT = "user_logout"
+    CONFIG_CHANGED = "config_changed"
+    SECRET_ACCESSED = "secret_accessed"
+
+@dataclass
+class AuditEvent:
+    id: UUID
+    timestamp: datetime
+    event_type: AuditEventType
+    agent_id: str
+    user_id: Optional[str]
+    session_id: Optional[str]
+    action: str
+    target: str                    # File path, command, API endpoint
+    details: dict
+    outcome: str                   # success, failure, denied
+    ip_address: Optional[str]
+    previous_hash: Optional[str]   # For tamper detection
+    hash: Optional[str] = None
+
+    def compute_hash(self) -> str:
+        """Compute hash for tamper detection."""
+        data = {
+            "id": str(self.id),
+            "timestamp": self.timestamp.isoformat(),
+            "event_type": self.event_type.value,
+            "agent_id": self.agent_id,
+            "action": self.action,
+            "target": self.target,
+            "outcome": self.outcome,
+            "previous_hash": self.previous_hash,
+        }
+        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+class AuditLog:
+    """Tamper-evident audit logging system."""
+
+    def __init__(self, log_path: Path, redis_client=None, s3_client=None):
+        self.log_path = log_path
+        self.redis = redis_client
+        self.s3 = s3_client
+        self.last_hash: Optional[str] = None
+        self._load_last_hash()
+
+    def _load_last_hash(self):
+        """Load the last hash from the log."""
+        if self.log_path.exists():
+            with open(self.log_path, 'rb') as f:
+                f.seek(0, 2)  # End of file
+                if f.tell() > 0:
+                    f.seek(max(0, f.tell() - 4096))
+                    lines = f.read().decode().strip().split('\n')
+                    if lines:
+                        last_entry = json.loads(lines[-1])
+                        self.last_hash = last_entry.get("hash")
+
+    async def log(self, event: AuditEvent):
+        """Log an audit event with tamper detection."""
+        event.previous_hash = self.last_hash
+        event.hash = event.compute_hash()
+        self.last_hash = event.hash
+
+        entry = asdict(event)
+        entry["timestamp"] = event.timestamp.isoformat()
+        entry["event_type"] = event.event_type.value
+        entry["id"] = str(event.id)
+
+        # Write to local log (append-only)
+        with open(self.log_path, 'a') as f:
+            f.write(json.dumps(entry) + '\n')
+
+        # Also send to Redis for real-time monitoring
+        if self.redis:
+            await self.redis.xadd("audit:stream", entry)
+
+        # Ship to S3 for long-term storage (batched)
+        if self.s3:
+            await self._queue_for_s3(entry)
+
+    async def verify_integrity(self) -> tuple[bool, list[int]]:
+        """Verify the audit log hasn't been tampered with."""
+        corrupted_lines = []
+        previous_hash = None
+
+        with open(self.log_path, 'r') as f:
+            for i, line in enumerate(f):
+                entry = json.loads(line)
+                if entry.get("previous_hash") != previous_hash:
+                    corrupted_lines.append(i)
+
+                # Recompute hash
+                event = AuditEvent(
+                    id=UUID(entry["id"]),
+                    timestamp=datetime.fromisoformat(entry["timestamp"]),
+                    event_type=AuditEventType(entry["event_type"]),
+                    agent_id=entry["agent_id"],
+                    user_id=entry.get("user_id"),
+                    session_id=entry.get("session_id"),
+                    action=entry["action"],
+                    target=entry["target"],
+                    details=entry["details"],
+                    outcome=entry["outcome"],
+                    ip_address=entry.get("ip_address"),
+                    previous_hash=entry.get("previous_hash"),
+                )
+                expected_hash = event.compute_hash()
+                if entry.get("hash") != expected_hash:
+                    corrupted_lines.append(i)
+
+                previous_hash = entry.get("hash")
+
+        return len(corrupted_lines) == 0, corrupted_lines
+
+# Decorator for automatic audit logging
+def audited(event_type: AuditEventType):
+    def decorator(func):
+        async def wrapper(self, *args, **kwargs):
+            event = AuditEvent(
+                id=uuid4(),
+                timestamp=datetime.utcnow(),
+                event_type=event_type,
+                agent_id=self.agent_id,
+                user_id=getattr(self, 'user_id', None),
+                session_id=getattr(self, 'session_id', None),
+                action=func.__name__,
+                target=str(args[0]) if args else "",
+                details={"args": str(args), "kwargs": str(kwargs)},
+                outcome="pending",
+                ip_address=None,
+                previous_hash=None,
+            )
+            try:
+                result = await func(self, *args, **kwargs)
+                event.outcome = "success"
+                return result
+            except Exception as e:
+                event.outcome = "failure"
+                event.details["error"] = str(e)
+                raise
+            finally:
+                await self.audit_log.log(event)
+        return wrapper
+    return decorator
+```
+
+### Network Egress Filtering
+
+```yaml
+# config/network_policies.yaml
+network_policies:
+  default:
+    egress:
+      allow:
+        - "api.anthropic.com:443"
+        - "api.openai.com:443"
+      deny:
+        - "*:22"                  # No SSH out
+        - "*:23"                  # No Telnet
+        - "*.onion:*"            # No Tor
+    max_connections: 100
+    rate_limit_requests_per_minute: 1000
+
+  code_agent:
+    egress:
+      allow:
+        - "api.anthropic.com:443"
+        - "github.com:443"
+        - "api.github.com:443"
+        - "*.githubusercontent.com:443"
+        - "pypi.org:443"
+        - "files.pythonhosted.org:443"
+        - "registry.npmjs.org:443"
+        - "registry.yarnpkg.com:443"
+        - "crates.io:443"
+        - "proxy.golang.org:443"
+
+  data_agent:
+    egress:
+      allow:
+        - "api.anthropic.com:443"
+        - "localhost:5432"       # PostgreSQL
+        - "localhost:6379"       # Redis
+        - "localhost:6333"       # Qdrant
+
+  infra_agent:
+    egress:
+      allow:
+        - "api.anthropic.com:443"
+        - "api.cloudflare.com:443"
+        - "api.github.com:443"
+        - "registry.docker.io:443"
+        - "*.docker.com:443"
+        - "acme-v02.api.letsencrypt.org:443"
+        - "secretsmanager.*.amazonaws.com:443"
+
+  research_agent:
+    egress:
+      allow:
+        - "api.anthropic.com:443"
+        - "api.openai.com:443"
+        - "*:443"                # Needs broad web access
+      deny:
+        - "*.local:*"
+        - "10.*:*"
+        - "192.168.*:*"
+        - "172.16.*:*"
+    rate_limit_requests_per_minute: 100
+    max_download_size_mb: 100
+
+  qa_agent:
+    egress:
+      allow:
+        - "api.anthropic.com:443"
+        - "localhost:*"          # For testing local services
+```
+
+```python
+# packages/core/src/ai_core/network.py
+import fnmatch
+import asyncio
+from dataclasses import dataclass
+from typing import Optional
+import yaml
+
+@dataclass
+class NetworkPolicy:
+    allow: list[str]
+    deny: list[str]
+    rate_limit: int
+    max_connections: int
+
+class NetworkFilter:
+    """Filter outbound network connections per agent."""
+
+    def __init__(self, config_path: str = "config/network_policies.yaml"):
+        with open(config_path) as f:
+            self.config = yaml.safe_load(f)
+        self.connection_counts: dict[str, int] = {}
+        self.request_counts: dict[str, list[float]] = {}
+
+    def can_connect(self, agent_id: str, host: str, port: int) -> tuple[bool, Optional[str]]:
+        """Check if agent can connect to host:port."""
+        policy = self.config["network_policies"].get(
+            agent_id,
+            self.config["network_policies"]["default"]
+        )
+
+        target = f"{host}:{port}"
+
+        # Check deny list first
+        for pattern in policy.get("egress", {}).get("deny", []):
+            if fnmatch.fnmatch(target, pattern):
+                return False, f"Connection to {target} denied by policy"
+
+        # Check allow list
+        for pattern in policy.get("egress", {}).get("allow", []):
+            if fnmatch.fnmatch(target, pattern):
+                # Check rate limit
+                if not self._check_rate_limit(agent_id, policy):
+                    return False, "Rate limit exceeded"
+                # Check connection limit
+                if not self._check_connection_limit(agent_id, policy):
+                    return False, "Connection limit exceeded"
+                return True, None
+
+        return False, f"Connection to {target} not in allowlist"
+
+    def _check_rate_limit(self, agent_id: str, policy: dict) -> bool:
+        """Check if agent is within rate limit."""
+        limit = policy.get("rate_limit_requests_per_minute", 1000)
+        now = asyncio.get_event_loop().time()
+
+        if agent_id not in self.request_counts:
+            self.request_counts[agent_id] = []
+
+        # Remove old entries
+        self.request_counts[agent_id] = [
+            t for t in self.request_counts[agent_id]
+            if now - t < 60
+        ]
+
+        if len(self.request_counts[agent_id]) >= limit:
+            return False
+
+        self.request_counts[agent_id].append(now)
+        return True
+```
+
+### Observability Stack
+
+```yaml
+# docker-compose.observability.yml
+version: '3.8'
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ai-prometheus
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./infrastructure/prometheus/rules:/etc/prometheus/rules
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    ports:
+      - "9090:9090"
+    networks:
+      - ai-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ai-grafana
+    volumes:
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3001:3000"
+    networks:
+      - ai-network
+
+  loki:
+    image: grafana/loki:latest
+    container_name: ai-loki
+    volumes:
+      - ./infrastructure/loki/loki-config.yml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - ai-network
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: ai-promtail
+    volumes:
+      - ./infrastructure/promtail/promtail-config.yml:/etc/promtail/config.yml
+      - /var/log:/var/log:ro
+      - ./logs:/app/logs:ro
+    networks:
+      - ai-network
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+
+networks:
+  ai-network:
+    external: true
+```
+
+```python
+# packages/core/src/ai_core/observability.py
+from prometheus_client import Counter, Histogram, Gauge, Info, start_http_server
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+import structlog
+
+# Initialize tracing
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer("ai-infrastructure")
+
+# Metrics
+TASK_DURATION = Histogram(
+    'ai_task_duration_seconds',
+    'Time spent processing tasks',
+    ['agent_type', 'task_type', 'status'],
+    buckets=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0]
+)
+
+TASK_COUNTER = Counter(
+    'ai_tasks_total',
+    'Total number of tasks processed',
+    ['agent_type', 'task_type', 'status']
+)
+
+AGENT_STATUS = Gauge(
+    'ai_agent_status',
+    'Current agent status (1=healthy, 0=unhealthy)',
+    ['agent_id', 'agent_type']
+)
+
+ACTIVE_TASKS = Gauge(
+    'ai_active_tasks',
+    'Number of currently active tasks',
+    ['agent_type']
+)
+
+TOKEN_USAGE = Counter(
+    'ai_tokens_total',
+    'Total tokens used',
+    ['agent_type', 'model', 'direction']  # direction: input/output
+)
+
+MEMORY_RETRIEVALS = Counter(
+    'ai_memory_retrievals_total',
+    'Number of memory/knowledge retrievals',
+    ['agent_type', 'memory_type', 'hit']  # hit: true/false
+)
+
+API_LATENCY = Histogram(
+    'ai_api_latency_seconds',
+    'External API call latency',
+    ['service', 'endpoint'],
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+)
+
+ERROR_COUNTER = Counter(
+    'ai_errors_total',
+    'Total number of errors',
+    ['agent_type', 'error_type']
+)
+
+# Structured logging
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.JSONRenderer()
+    ],
+    wrapper_class=structlog.stdlib.BoundLogger,
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+)
+
+def get_logger(name: str):
+    return structlog.get_logger(name)
+
+class MetricsCollector:
+    """Collects and exposes metrics for an agent."""
+
+    def __init__(self, agent_id: str, agent_type: str, port: int = 8000):
+        self.agent_id = agent_id
+        self.agent_type = agent_type
+        self.logger = get_logger(f"metrics.{agent_id}")
+        start_http_server(port)
+
+    def record_task(self, task_type: str, duration: float, status: str):
+        TASK_DURATION.labels(
+            agent_type=self.agent_type,
+            task_type=task_type,
+            status=status
+        ).observe(duration)
+
+        TASK_COUNTER.labels(
+            agent_type=self.agent_type,
+            task_type=task_type,
+            status=status
+        ).inc()
+
+    def record_tokens(self, model: str, input_tokens: int, output_tokens: int):
+        TOKEN_USAGE.labels(
+            agent_type=self.agent_type,
+            model=model,
+            direction="input"
+        ).inc(input_tokens)
+
+        TOKEN_USAGE.labels(
+            agent_type=self.agent_type,
+            model=model,
+            direction="output"
+        ).inc(output_tokens)
+
+    def set_healthy(self, healthy: bool):
+        AGENT_STATUS.labels(
+            agent_id=self.agent_id,
+            agent_type=self.agent_type
+        ).set(1 if healthy else 0)
+```
+
+### Health Check Dashboard
+
+```python
+# packages/core/src/ai_core/health.py
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Optional, Literal
+from collections import deque
+import asyncio
+
+@dataclass
+class AgentHealth:
+    agent_id: str
+    agent_type: str
+    status: Literal["healthy", "degraded", "unhealthy", "offline"]
+    last_heartbeat: datetime
+    last_task_completed: Optional[datetime]
+    tasks_completed_last_hour: int
+    tasks_failed_last_hour: int
+    avg_response_time_ms: float
+    error_rate_percent: float
+    memory_usage_mb: float
+    cpu_percent: float
+    current_task: Optional[str]
+    queue_depth: int
+    uptime_seconds: float
+
+class HealthMonitor:
+    """Monitors health of all agents."""
+
+    def __init__(self, redis_client):
+        self.redis = redis_client
+        self.agents: dict[str, AgentHealth] = {}
+        self.response_times: dict[str, deque] = {}  # Rolling window
+        self.heartbeat_timeout = timedelta(seconds=30)
+
+    async def record_heartbeat(self, agent_id: str, metrics: dict):
+        """Record heartbeat from an agent."""
+        if agent_id not in self.agents:
+            self.agents[agent_id] = AgentHealth(
+                agent_id=agent_id,
+                agent_type=metrics.get("agent_type", "unknown"),
+                status="healthy",
+                last_heartbeat=datetime.utcnow(),
+                last_task_completed=None,
+                tasks_completed_last_hour=0,
+                tasks_failed_last_hour=0,
+                avg_response_time_ms=0,
+                error_rate_percent=0,
+                memory_usage_mb=metrics.get("memory_mb", 0),
+                cpu_percent=metrics.get("cpu_percent", 0),
+                current_task=metrics.get("current_task"),
+                queue_depth=metrics.get("queue_depth", 0),
+                uptime_seconds=metrics.get("uptime_seconds", 0),
+            )
+        else:
+            health = self.agents[agent_id]
+            health.last_heartbeat = datetime.utcnow()
+            health.memory_usage_mb = metrics.get("memory_mb", health.memory_usage_mb)
+            health.cpu_percent = metrics.get("cpu_percent", health.cpu_percent)
+            health.current_task = metrics.get("current_task")
+            health.queue_depth = metrics.get("queue_depth", 0)
+
+        await self._update_status(agent_id)
+
+    async def record_task_completion(self, agent_id: str, duration_ms: float, success: bool):
+        """Record task completion metrics."""
+        if agent_id not in self.response_times:
+            self.response_times[agent_id] = deque(maxlen=100)
+
+        self.response_times[agent_id].append((duration_ms, success))
+
+        health = self.agents.get(agent_id)
+        if health:
+            health.last_task_completed = datetime.utcnow()
+            if success:
+                health.tasks_completed_last_hour += 1
+            else:
+                health.tasks_failed_last_hour += 1
+
+            # Recalculate averages
+            times = self.response_times[agent_id]
+            health.avg_response_time_ms = sum(t[0] for t in times) / len(times)
+            failures = sum(1 for t in times if not t[1])
+            health.error_rate_percent = (failures / len(times)) * 100
+
+        await self._update_status(agent_id)
+
+    async def _update_status(self, agent_id: str):
+        """Update agent status based on metrics."""
+        health = self.agents.get(agent_id)
+        if not health:
+            return
+
+        now = datetime.utcnow()
+
+        # Check heartbeat
+        if now - health.last_heartbeat > self.heartbeat_timeout:
+            health.status = "offline"
+        elif health.error_rate_percent > 50:
+            health.status = "unhealthy"
+        elif health.error_rate_percent > 20 or health.avg_response_time_ms > 30000:
+            health.status = "degraded"
+        else:
+            health.status = "healthy"
+
+        # Publish status update
+        await self.redis.publish("health:updates", {
+            "agent_id": agent_id,
+            "status": health.status,
+            "timestamp": now.isoformat()
+        })
+
+    async def get_all_health(self) -> list[AgentHealth]:
+        """Get health status for all agents."""
+        return list(self.agents.values())
+
+    async def get_unhealthy_agents(self) -> list[AgentHealth]:
+        """Get list of unhealthy agents."""
+        return [h for h in self.agents.values() if h.status in ("unhealthy", "offline")]
+```
+
+### Automatic Recovery & Self-Healing
+
+```python
+# packages/core/src/ai_core/recovery.py
+import asyncio
+from datetime import datetime, timedelta
+from typing import Optional
+import subprocess
+
+class AgentRecovery:
+    """Automatic recovery system for failed agents."""
+
+    def __init__(self, health_monitor, tmux_manager, redis_client):
+        self.health = health_monitor
+        self.tmux = tmux_manager
+        self.redis = redis_client
+        self.recovery_attempts: dict[str, int] = {}
+        self.max_recovery_attempts = 3
+        self.recovery_cooldown = timedelta(minutes=5)
+        self.last_recovery: dict[str, datetime] = {}
+
+    async def start_monitoring(self):
+        """Start the recovery monitoring loop."""
+        while True:
+            try:
+                await self._check_and_recover()
+            except Exception as e:
+                print(f"Recovery check error: {e}")
+            await asyncio.sleep(10)
+
+    async def _check_and_recover(self):
+        """Check for unhealthy agents and attempt recovery."""
+        unhealthy = await self.health.get_unhealthy_agents()
+
+        for agent_health in unhealthy:
+            agent_id = agent_health.agent_id
+
+            # Check cooldown
+            if agent_id in self.last_recovery:
+                if datetime.utcnow() - self.last_recovery[agent_id] < self.recovery_cooldown:
+                    continue
+
+            # Check attempt limit
+            attempts = self.recovery_attempts.get(agent_id, 0)
+            if attempts >= self.max_recovery_attempts:
+                await self._escalate_to_human(agent_id, agent_health)
+                continue
+
+            # Attempt recovery
+            success = await self._recover_agent(agent_id, agent_health)
+
+            self.recovery_attempts[agent_id] = attempts + 1
+            self.last_recovery[agent_id] = datetime.utcnow()
+
+            if success:
+                self.recovery_attempts[agent_id] = 0
+
+    async def _recover_agent(self, agent_id: str, health) -> bool:
+        """Attempt to recover a failed agent."""
+        print(f"Attempting recovery for {agent_id} (status: {health.status})")
+
+        if health.status == "offline":
+            # Agent not responding, restart it
+            return await self._restart_agent(agent_id)
+
+        elif health.status == "unhealthy":
+            # High error rate, try soft restart first
+            if health.error_rate_percent > 80:
+                return await self._restart_agent(agent_id)
+            else:
+                # Try clearing task queue
+                await self._clear_agent_queue(agent_id)
+                return True
+
+        return False
+
+    async def _restart_agent(self, agent_id: str) -> bool:
+        """Restart an agent in tmux."""
+        try:
+            # Kill existing window
+            self.tmux.kill_window(agent_id)
+            await asyncio.sleep(2)
+
+            # Restart
+            self.tmux.create_agent_window(agent_id)
+            await asyncio.sleep(5)
+
+            # Verify it's running
+            health = await self.health.get_agent_health(agent_id)
+            return health and health.status != "offline"
+
+        except Exception as e:
+            print(f"Failed to restart {agent_id}: {e}")
+            return False
+
+    async def _clear_agent_queue(self, agent_id: str):
+        """Clear pending tasks for an agent."""
+        await self.redis.delete(f"agent:{agent_id}:tasks")
+
+    async def _reassign_tasks(self, agent_id: str):
+        """Reassign pending tasks from failed agent."""
+        pending_tasks = await self.redis.lrange(f"agent:{agent_id}:pending", 0, -1)
+
+        for task_data in pending_tasks:
+            # Re-publish to supervisor for reassignment
+            await self.redis.publish("supervisor:reassign", {
+                "original_agent": agent_id,
+                "task": task_data
+            })
+
+    async def _escalate_to_human(self, agent_id: str, health):
+        """Escalate to human when automatic recovery fails."""
+        await self.redis.publish("alerts:critical", {
+            "type": "agent_recovery_failed",
+            "agent_id": agent_id,
+            "status": health.status,
+            "recovery_attempts": self.recovery_attempts.get(agent_id, 0),
+            "message": f"Agent {agent_id} failed recovery after {self.max_recovery_attempts} attempts",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+        # Also send to supervisor for notification to user
+        await self.redis.publish("supervisor:alert", {
+            "severity": "critical",
+            "message": f"Agent '{agent_id}' is down and automatic recovery failed. Manual intervention required.",
+        })
+```
+
+### Agent SDK
+
+```python
+# packages/agent_sdk/src/ai_agent_sdk/__init__.py
+from .agent import Agent, tool
+from .types import Task, TaskResult, Message, Memory
+from .communication import Channel, Broadcast
+
+__all__ = ["Agent", "tool", "Task", "TaskResult", "Message", "Memory", "Channel", "Broadcast"]
+```
+
+```python
+# packages/agent_sdk/src/ai_agent_sdk/agent.py
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from functools import wraps
+from pathlib import Path
+from typing import Callable, Optional, Any
+import asyncio
+import inspect
+
+def tool(func: Callable = None, *, name: str = None, description: str = None, requires_approval: bool = False):
+    """Decorator to mark a method as an agent tool."""
+    def decorator(f):
+        f._is_tool = True
+        f._tool_name = name or f.__name__
+        f._tool_description = description or f.__doc__ or ""
+        f._requires_approval = requires_approval
+
+        @wraps(f)
+        async def wrapper(self, *args, **kwargs):
+            # Pre-execution hooks
+            if f._requires_approval:
+                approved = await self._request_approval(f._tool_name, args, kwargs)
+                if not approved:
+                    raise PermissionError(f"Tool {f._tool_name} requires approval")
+
+            # Execute
+            result = await f(self, *args, **kwargs) if asyncio.iscoroutinefunction(f) else f(self, *args, **kwargs)
+
+            # Post-execution logging
+            await self._log_tool_execution(f._tool_name, args, kwargs, result)
+
+            return result
+
+        wrapper._is_tool = True
+        wrapper._tool_name = f._tool_name
+        wrapper._tool_description = f._tool_description
+        wrapper._requires_approval = f._requires_approval
+        return wrapper
+
+    return decorator(func) if func else decorator
+
+class Agent(ABC):
+    """Base class for all agents. Subclass this to create new agents."""
+
+    # Override these in subclasses
+    name: str = "base_agent"
+    description: str = "A base agent"
+    version: str = "1.0.0"
+
+    def __init__(self, config_path: Optional[Path] = None):
+        self.config = self._load_config(config_path)
+        self.tools = self._discover_tools()
+        self.logger = self._setup_logger()
+        self.metrics = self._setup_metrics()
+        self.workspace = self._setup_workspace()
+        self._running = False
+
+    def _discover_tools(self) -> dict[str, Callable]:
+        """Discover all tools defined on this agent."""
+        tools = {}
+        for name in dir(self):
+            method = getattr(self, name)
+            if callable(method) and getattr(method, '_is_tool', False):
+                tools[method._tool_name] = method
+        return tools
+
+    @abstractmethod
+    async def process_task(self, task) -> Any:
+        """Process a task. Override this in subclasses."""
+        pass
+
+    async def run(self):
+        """Main agent loop."""
+        self._running = True
+        self.logger.info(f"Starting agent: {self.name} v{self.version}")
+
+        # Register with supervisor
+        await self._register()
+
+        # Start background tasks
+        asyncio.create_task(self._heartbeat_loop())
+        asyncio.create_task(self._hot_reload_loop())
+
+        # Main task loop
+        while self._running:
+            try:
+                task = await self._get_next_task()
+                if task:
+                    await self._execute_task(task)
+            except Exception as e:
+                self.logger.error(f"Error in main loop: {e}")
+                await asyncio.sleep(1)
+
+    async def _execute_task(self, task):
+        """Execute a task with error handling and metrics."""
+        start_time = asyncio.get_event_loop().time()
+        try:
+            result = await self.process_task(task)
+            duration = asyncio.get_event_loop().time() - start_time
+            self.metrics.record_task(task.type, duration, "success")
+            await self._complete_task(task, result)
+        except Exception as e:
+            duration = asyncio.get_event_loop().time() - start_time
+            self.metrics.record_task(task.type, duration, "failure")
+            await self._fail_task(task, str(e))
+
+    def get_tool_definitions(self) -> list[dict]:
+        """Get tool definitions for Claude API."""
+        definitions = []
+        for name, method in self.tools.items():
+            sig = inspect.signature(method)
+            params = {}
+            for param_name, param in sig.parameters.items():
+                if param_name == 'self':
+                    continue
+                params[param_name] = {
+                    "type": "string",  # Simplified, would inspect type hints
+                    "description": ""
+                }
+
+            definitions.append({
+                "name": name,
+                "description": method._tool_description,
+                "input_schema": {
+                    "type": "object",
+                    "properties": params,
+                    "required": list(params.keys())
+                }
+            })
+        return definitions
+
+# Example agent using the SDK
+class ExampleAgent(Agent):
+    name = "example_agent"
+    description = "An example agent demonstrating the SDK"
+
+    @tool
+    async def search_code(self, query: str, file_pattern: str = "*.py") -> str:
+        """Search for code matching a query in files matching the pattern."""
+        # Implementation
+        return f"Found matches for '{query}' in {file_pattern}"
+
+    @tool(requires_approval=True)
+    async def delete_file(self, path: str) -> str:
+        """Delete a file. Requires human approval."""
+        # Implementation
+        return f"Deleted {path}"
+
+    async def process_task(self, task):
+        # Use Claude to decide which tools to use
+        pass
+```
+
+### Local Development Mode
+
+```python
+# scripts/dev.py
+import asyncio
+import argparse
+from pathlib import Path
+
+class LocalDevEnvironment:
+    """Single-process development environment for debugging."""
+
+    def __init__(self, mock_external: bool = True):
+        self.mock_external = mock_external
+        self.agents: dict[str, Agent] = {}
+        self.message_queue: asyncio.Queue = asyncio.Queue()
+        self.running = False
+
+    async def start(self, agent_types: list[str] = None):
+        """Start the dev environment."""
+        self.running = True
+
+        # Use in-memory Redis mock
+        if self.mock_external:
+            self.redis = InMemoryRedis()
+            self.qdrant = InMemoryQdrant()
+        else:
+            # Connect to real services
+            pass
+
+        # Load agents
+        agent_types = agent_types or ["supervisor", "code_agent"]
+        for agent_type in agent_types:
+            agent = self._load_agent(agent_type)
+            self.agents[agent_type] = agent
+
+        # Start message router
+        asyncio.create_task(self._route_messages())
+
+        # Start all agents
+        for agent in self.agents.values():
+            asyncio.create_task(agent.run())
+
+        print(f"Development environment started with agents: {list(self.agents.keys())}")
+        print("Press Ctrl+C to stop")
+
+        # Keep running
+        while self.running:
+            await asyncio.sleep(1)
+
+    async def send_message(self, content: str):
+        """Send a message to the supervisor."""
+        await self.message_queue.put({
+            "type": "user_message",
+            "content": content,
+            "timestamp": asyncio.get_event_loop().time()
+        })
+
+class InMemoryRedis:
+    """In-memory Redis mock for development."""
+
+    def __init__(self):
+        self.data: dict = {}
+        self.pubsub_channels: dict[str, list] = {}
+        self.streams: dict[str, list] = {}
+
+    async def get(self, key: str):
+        return self.data.get(key)
+
+    async def set(self, key: str, value):
+        self.data[key] = value
+
+    async def publish(self, channel: str, message):
+        if channel in self.pubsub_channels:
+            for callback in self.pubsub_channels[channel]:
+                await callback(message)
+
+    async def subscribe(self, channel: str, callback):
+        if channel not in self.pubsub_channels:
+            self.pubsub_channels[channel] = []
+        self.pubsub_channels[channel].append(callback)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--agents", nargs="+", default=["supervisor", "code_agent"])
+    parser.add_argument("--mock", action="store_true", default=True)
+    args = parser.parse_args()
+
+    env = LocalDevEnvironment(mock_external=args.mock)
+    asyncio.run(env.start(args.agents))
+```
+
+### Agent Testing Framework
+
+```python
+# packages/testing/src/ai_testing/harness.py
+import asyncio
+from dataclasses import dataclass
+from typing import Optional, Any
+from unittest.mock import MagicMock, AsyncMock
+
+@dataclass
+class AgentInvocation:
+    agent_id: str
+    tool_name: str
+    arguments: dict
+    result: Any
+    timestamp: float
+
+class AgentTestHarness:
+    """Test harness for multi-agent integration testing."""
+
+    def __init__(self):
+        self.agents: dict[str, MagicMock] = {}
+        self.invocations: list[AgentInvocation] = []
+        self.messages: list[dict] = []
+        self.mock_responses: dict[str, Any] = {}
+
+    async def __aenter__(self):
+        await self.setup()
+        return self
+
+    async def __aexit__(self, *args):
+        await self.teardown()
+
+    async def setup(self):
+        """Set up test environment."""
+        # Create mock agents
+        for agent_type in ["supervisor", "code_agent", "data_agent", "qa_agent", "infra_agent", "research_agent"]:
+            self.agents[agent_type] = self._create_mock_agent(agent_type)
+
+    def _create_mock_agent(self, agent_type: str) -> MagicMock:
+        agent = MagicMock()
+        agent.agent_type = agent_type
+        agent.invoked = False
+        agent.invocation_count = 0
+
+        async def process_task(task):
+            agent.invoked = True
+            agent.invocation_count += 1
+            self.invocations.append(AgentInvocation(
+                agent_id=agent_type,
+                tool_name="process_task",
+                arguments={"task": task},
+                result=self.mock_responses.get(agent_type, {"status": "success"}),
+                timestamp=asyncio.get_event_loop().time()
+            ))
+            return self.mock_responses.get(agent_type, {"status": "success"})
+
+        agent.process_task = process_task
+        return agent
+
+    async def send_to_supervisor(self, message: str, files: list = None) -> str:
+        """Send a message to the supervisor and get response."""
+        self.messages.append({
+            "role": "user",
+            "content": message,
+            "files": files
+        })
+
+        # Simulate supervisor processing
+        supervisor = self.agents["supervisor"]
+        result = await supervisor.process_task({
+            "type": "user_request",
+            "content": message
+        })
+
+        return result.get("response", "")
+
+    def set_mock_response(self, agent_type: str, response: Any):
+        """Set mock response for an agent."""
+        self.mock_responses[agent_type] = response
+
+    def was_invoked(self, agent_type: str) -> bool:
+        """Check if an agent was invoked."""
+        return self.agents[agent_type].invoked
+
+    def get_invocations(self, agent_type: str = None) -> list[AgentInvocation]:
+        """Get all invocations, optionally filtered by agent."""
+        if agent_type:
+            return [i for i in self.invocations if i.agent_id == agent_type]
+        return self.invocations
+
+    def assert_agent_invoked(self, agent_type: str, times: int = None):
+        """Assert that an agent was invoked."""
+        agent = self.agents[agent_type]
+        assert agent.invoked, f"Agent {agent_type} was not invoked"
+        if times is not None:
+            assert agent.invocation_count == times, \
+                f"Agent {agent_type} invoked {agent.invocation_count} times, expected {times}"
+
+    def assert_tool_called(self, agent_type: str, tool_name: str):
+        """Assert that a specific tool was called."""
+        invocations = self.get_invocations(agent_type)
+        tool_calls = [i for i in invocations if i.tool_name == tool_name]
+        assert tool_calls, f"Tool {tool_name} was not called on {agent_type}"
+
+
+# Example test
+async def test_code_review_workflow():
+    """Test that code review involves code and QA agents."""
+    async with AgentTestHarness() as harness:
+        # Set up expected responses
+        harness.set_mock_response("code_agent", {
+            "status": "success",
+            "findings": ["Found unused import", "Missing docstring"]
+        })
+        harness.set_mock_response("qa_agent", {
+            "status": "success",
+            "security_issues": []
+        })
+
+        # Send request
+        response = await harness.send_to_supervisor(
+            "Review the authentication module for issues"
+        )
+
+        # Assertions
+        harness.assert_agent_invoked("code_agent")
+        harness.assert_agent_invoked("qa_agent")
+        assert "findings" in response or "review" in response.lower()
+```
+
+### Graceful Degradation
+
+```python
+# packages/core/src/ai_core/resilience.py
+import asyncio
+from typing import TypeVar, Callable, Optional, Any
+from functools import wraps
+from datetime import datetime, timedelta
+
+T = TypeVar('T')
+
+class CircuitBreaker:
+    """Circuit breaker for external service calls."""
+
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: timedelta = timedelta(seconds=30),
+        half_open_requests: int = 3
+    ):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.half_open_requests = half_open_requests
+
+        self.failures = 0
+        self.last_failure: Optional[datetime] = None
+        self.state = "closed"  # closed, open, half-open
+
+    async def call(self, func: Callable[..., T], *args, **kwargs) -> T:
+        if self.state == "open":
+            if datetime.utcnow() - self.last_failure > self.recovery_timeout:
+                self.state = "half-open"
+            else:
+                raise CircuitOpenError("Circuit breaker is open")
+
+        try:
+            result = await func(*args, **kwargs)
+            if self.state == "half-open":
+                self.state = "closed"
+                self.failures = 0
+            return result
+        except Exception as e:
+            self.failures += 1
+            self.last_failure = datetime.utcnow()
+            if self.failures >= self.failure_threshold:
+                self.state = "open"
+            raise
+
+class CircuitOpenError(Exception):
+    pass
+
+class ResilientService:
+    """Base class for services with fallback support."""
+
+    def __init__(self):
+        self.circuit_breakers: dict[str, CircuitBreaker] = {}
+
+    def get_breaker(self, name: str) -> CircuitBreaker:
+        if name not in self.circuit_breakers:
+            self.circuit_breakers[name] = CircuitBreaker()
+        return self.circuit_breakers[name]
+
+class ResilientMemory(ResilientService):
+    """Memory service with graceful degradation."""
+
+    def __init__(self, qdrant_client, postgres_client, redis_client):
+        super().__init__()
+        self.qdrant = qdrant_client
+        self.postgres = postgres_client
+        self.redis = redis_client
+
+    async def retrieve(self, query: str, limit: int = 5) -> list[dict]:
+        """Retrieve memories with fallback chain."""
+
+        # Try Qdrant first (primary)
+        try:
+            breaker = self.get_breaker("qdrant")
+            return await breaker.call(self._qdrant_search, query, limit)
+        except (CircuitOpenError, Exception) as e:
+            print(f"Qdrant unavailable: {e}, falling back to PostgreSQL")
+
+        # Fallback to PostgreSQL full-text search
+        try:
+            breaker = self.get_breaker("postgres")
+            return await breaker.call(self._postgres_search, query, limit)
+        except (CircuitOpenError, Exception) as e:
+            print(f"PostgreSQL unavailable: {e}, falling back to Redis cache")
+
+        # Last resort: Redis cache of recent queries
+        try:
+            cached = await self.redis.get(f"memory_cache:{query}")
+            if cached:
+                return cached
+        except Exception:
+            pass
+
+        # Everything failed, return empty
+        print("All memory backends unavailable, proceeding without context")
+        return []
+
+    async def _qdrant_search(self, query: str, limit: int) -> list[dict]:
+        # Vector similarity search
+        embedding = await self._get_embedding(query)
+        results = await self.qdrant.search(
+            collection_name="memories",
+            query_vector=embedding,
+            limit=limit
+        )
+        return [r.payload for r in results]
+
+    async def _postgres_search(self, query: str, limit: int) -> list[dict]:
+        # Full-text search fallback
+        results = await self.postgres.fetch("""
+            SELECT content, metadata
+            FROM memories
+            WHERE to_tsvector('english', content) @@ plainto_tsquery('english', $1)
+            LIMIT $2
+        """, query, limit)
+        return [dict(r) for r in results]
+
+def with_fallback(fallback_value: T):
+    """Decorator that returns fallback value on any exception."""
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        async def wrapper(*args, **kwargs) -> T:
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                print(f"Function {func.__name__} failed: {e}, using fallback")
+                return fallback_value
+        return wrapper
+    return decorator
+```
+
+### Horizontal Scaling Configuration
+
+```yaml
+# config/scaling.yaml
+scaling:
+  mode: single  # single | distributed
+
+  single:
+    max_agents: 10
+    tmux_session: ai-infrastructure
+
+  distributed:
+    coordinator: redis
+    coordinator_url: ${REDIS_URL}
+
+    # Node configuration
+    nodes:
+      - id: node-1
+        host: server1.example.com
+        agents:
+          - supervisor
+          - code_agent
+          - data_agent
+      - id: node-2
+        host: server2.example.com
+        agents:
+          - research_agent
+          - qa_agent
+      - id: node-3
+        host: server3.example.com
+        agents:
+          - infra_agent
+
+    # Agent affinity rules
+    affinity:
+      infra_agent:
+        # Must run on node with Docker socket access
+        required_capabilities:
+          - docker
+          - systemd
+        node_selector:
+          - node-1
+          - node-3
+
+      data_agent:
+        # Prefer nodes close to database
+        preferred_capabilities:
+          - low_db_latency
+
+    # Load balancing
+    load_balancing:
+      strategy: round_robin  # round_robin | least_loaded | random
+      health_check_interval: 10s
+
+    # Failover
+    failover:
+      enabled: true
+      detection_timeout: 30s
+      recovery_delay: 5s
+
+    # Resource limits per node
+    resources:
+      max_memory_mb: 8192
+      max_cpu_percent: 80
+      max_agents_per_node: 5
+```
+
+### Conversation Checkpointing
+
+```python
+# packages/core/src/ai_core/checkpoint.py
+import json
+import asyncio
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Any
+import gzip
+
+@dataclass
+class ConversationState:
+    conversation_id: str
+    user_id: str
+    messages: list[dict]
+    agent_states: dict[str, dict]
+    pending_tasks: list[dict]
+    working_memory: dict
+    created_at: datetime
+    checkpoint_at: datetime
+    version: int = 1
+
+class CheckpointManager:
+    """Manages conversation checkpoints for recovery."""
+
+    def __init__(self, storage_path: Path, redis_client, s3_client=None):
+        self.storage_path = storage_path
+        self.redis = redis_client
+        self.s3 = s3_client
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+
+    async def save_checkpoint(self, state: ConversationState):
+        """Save a conversation checkpoint."""
+        checkpoint_data = asdict(state)
+        checkpoint_data["created_at"] = state.created_at.isoformat()
+        checkpoint_data["checkpoint_at"] = state.checkpoint_at.isoformat()
+
+        # Save to Redis for fast recovery
+        await self.redis.set(
+            f"checkpoint:{state.conversation_id}",
+            json.dumps(checkpoint_data),
+            ex=86400 * 7  # 7 days TTL
+        )
+
+        # Save to local disk (compressed)
+        local_path = self.storage_path / f"{state.conversation_id}_{state.version}.json.gz"
+        with gzip.open(local_path, 'wt') as f:
+            json.dump(checkpoint_data, f)
+
+        # Save to S3 for long-term storage
+        if self.s3:
+            await self._save_to_s3(state.conversation_id, checkpoint_data)
+
+    async def load_checkpoint(self, conversation_id: str) -> Optional[ConversationState]:
+        """Load a conversation checkpoint."""
+        # Try Redis first
+        data = await self.redis.get(f"checkpoint:{conversation_id}")
+        if data:
+            return self._deserialize(json.loads(data))
+
+        # Try local disk
+        checkpoints = sorted(
+            self.storage_path.glob(f"{conversation_id}_*.json.gz"),
+            reverse=True
+        )
+        if checkpoints:
+            with gzip.open(checkpoints[0], 'rt') as f:
+                return self._deserialize(json.load(f))
+
+        # Try S3
+        if self.s3:
+            data = await self._load_from_s3(conversation_id)
+            if data:
+                return self._deserialize(data)
+
+        return None
+
+    async def restore_conversation(self, conversation_id: str, agents: dict):
+        """Restore a conversation from checkpoint."""
+        state = await self.load_checkpoint(conversation_id)
+        if not state:
+            raise ValueError(f"No checkpoint found for {conversation_id}")
+
+        # Restore agent states
+        for agent_id, agent_state in state.agent_states.items():
+            if agent_id in agents:
+                await agents[agent_id].restore_state(agent_state)
+
+        # Re-queue pending tasks
+        for task in state.pending_tasks:
+            await self.redis.lpush("tasks:pending", json.dumps(task))
+
+        return state
+
+    def _deserialize(self, data: dict) -> ConversationState:
+        data["created_at"] = datetime.fromisoformat(data["created_at"])
+        data["checkpoint_at"] = datetime.fromisoformat(data["checkpoint_at"])
+        return ConversationState(**data)
+
+    async def auto_checkpoint(self, conversation_id: str, interval_seconds: int = 60):
+        """Automatically checkpoint at regular intervals."""
+        while True:
+            await asyncio.sleep(interval_seconds)
+            state = await self._gather_state(conversation_id)
+            if state:
+                await self.save_checkpoint(state)
+```
+
+### Multi-User Support
+
+```python
+# packages/core/src/ai_core/multiuser.py
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+from pathlib import Path
+
+@dataclass
+class UserSession:
+    user_id: str
+    session_id: str
+    conversation_id: str
+    workspace: Path
+    memory_namespace: str
+    created_at: datetime
+    last_active: datetime
+    rate_limits: 'RateLimits'
+    permissions: list[str]
+
+@dataclass
+class RateLimits:
+    requests_per_minute: int = 60
+    tokens_per_hour: int = 100000
+    concurrent_tasks: int = 5
+    max_file_size_mb: int = 50
+
+class UserManager:
+    """Manages multi-user sessions with isolation."""
+
+    def __init__(self, base_workspace: Path, redis_client):
+        self.base_workspace = base_workspace
+        self.redis = redis_client
+        self.sessions: dict[str, UserSession] = {}
+
+    async def create_session(self, user_id: str) -> UserSession:
+        """Create a new isolated session for a user."""
+        session_id = f"{user_id}_{datetime.utcnow().timestamp()}"
+
+        # Create isolated workspace
+        workspace = self.base_workspace / "users" / user_id / session_id
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        # Create session
+        session = UserSession(
+            user_id=user_id,
+            session_id=session_id,
+            conversation_id=session_id,
+            workspace=workspace,
+            memory_namespace=f"user:{user_id}",
+            created_at=datetime.utcnow(),
+            last_active=datetime.utcnow(),
+            rate_limits=await self._get_user_limits(user_id),
+            permissions=await self._get_user_permissions(user_id)
+        )
+
+        self.sessions[session_id] = session
+        await self._persist_session(session)
+
+        return session
+
+    async def get_session(self, session_id: str) -> Optional[UserSession]:
+        """Get an existing session."""
+        if session_id in self.sessions:
+            session = self.sessions[session_id]
+            session.last_active = datetime.utcnow()
+            return session
+
+        # Try to load from Redis
+        data = await self.redis.hgetall(f"session:{session_id}")
+        if data:
+            return self._deserialize_session(data)
+
+        return None
+
+    async def check_rate_limit(self, session: UserSession, tokens: int = 0) -> bool:
+        """Check if user is within rate limits."""
+        limits = session.rate_limits
+
+        # Check requests per minute
+        key = f"rate:{session.user_id}:rpm"
+        current = await self.redis.incr(key)
+        if current == 1:
+            await self.redis.expire(key, 60)
+        if current > limits.requests_per_minute:
+            return False
+
+        # Check tokens per hour
+        if tokens > 0:
+            key = f"rate:{session.user_id}:tph"
+            current = await self.redis.incrby(key, tokens)
+            if await self.redis.ttl(key) < 0:
+                await self.redis.expire(key, 3600)
+            if current > limits.tokens_per_hour:
+                return False
+
+        return True
+
+    def get_user_memory_filter(self, session: UserSession) -> dict:
+        """Get Qdrant filter for user's memory namespace."""
+        return {
+            "must": [
+                {"key": "namespace", "match": {"value": session.memory_namespace}}
+            ]
+        }
+```
+
+### Plugin System
+
+```yaml
+# plugins/slack_integration/manifest.yaml
+name: slack_integration
+version: 1.0.0
+description: Slack integration for notifications and commands
+author: AI Infrastructure Team
+
+requires:
+  - ai_core >= 1.0.0
+
+permissions:
+  - network:slack.com
+  - send_notifications
+
+config:
+  slack_webhook_url:
+    type: string
+    required: true
+    secret: true
+  slack_channel:
+    type: string
+    default: "#ai-infrastructure"
+
+tools:
+  - name: send_slack_message
+    description: Send a message to Slack
+    handler: tools:send_message
+  - name: create_slack_thread
+    description: Create a Slack thread for a conversation
+    handler: tools:create_thread
+
+hooks:
+  - event: task_completed
+    handler: hooks:on_task_completed
+  - event: agent_error
+    handler: hooks:on_agent_error
+```
+
+```python
+# packages/core/src/ai_core/plugins.py
+import importlib.util
+from pathlib import Path
+from dataclasses import dataclass
+from typing import Callable, Any
+import yaml
+
+@dataclass
+class Plugin:
+    name: str
+    version: str
+    description: str
+    tools: dict[str, Callable]
+    hooks: dict[str, Callable]
+    config: dict
+
+class PluginManager:
+    """Dynamic plugin loading and management."""
+
+    def __init__(self, plugins_dir: Path):
+        self.plugins_dir = plugins_dir
+        self.plugins: dict[str, Plugin] = {}
+        self.hooks: dict[str, list[Callable]] = {}
+
+    def discover_plugins(self) -> list[str]:
+        """Discover available plugins."""
+        plugins = []
+        for path in self.plugins_dir.iterdir():
+            if path.is_dir() and (path / "manifest.yaml").exists():
+                plugins.append(path.name)
+        return plugins
+
+    def load_plugin(self, name: str, config: dict = None) -> Plugin:
+        """Load a plugin by name."""
+        plugin_path = self.plugins_dir / name
+        manifest_path = plugin_path / "manifest.yaml"
+
+        with open(manifest_path) as f:
+            manifest = yaml.safe_load(f)
+
+        # Load tools
+        tools = {}
+        for tool_def in manifest.get("tools", []):
+            module_name, func_name = tool_def["handler"].split(":")
+            module = self._load_module(plugin_path / f"{module_name}.py")
+            tools[tool_def["name"]] = getattr(module, func_name)
+
+        # Load hooks
+        hooks = {}
+        for hook_def in manifest.get("hooks", []):
+            module_name, func_name = hook_def["handler"].split(":")
+            module = self._load_module(plugin_path / f"{module_name}.py")
+            event = hook_def["event"]
+            hooks[event] = getattr(module, func_name)
+
+            # Register with global hook registry
+            if event not in self.hooks:
+                self.hooks[event] = []
+            self.hooks[event].append(hooks[event])
+
+        plugin = Plugin(
+            name=manifest["name"],
+            version=manifest["version"],
+            description=manifest["description"],
+            tools=tools,
+            hooks=hooks,
+            config=config or {}
+        )
+
+        self.plugins[name] = plugin
+        return plugin
+
+    def _load_module(self, path: Path):
+        """Dynamically load a Python module."""
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    async def trigger_hook(self, event: str, data: Any):
+        """Trigger all hooks for an event."""
+        for handler in self.hooks.get(event, []):
+            try:
+                await handler(data)
+            except Exception as e:
+                print(f"Hook error for {event}: {e}")
+
+    def get_all_tools(self) -> dict[str, Callable]:
+        """Get all tools from all loaded plugins."""
+        all_tools = {}
+        for plugin in self.plugins.values():
+            all_tools.update(plugin.tools)
+        return all_tools
+```
+
+### Scheduled Tasks / Cron Agent
+
+```yaml
+# config/scheduled_tasks.yaml
+scheduled_tasks:
+  # Security scanning
+  - name: daily_security_scan
+    cron: "0 3 * * *"              # 3 AM daily
+    agent: qa_agent
+    prompt: |
+      Run a comprehensive security scan on the codebase:
+      1. Check for outdated dependencies with known vulnerabilities
+      2. Scan for hardcoded secrets or credentials
+      3. Review recent code changes for security issues
+      4. Check Docker images for vulnerabilities
+      Report findings in a structured format.
+    timeout_minutes: 30
+    notify_on_failure: true
+
+  # Dependency updates
+  - name: weekly_dependency_check
+    cron: "0 4 * * 0"              # 4 AM Sunday
+    agent: code_agent
+    prompt: |
+      Check for outdated dependencies across all packages:
+      1. List all outdated packages with current and latest versions
+      2. Check changelogs for breaking changes
+      3. If safe updates available, create a PR with updates
+    requires_approval: true        # Human must approve PRs
+    timeout_minutes: 60
+
+  # Backup verification
+  - name: daily_backup_verify
+    cron: "0 5 * * *"              # 5 AM daily
+    agent: infra_agent
+    prompt: |
+      Verify that all backups completed successfully:
+      1. Check PostgreSQL backup status
+      2. Verify Redis RDB snapshot
+      3. Confirm GitHub backup sync
+      4. Test restore procedure on a sample
+    notify_on_failure: true
+
+  # Memory optimization
+  - name: weekly_memory_cleanup
+    cron: "0 2 * * 6"              # 2 AM Saturday
+    agent: data_agent
+    prompt: |
+      Optimize the memory/knowledge system:
+      1. Remove duplicate embeddings
+      2. Archive old, unused memories
+      3. Compact the vector index
+      4. Report on memory usage statistics
+
+  # Health report
+  - name: daily_health_report
+    cron: "0 8 * * *"              # 8 AM daily
+    agent: supervisor
+    prompt: |
+      Generate a daily health report:
+      1. Summarize agent activity over the past 24 hours
+      2. List any errors or issues encountered
+      3. Report on resource usage
+      4. Highlight any concerning trends
+    output: report                 # Save as report instead of just logging
+
+  # SSL certificate check
+  - name: weekly_ssl_check
+    cron: "0 6 * * 1"              # 6 AM Monday
+    agent: infra_agent
+    prompt: |
+      Check SSL certificates for all domains:
+      1. List all managed domains
+      2. Check certificate expiration dates
+      3. Renew any certificates expiring within 14 days
+      4. Report on certificate status
+    notify_on_failure: true
+```
+
+```python
+# packages/core/src/ai_core/scheduler.py
+import asyncio
+from croniter import croniter
+from datetime import datetime
+from dataclasses import dataclass
+from typing import Optional
+import yaml
+
+@dataclass
+class ScheduledTask:
+    name: str
+    cron: str
+    agent: str
+    prompt: str
+    timeout_minutes: int = 30
+    requires_approval: bool = False
+    notify_on_failure: bool = False
+    output: str = "log"  # log | report | none
+    enabled: bool = True
+
+class TaskScheduler:
+    """Cron-like scheduler for autonomous tasks."""
+
+    def __init__(self, config_path: str, supervisor_client):
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+
+        self.tasks = [
+            ScheduledTask(**task)
+            for task in config.get("scheduled_tasks", [])
+        ]
+        self.supervisor = supervisor_client
+        self.running = False
+
+    async def start(self):
+        """Start the scheduler."""
+        self.running = True
+        print(f"Scheduler started with {len(self.tasks)} tasks")
+
+        while self.running:
+            now = datetime.utcnow()
+
+            for task in self.tasks:
+                if not task.enabled:
+                    continue
+
+                if self._should_run(task, now):
+                    asyncio.create_task(self._execute_task(task))
+
+            # Check every minute
+            await asyncio.sleep(60)
+
+    def _should_run(self, task: ScheduledTask, now: datetime) -> bool:
+        """Check if task should run at current time."""
+        cron = croniter(task.cron, now)
+        prev_run = cron.get_prev(datetime)
+        # Run if within the last minute
+        return (now - prev_run).total_seconds() < 60
+
+    async def _execute_task(self, task: ScheduledTask):
+        """Execute a scheduled task."""
+        print(f"Executing scheduled task: {task.name}")
+
+        try:
+            if task.requires_approval:
+                # Queue for human approval
+                await self._queue_for_approval(task)
+            else:
+                # Execute directly
+                result = await self.supervisor.execute_task(
+                    agent=task.agent,
+                    prompt=task.prompt,
+                    timeout=task.timeout_minutes * 60
+                )
+
+                if task.output == "report":
+                    await self._save_report(task.name, result)
+
+        except asyncio.TimeoutError:
+            print(f"Task {task.name} timed out")
+            if task.notify_on_failure:
+                await self._notify_failure(task, "Timeout")
+        except Exception as e:
+            print(f"Task {task.name} failed: {e}")
+            if task.notify_on_failure:
+                await self._notify_failure(task, str(e))
+
+    async def _queue_for_approval(self, task: ScheduledTask):
+        """Queue task for human approval before execution."""
+        await self.supervisor.send_message(
+            f"Scheduled task '{task.name}' requires approval.\n\n"
+            f"**Task:** {task.prompt[:200]}...\n\n"
+            f"Reply 'approve {task.name}' to execute or 'skip {task.name}' to cancel."
+        )
+```
+
+### Knowledge Ingestion Pipeline
+
+```python
+# packages/memory/src/ai_memory/ingestion.py
+import asyncio
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import AsyncIterator, Optional
+import hashlib
+
+@dataclass
+class Document:
+    id: str
+    content: str
+    source: str
+    source_type: str
+    metadata: dict
+    created_at: datetime
+    content_hash: str
+
+class KnowledgeSource(ABC):
+    """Base class for knowledge sources."""
+
+    @abstractmethod
+    async def fetch(self) -> AsyncIterator[Document]:
+        """Fetch documents from the source."""
+        pass
+
+    @abstractmethod
+    async def watch(self) -> AsyncIterator[Document]:
+        """Watch for changes and yield new/updated documents."""
+        pass
+
+class GitRepoSource(KnowledgeSource):
+    """Ingest knowledge from a git repository."""
+
+    def __init__(self, repo_path: Path, branch: str = "main", patterns: list[str] = None):
+        self.repo_path = repo_path
+        self.branch = branch
+        self.patterns = patterns or ["*.md", "*.py", "*.ts", "*.js"]
+        self.processed_hashes: set[str] = set()
+
+    async def fetch(self) -> AsyncIterator[Document]:
+        """Fetch all matching files from the repository."""
+        for pattern in self.patterns:
+            for file_path in self.repo_path.rglob(pattern):
+                if ".git" in str(file_path):
+                    continue
+
+                content = file_path.read_text()
+                content_hash = hashlib.md5(content.encode()).hexdigest()
+
+                yield Document(
+                    id=f"git:{self.repo_path.name}:{file_path.relative_to(self.repo_path)}",
+                    content=content,
+                    source=str(file_path),
+                    source_type="git_repo",
+                    metadata={
+                        "repo": self.repo_path.name,
+                        "branch": self.branch,
+                        "file_type": file_path.suffix,
+                        "relative_path": str(file_path.relative_to(self.repo_path))
+                    },
+                    created_at=datetime.utcnow(),
+                    content_hash=content_hash
+                )
+
+                self.processed_hashes.add(content_hash)
+
+    async def watch(self) -> AsyncIterator[Document]:
+        """Watch for file changes using polling."""
+        while True:
+            async for doc in self.fetch():
+                if doc.content_hash not in self.processed_hashes:
+                    self.processed_hashes.add(doc.content_hash)
+                    yield doc
+            await asyncio.sleep(60)  # Poll every minute
+
+class WebSource(KnowledgeSource):
+    """Ingest knowledge from web URLs."""
+
+    def __init__(self, urls: list[str], refresh_hours: int = 24):
+        self.urls = urls
+        self.refresh_hours = refresh_hours
+        self.last_fetch: dict[str, datetime] = {}
+
+    async def fetch(self) -> AsyncIterator[Document]:
+        import httpx
+        from bs4 import BeautifulSoup
+
+        async with httpx.AsyncClient() as client:
+            for url in self.urls:
+                try:
+                    response = await client.get(url)
+                    soup = BeautifulSoup(response.text, 'html.parser')
+
+                    # Extract main content
+                    content = soup.get_text(separator='\n', strip=True)
+                    content_hash = hashlib.md5(content.encode()).hexdigest()
+
+                    yield Document(
+                        id=f"web:{url}",
+                        content=content,
+                        source=url,
+                        source_type="web",
+                        metadata={
+                            "url": url,
+                            "title": soup.title.string if soup.title else "",
+                        },
+                        created_at=datetime.utcnow(),
+                        content_hash=content_hash
+                    )
+
+                    self.last_fetch[url] = datetime.utcnow()
+                except Exception as e:
+                    print(f"Failed to fetch {url}: {e}")
+
+class KnowledgeIngestionPipeline:
+    """Pipeline for ingesting and indexing knowledge."""
+
+    def __init__(self, sources: list[KnowledgeSource], qdrant_client, embedding_service):
+        self.sources = sources
+        self.qdrant = qdrant_client
+        self.embeddings = embedding_service
+        self.chunk_size = 1000
+        self.chunk_overlap = 200
+
+    async def run_full_ingestion(self):
+        """Run full ingestion from all sources."""
+        for source in self.sources:
+            async for document in source.fetch():
+                await self._process_document(document)
+
+    async def start_continuous_ingestion(self):
+        """Start continuous ingestion watching for changes."""
+        tasks = [
+            asyncio.create_task(self._watch_source(source))
+            for source in self.sources
+        ]
+        await asyncio.gather(*tasks)
+
+    async def _watch_source(self, source: KnowledgeSource):
+        """Watch a single source for changes."""
+        async for document in source.watch():
+            await self._process_document(document)
+
+    async def _process_document(self, document: Document):
+        """Process and index a document."""
+        # Chunk the document
+        chunks = self._chunk_text(document.content)
+
+        # Generate embeddings
+        embeddings = await self.embeddings.embed_batch([c for c in chunks])
+
+        # Store in Qdrant
+        points = [
+            {
+                "id": f"{document.id}:chunk:{i}",
+                "vector": embedding,
+                "payload": {
+                    "content": chunk,
+                    "document_id": document.id,
+                    "source": document.source,
+                    "source_type": document.source_type,
+                    "chunk_index": i,
+                    **document.metadata
+                }
+            }
+            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+        ]
+
+        await self.qdrant.upsert(collection_name="knowledge", points=points)
+        print(f"Indexed {len(chunks)} chunks from {document.source}")
+
+    def _chunk_text(self, text: str) -> list[str]:
+        """Split text into overlapping chunks."""
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = start + self.chunk_size
+            chunk = text[start:end]
+            chunks.append(chunk)
+            start = end - self.chunk_overlap
+        return chunks
+```
+
+### Agent Memory Sharing Protocol
+
+```python
+# packages/messaging/src/ai_messaging/knowledge_share.py
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+from uuid import UUID, uuid4
+
+class KnowledgeType(Enum):
+    PATTERN = "pattern"           # Code pattern, best practice
+    PROCEDURE = "procedure"       # How to do something
+    FACT = "fact"                # Factual information
+    WARNING = "warning"          # Something to avoid
+    INSIGHT = "insight"          # Learned insight
+    TOOL_USAGE = "tool_usage"    # How to use a tool effectively
+
+@dataclass
+class KnowledgeShare:
+    """Structured knowledge sharing between agents."""
+
+    id: UUID = field(default_factory=uuid4)
+    source_agent: str = ""
+    knowledge_type: KnowledgeType = KnowledgeType.FACT
+    title: str = ""
+    content: str = ""
+    confidence: float = 0.8      # 0-1, how confident the agent is
+    evidence: list[str] = field(default_factory=list)  # References
+    context: dict = field(default_factory=dict)        # When this applies
+    expiry: Optional[datetime] = None                   # When knowledge becomes stale
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+    # Feedback tracking
+    upvotes: int = 0
+    downvotes: int = 0
+    usage_count: int = 0
+
+class KnowledgeShareProtocol:
+    """Protocol for agents to share and consume knowledge."""
+
+    def __init__(self, redis_client, qdrant_client, embedding_service):
+        self.redis = redis_client
+        self.qdrant = qdrant_client
+        self.embeddings = embedding_service
+        self.channel = "knowledge:shared"
+
+    async def share(self, knowledge: KnowledgeShare):
+        """Share knowledge with all agents."""
+        # Generate embedding for the knowledge
+        text = f"{knowledge.title}\n{knowledge.content}"
+        embedding = await self.embeddings.embed(text)
+
+        # Store in vector DB
+        await self.qdrant.upsert(
+            collection_name="shared_knowledge",
+            points=[{
+                "id": str(knowledge.id),
+                "vector": embedding,
+                "payload": {
+                    "source_agent": knowledge.source_agent,
+                    "knowledge_type": knowledge.knowledge_type.value,
+                    "title": knowledge.title,
+                    "content": knowledge.content,
+                    "confidence": knowledge.confidence,
+                    "evidence": knowledge.evidence,
+                    "context": knowledge.context,
+                    "expiry": knowledge.expiry.isoformat() if knowledge.expiry else None,
+                    "created_at": knowledge.created_at.isoformat(),
+                }
+            }]
+        )
+
+        # Broadcast to all agents
+        await self.redis.publish(self.channel, {
+            "type": "new_knowledge",
+            "knowledge_id": str(knowledge.id),
+            "source_agent": knowledge.source_agent,
+            "title": knowledge.title,
+            "knowledge_type": knowledge.knowledge_type.value
+        })
+
+    async def query(
+        self,
+        query: str,
+        knowledge_types: list[KnowledgeType] = None,
+        min_confidence: float = 0.5,
+        limit: int = 5
+    ) -> list[KnowledgeShare]:
+        """Query for relevant shared knowledge."""
+        embedding = await self.embeddings.embed(query)
+
+        filters = {"must": []}
+        if knowledge_types:
+            filters["must"].append({
+                "key": "knowledge_type",
+                "match": {"any": [kt.value for kt in knowledge_types]}
+            })
+        filters["must"].append({
+            "key": "confidence",
+            "range": {"gte": min_confidence}
+        })
+
+        results = await self.qdrant.search(
+            collection_name="shared_knowledge",
+            query_vector=embedding,
+            query_filter=filters,
+            limit=limit
+        )
+
+        return [
+            KnowledgeShare(
+                id=UUID(r.id),
+                **r.payload
+            )
+            for r in results
+        ]
+
+    async def feedback(self, knowledge_id: UUID, helpful: bool, agent_id: str):
+        """Provide feedback on shared knowledge."""
+        key = f"knowledge:{knowledge_id}:feedback"
+        if helpful:
+            await self.redis.hincrby(key, "upvotes", 1)
+        else:
+            await self.redis.hincrby(key, "downvotes", 1)
+
+        await self.redis.hincrby(key, "usage_count", 1)
+        await self.redis.lpush(f"{key}:agents", agent_id)
+
+    async def subscribe(self, callback):
+        """Subscribe to new knowledge broadcasts."""
+        pubsub = self.redis.pubsub()
+        await pubsub.subscribe(self.channel)
+
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                await callback(message["data"])
+```
+
+---
+
 ## Implementation Phases
 
 ### Phase 1: Foundation (Week 1-2)
