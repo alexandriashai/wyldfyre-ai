@@ -3,63 +3,12 @@ Message schemas for inter-service communication.
 """
 
 from datetime import datetime
-from enum import Enum
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-
-class MessageType(str, Enum):
-    """Types of messages in the system."""
-    # Task messages
-    TASK_REQUEST = "task_request"
-    TASK_RESPONSE = "task_response"
-    TASK_PROGRESS = "task_progress"
-    TASK_ERROR = "task_error"
-    TASK_CANCELLED = "task_cancelled"
-
-    # Agent messages
-    AGENT_STATUS = "agent_status"
-    AGENT_HEARTBEAT = "agent_heartbeat"
-    AGENT_TOOL_CALL = "agent_tool_call"
-    AGENT_TOOL_RESULT = "agent_tool_result"
-
-    # System messages
-    SYSTEM_ALERT = "system_alert"
-    SYSTEM_SHUTDOWN = "system_shutdown"
-
-    # User messages
-    USER_NOTIFICATION = "user_notification"
-    USER_CHAT = "user_chat"
-
-
-class AgentType(str, Enum):
-    """Types of agents in the system."""
-    SUPERVISOR = "supervisor"
-    CODE = "code"
-    DATA = "data"
-    INFRA = "infra"
-    RESEARCH = "research"
-    QA = "qa"
-
-
-class TaskStatus(str, Enum):
-    """Task execution status."""
-    PENDING = "pending"
-    QUEUED = "queued"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class AgentStatus(str, Enum):
-    """Agent operational status."""
-    IDLE = "idle"
-    BUSY = "busy"
-    ERROR = "error"
-    OFFLINE = "offline"
+from ai_core import AgentStatus, AgentType, MessageType, TaskStatus
 
 
 class BaseMessage(BaseModel):

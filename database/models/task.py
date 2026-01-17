@@ -8,32 +8,12 @@ from typing import TYPE_CHECKING
 from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from ai_core import AgentType, TaskStatus
+
 from .base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from .user import User
-
-import enum
-
-
-class TaskStatus(str, enum.Enum):
-    """Task execution status."""
-    PENDING = "pending"
-    QUEUED = "queued"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class AgentType(str, enum.Enum):
-    """Types of agents."""
-    SUPERVISOR = "supervisor"
-    CODE = "code"
-    DATA = "data"
-    INFRA = "infra"
-    RESEARCH = "research"
-    QA = "qa"
 
 
 class Task(Base, UUIDMixin, TimestampMixin):

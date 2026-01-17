@@ -2,7 +2,6 @@
 Embedding generation using OpenAI API.
 """
 
-import asyncio
 from typing import Sequence
 
 import numpy as np

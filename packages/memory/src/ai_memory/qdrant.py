@@ -271,3 +271,89 @@ class QdrantStore:
         """Get total document count."""
         info = await self.client.get_collection(self._collection_name)
         return info.points_count
+
+    async def scroll(
+        self,
+        filter: dict[str, Any] | None = None,
+        limit: int = 100,
+        offset: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """
+        Scroll through all documents in the collection.
+
+        Args:
+            filter: Optional metadata filter
+            limit: Number of documents per batch
+            offset: Pagination offset (point ID to start after)
+
+        Returns:
+            Tuple of (documents, next_offset)
+        """
+        try:
+            # Build filter
+            qdrant_filter = None
+            if filter:
+                conditions = []
+                for key, value in filter.items():
+                    if isinstance(value, list):
+                        conditions.append(
+                            models.FieldCondition(
+                                key=key,
+                                match=models.MatchAny(any=value),
+                            )
+                        )
+                    else:
+                        conditions.append(
+                            models.FieldCondition(
+                                key=key,
+                                match=models.MatchValue(value=value),
+                            )
+                        )
+                qdrant_filter = models.Filter(must=conditions)
+
+            results, next_offset = await self.client.scroll(
+                collection_name=self._collection_name,
+                scroll_filter=qdrant_filter,
+                limit=limit,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            documents = [
+                {
+                    "id": str(point.id),
+                    "text": point.payload.get("text", ""),
+                    "metadata": {
+                        k: v for k, v in point.payload.items() if k != "text"
+                    },
+                }
+                for point in results
+            ]
+
+            return documents, next_offset
+
+        except Exception as e:
+            logger.error("Scroll failed", error=str(e))
+            raise StorageError(f"Scroll failed: {e}", cause=e)
+
+    async def delete_batch(self, ids: list[str]) -> int:
+        """Delete multiple documents by IDs."""
+        if not ids:
+            return 0
+
+        try:
+            await self.client.delete(
+                collection_name=self._collection_name,
+                points_selector=models.PointIdsList(points=ids),
+            )
+            memory_operations_total.labels(
+                tier="warm", operation="delete_batch", status="success"
+            ).inc()
+            return len(ids)
+        except Exception as e:
+            memory_operations_total.labels(
+                tier="warm", operation="delete_batch", status="error"
+            ).inc()
+            logger.error("Batch delete failed", count=len(ids), error=str(e))
+            return 0

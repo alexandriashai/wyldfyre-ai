@@ -12,6 +12,8 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from ai_memory import PAIPhase
+
 
 async def pre_task_hook(
     agent_type: str,
@@ -43,7 +45,7 @@ async def pre_task_hook(
     # Store task start in HOT memory
     await memory.store_task_trace(
         task_id=correlation_id,
-        phase="observe",
+        phase=PAIPhase.OBSERVE,
         data={
             "agent_type": agent_type,
             "task_type": task_type,
