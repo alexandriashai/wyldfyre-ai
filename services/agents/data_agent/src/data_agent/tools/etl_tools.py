@@ -101,7 +101,7 @@ async def export_to_csv(
             # Get column names from first row
             columns = list(rows[0].keys())
 
-            async with aiofiles.open(file_path, "w", newline="") as f:
+            async with aiofiles.open(file_path, "w") as f:
                 # Write header
                 if include_header:
                     await f.write(",".join(columns) + "\n")

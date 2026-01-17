@@ -4,8 +4,9 @@ SSL/TLS certificate tools for the Infra Agent.
 
 import asyncio
 import os
-import ssl
 import socket
+import ssl
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -45,9 +46,7 @@ def _get_cert_info(domain: str) -> dict | None:
         return None
 
     try:
-        # Read certificate using ssl module
-        import subprocess
-
+        # Read certificate using openssl command
         result = subprocess.run(
             ["openssl", "x509", "-in", str(cert_path), "-noout", "-dates", "-subject"],
             capture_output=True,

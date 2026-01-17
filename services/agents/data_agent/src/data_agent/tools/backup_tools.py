@@ -7,8 +7,6 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-import aiofiles
-
 from ai_core import get_logger
 from base_agent import ToolResult, tool
 
@@ -101,7 +99,7 @@ def _parse_database_url(url: str) -> dict[str, str]:
 async def create_backup(
     name: str | None = None,
     tables: list[str] | None = None,
-    format: str = "custom",
+    backup_format: str = "custom",
 ) -> ToolResult:
     """Create a database backup."""
     try:
@@ -120,7 +118,7 @@ async def create_backup(
             "plain": ".sql",
             "directory": "",
         }
-        ext = extensions.get(format, ".dump")
+        ext = extensions.get(backup_format, ".dump")
         backup_file = BACKUP_DIR / f"{backup_name}{ext}"
 
         # Parse database URL
@@ -133,7 +131,7 @@ async def create_backup(
             f"--port={db_config['port']}",
             f"--username={db_config['user']}",
             f"--dbname={db_config['database']}",
-            f"--format={format[0]}",  # c, p, or d
+            f"--format={backup_format[0]}",  # c, p, or d
             f"--file={backup_file}",
             "--no-password",
         ]
@@ -163,7 +161,7 @@ async def create_backup(
             return ToolResult.fail(f"Backup failed: {error_msg}")
 
         # Get backup size
-        if format == "directory":
+        if backup_format == "directory":
             # Sum up directory contents
             size = sum(
                 f.stat().st_size
@@ -177,7 +175,7 @@ async def create_backup(
             f"Backup created: {backup_file.name}",
             file=str(backup_file),
             size=size,
-            format=format,
+            format=backup_format,
             tables=tables,
         )
 
