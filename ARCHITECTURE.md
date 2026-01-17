@@ -4102,6 +4102,869 @@ class KnowledgeShareProtocol:
                 await callback(message["data"])
 ```
 
+### Self-Management (Size & Memory)
+
+The system autonomously manages its own resource usage, cleaning up old data and optimizing storage.
+
+```python
+# packages/core/src/ai_core/self_management.py
+import asyncio
+import psutil
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
+
+@dataclass
+class ResourceThresholds:
+    max_memory_percent: float = 80.0
+    max_disk_percent: float = 85.0
+    max_qdrant_vectors: int = 10_000_000
+    max_postgres_rows: int = 50_000_000
+    max_log_age_days: int = 30
+    max_checkpoint_age_days: int = 7
+    max_temp_file_age_hours: int = 24
+
+class SelfManager:
+    """Autonomous resource and memory management."""
+
+    def __init__(self, config: ResourceThresholds, redis_client, qdrant_client, postgres_client):
+        self.config = config
+        self.redis = redis_client
+        self.qdrant = qdrant_client
+        self.postgres = postgres_client
+        self.last_cleanup: Optional[datetime] = None
+
+    async def start_monitoring(self, check_interval: int = 300):
+        """Start continuous resource monitoring."""
+        while True:
+            try:
+                status = await self.check_resources()
+                if status.needs_cleanup:
+                    await self.perform_cleanup(status)
+            except Exception as e:
+                print(f"Self-management error: {e}")
+            await asyncio.sleep(check_interval)
+
+    async def check_resources(self) -> 'ResourceStatus':
+        """Check all resource levels."""
+        return ResourceStatus(
+            memory_percent=psutil.virtual_memory().percent,
+            disk_percent=psutil.disk_usage('/').percent,
+            qdrant_count=await self._get_qdrant_count(),
+            postgres_rows=await self._get_postgres_rows(),
+            redis_memory_mb=await self._get_redis_memory(),
+            temp_files_size_mb=self._get_temp_size(),
+            log_files_size_mb=self._get_log_size(),
+        )
+
+    async def perform_cleanup(self, status: 'ResourceStatus'):
+        """Perform cleanup based on resource status."""
+        print(f"Starting cleanup - Memory: {status.memory_percent}%, Disk: {status.disk_percent}%")
+
+        tasks = []
+
+        # Clean old logs
+        if status.log_files_size_mb > 500:
+            tasks.append(self._cleanup_logs())
+
+        # Clean temp files
+        if status.temp_files_size_mb > 1000:
+            tasks.append(self._cleanup_temp_files())
+
+        # Clean old checkpoints
+        tasks.append(self._cleanup_old_checkpoints())
+
+        # Compact Qdrant if too many vectors
+        if status.qdrant_count > self.config.max_qdrant_vectors * 0.9:
+            tasks.append(self._compact_qdrant())
+
+        # Archive old PostgreSQL data
+        if status.postgres_rows > self.config.max_postgres_rows * 0.9:
+            tasks.append(self._archive_old_data())
+
+        # Clean Redis cache
+        if status.redis_memory_mb > 1000:
+            tasks.append(self._cleanup_redis_cache())
+
+        await asyncio.gather(*tasks)
+        self.last_cleanup = datetime.utcnow()
+
+        # Report cleanup results
+        await self._report_cleanup()
+
+    async def _cleanup_logs(self):
+        """Remove old log files."""
+        log_dir = Path("/var/log/ai-infrastructure")
+        cutoff = datetime.utcnow() - timedelta(days=self.config.max_log_age_days)
+
+        for log_file in log_dir.glob("*.log*"):
+            if datetime.fromtimestamp(log_file.stat().st_mtime) < cutoff:
+                log_file.unlink()
+                print(f"Removed old log: {log_file}")
+
+    async def _compact_qdrant(self):
+        """Optimize Qdrant collections."""
+        collections = ["memories", "knowledge", "shared_knowledge"]
+        for collection in collections:
+            # Remove old, low-usage entries
+            await self.qdrant.delete(
+                collection_name=collection,
+                points_selector={
+                    "filter": {
+                        "must": [
+                            {"key": "created_at", "range": {"lt": (datetime.utcnow() - timedelta(days=90)).isoformat()}},
+                            {"key": "usage_count", "range": {"lt": 5}}
+                        ]
+                    }
+                }
+            )
+        print("Qdrant compaction complete")
+
+    async def _archive_old_data(self):
+        """Archive old PostgreSQL data to cold storage."""
+        # Move old conversations to archive table
+        await self.postgres.execute("""
+            INSERT INTO conversations_archive
+            SELECT * FROM conversations
+            WHERE created_at < NOW() - INTERVAL '90 days'
+            AND NOT pinned;
+
+            DELETE FROM conversations
+            WHERE created_at < NOW() - INTERVAL '90 days'
+            AND NOT pinned;
+        """)
+
+        # Vacuum to reclaim space
+        await self.postgres.execute("VACUUM ANALYZE;")
+        print("PostgreSQL archival complete")
+
+    async def get_resource_report(self) -> dict:
+        """Generate a resource usage report."""
+        status = await self.check_resources()
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "memory": {
+                "percent": status.memory_percent,
+                "status": "ok" if status.memory_percent < 70 else "warning" if status.memory_percent < 85 else "critical"
+            },
+            "disk": {
+                "percent": status.disk_percent,
+                "status": "ok" if status.disk_percent < 70 else "warning" if status.disk_percent < 85 else "critical"
+            },
+            "qdrant_vectors": status.qdrant_count,
+            "postgres_rows": status.postgres_rows,
+            "redis_memory_mb": status.redis_memory_mb,
+            "last_cleanup": self.last_cleanup.isoformat() if self.last_cleanup else None,
+            "recommendations": self._generate_recommendations(status)
+        }
+
+@dataclass
+class ResourceStatus:
+    memory_percent: float
+    disk_percent: float
+    qdrant_count: int
+    postgres_rows: int
+    redis_memory_mb: float
+    temp_files_size_mb: float
+    log_files_size_mb: float
+
+    @property
+    def needs_cleanup(self) -> bool:
+        return (
+            self.memory_percent > 75 or
+            self.disk_percent > 80 or
+            self.temp_files_size_mb > 500 or
+            self.log_files_size_mb > 1000
+        )
+```
+
+### Proactive Bug Detection & Self-Improvement
+
+Agents continuously analyze their own performance and suggest improvements.
+
+```python
+# packages/core/src/ai_core/self_improvement.py
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Optional
+from uuid import UUID, uuid4
+
+class ImprovementType(Enum):
+    BUG_FIX = "bug_fix"
+    PERFORMANCE = "performance"
+    SECURITY = "security"
+    CODE_QUALITY = "code_quality"
+    FEATURE = "feature"
+    DOCUMENTATION = "documentation"
+    REFACTOR = "refactor"
+
+class Priority(Enum):
+    CRITICAL = 1
+    HIGH = 2
+    MEDIUM = 3
+    LOW = 4
+
+@dataclass
+class ImprovementSuggestion:
+    id: UUID = field(default_factory=uuid4)
+    type: ImprovementType = ImprovementType.BUG_FIX
+    priority: Priority = Priority.MEDIUM
+    title: str = ""
+    description: str = ""
+    affected_files: list[str] = field(default_factory=list)
+    suggested_fix: Optional[str] = None
+    detected_by: str = ""              # Agent that detected it
+    confidence: float = 0.8
+    evidence: list[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    status: str = "pending"            # pending, approved, rejected, implemented
+    votes: dict[str, int] = field(default_factory=dict)  # agent_id -> vote (-1, 0, 1)
+
+class ProactiveAnalyzer:
+    """Proactively detects bugs and suggests improvements."""
+
+    def __init__(self, redis_client, qdrant_client):
+        self.redis = redis_client
+        self.qdrant = qdrant_client
+        self.suggestions: dict[UUID, ImprovementSuggestion] = {}
+
+    async def start_analysis_loop(self, interval_hours: int = 6):
+        """Run periodic proactive analysis."""
+        while True:
+            await self._run_analysis()
+            await asyncio.sleep(interval_hours * 3600)
+
+    async def _run_analysis(self):
+        """Run all analysis types."""
+        analyses = [
+            self._analyze_error_patterns(),
+            self._analyze_performance_bottlenecks(),
+            self._analyze_code_quality(),
+            self._analyze_security_issues(),
+            self._analyze_test_coverage(),
+            self._analyze_documentation_gaps(),
+        ]
+        await asyncio.gather(*analyses)
+
+    async def _analyze_error_patterns(self):
+        """Detect recurring errors and suggest fixes."""
+        # Query error logs from last 7 days
+        errors = await self.redis.lrange("errors:recent", 0, 1000)
+
+        # Group by error type
+        error_counts = {}
+        for error in errors:
+            key = f"{error.get('type')}:{error.get('message')[:100]}"
+            if key not in error_counts:
+                error_counts[key] = {"count": 0, "examples": []}
+            error_counts[key]["count"] += 1
+            if len(error_counts[key]["examples"]) < 3:
+                error_counts[key]["examples"].append(error)
+
+        # Suggest fixes for recurring errors
+        for key, data in error_counts.items():
+            if data["count"] >= 5:
+                suggestion = ImprovementSuggestion(
+                    type=ImprovementType.BUG_FIX,
+                    priority=Priority.HIGH if data["count"] > 20 else Priority.MEDIUM,
+                    title=f"Recurring error: {key[:50]}",
+                    description=f"This error has occurred {data['count']} times in the last 7 days.",
+                    evidence=[str(e) for e in data["examples"]],
+                    detected_by="proactive_analyzer",
+                    confidence=min(0.5 + (data["count"] / 100), 0.95)
+                )
+                await self.submit_suggestion(suggestion)
+
+    async def _analyze_performance_bottlenecks(self):
+        """Detect slow operations and suggest optimizations."""
+        # Query performance metrics
+        slow_operations = await self.redis.zrevrange("metrics:slow_operations", 0, 20, withscores=True)
+
+        for operation, avg_time in slow_operations:
+            if avg_time > 5000:  # > 5 seconds
+                suggestion = ImprovementSuggestion(
+                    type=ImprovementType.PERFORMANCE,
+                    priority=Priority.MEDIUM,
+                    title=f"Slow operation: {operation}",
+                    description=f"Average execution time: {avg_time:.0f}ms. Consider optimization.",
+                    detected_by="proactive_analyzer",
+                    confidence=0.8
+                )
+                await self.submit_suggestion(suggestion)
+
+    async def _analyze_security_issues(self):
+        """Detect potential security issues."""
+        issues = []
+
+        # Check for outdated dependencies
+        # Check for exposed secrets in logs
+        # Check for permission escalations
+        # Check for unusual network traffic
+
+        for issue in issues:
+            suggestion = ImprovementSuggestion(
+                type=ImprovementType.SECURITY,
+                priority=Priority.CRITICAL,
+                title=issue["title"],
+                description=issue["description"],
+                detected_by="proactive_analyzer",
+                confidence=issue.get("confidence", 0.9)
+            )
+            await self.submit_suggestion(suggestion)
+
+    async def submit_suggestion(self, suggestion: ImprovementSuggestion):
+        """Submit a new improvement suggestion."""
+        self.suggestions[suggestion.id] = suggestion
+
+        # Store in Redis
+        await self.redis.hset(
+            f"suggestions:{suggestion.id}",
+            mapping={
+                "type": suggestion.type.value,
+                "priority": suggestion.priority.value,
+                "title": suggestion.title,
+                "description": suggestion.description,
+                "status": suggestion.status,
+                "created_at": suggestion.created_at.isoformat()
+            }
+        )
+
+        # Notify supervisor
+        await self.redis.publish("suggestions:new", {
+            "id": str(suggestion.id),
+            "type": suggestion.type.value,
+            "priority": suggestion.priority.value,
+            "title": suggestion.title
+        })
+
+    async def get_pending_suggestions(self, limit: int = 20) -> list[ImprovementSuggestion]:
+        """Get pending suggestions sorted by priority."""
+        pending = [s for s in self.suggestions.values() if s.status == "pending"]
+        return sorted(pending, key=lambda s: (s.priority.value, -s.confidence))[:limit]
+
+    async def implement_suggestion(self, suggestion_id: UUID, agent_id: str):
+        """Mark a suggestion as being implemented."""
+        if suggestion_id in self.suggestions:
+            self.suggestions[suggestion_id].status = "implementing"
+            self.suggestions[suggestion_id].implemented_by = agent_id
+```
+
+### Claude Marketplace & Plugins Integration
+
+Integrate with Claude's marketplace for tools and plugins, allowing agents to discover and use new capabilities.
+
+```yaml
+# config/marketplace.yaml
+marketplace:
+  enabled: true
+  auto_update: true
+  update_check_interval_hours: 24
+
+  # Approved plugin sources
+  sources:
+    - name: anthropic-official
+      url: https://marketplace.anthropic.com/plugins
+      trusted: true
+    - name: community
+      url: https://plugins.ai-infrastructure.dev
+      trusted: false
+      require_approval: true
+
+  # Installed plugins
+  installed:
+    - name: web-browser
+      version: "1.2.0"
+      source: anthropic-official
+      enabled: true
+      agents: ["research_agent"]
+
+    - name: code-interpreter
+      version: "2.1.0"
+      source: anthropic-official
+      enabled: true
+      agents: ["code_agent", "data_agent"]
+
+    - name: file-editor
+      version: "1.0.0"
+      source: anthropic-official
+      enabled: true
+      agents: ["*"]
+
+  # Agent-specific marketplace permissions
+  agent_permissions:
+    supervisor:
+      can_install: true
+      can_approve: true
+      max_plugins: 50
+
+    code_agent:
+      can_install: false
+      can_request: true
+      allowed_categories: ["development", "testing", "documentation"]
+
+    research_agent:
+      can_install: false
+      can_request: true
+      allowed_categories: ["search", "analysis", "summarization"]
+```
+
+```python
+# packages/core/src/ai_core/marketplace.py
+import httpx
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+import yaml
+
+@dataclass
+class MarketplacePlugin:
+    id: str
+    name: str
+    version: str
+    description: str
+    author: str
+    source: str
+    category: str
+    capabilities: list[str]
+    requirements: list[str]
+    rating: float
+    downloads: int
+    verified: bool
+    compatible_agents: list[str]
+
+class MarketplaceClient:
+    """Client for Claude marketplace and plugin management."""
+
+    def __init__(self, config_path: str = "config/marketplace.yaml"):
+        with open(config_path) as f:
+            self.config = yaml.safe_load(f)["marketplace"]
+        self.installed_plugins: dict[str, MarketplacePlugin] = {}
+
+    async def search_plugins(
+        self,
+        query: str = None,
+        category: str = None,
+        agent_type: str = None
+    ) -> list[MarketplacePlugin]:
+        """Search for plugins in the marketplace."""
+        plugins = []
+
+        for source in self.config["sources"]:
+            if not source.get("trusted") and self.config.get("trusted_only", False):
+                continue
+
+            async with httpx.AsyncClient() as client:
+                params = {"q": query, "category": category, "agent": agent_type}
+                response = await client.get(
+                    f"{source['url']}/search",
+                    params={k: v for k, v in params.items() if v}
+                )
+                if response.status_code == 200:
+                    for p in response.json().get("plugins", []):
+                        plugins.append(MarketplacePlugin(
+                            source=source["name"],
+                            **p
+                        ))
+
+        return plugins
+
+    async def install_plugin(
+        self,
+        plugin_id: str,
+        source: str,
+        agents: list[str] = None,
+        requester: str = None
+    ) -> bool:
+        """Install a plugin from the marketplace."""
+        # Check permissions
+        if requester:
+            permissions = self.config["agent_permissions"].get(requester, {})
+            if not permissions.get("can_install"):
+                if permissions.get("can_request"):
+                    await self._request_approval(plugin_id, source, requester)
+                    return False
+                raise PermissionError(f"Agent {requester} cannot install plugins")
+
+        # Fetch plugin details
+        plugin = await self._fetch_plugin(plugin_id, source)
+
+        # Verify compatibility
+        if agents:
+            for agent in agents:
+                if plugin.compatible_agents != ["*"] and agent not in plugin.compatible_agents:
+                    raise ValueError(f"Plugin not compatible with {agent}")
+
+        # Download and install
+        await self._download_plugin(plugin)
+        await self._install_plugin_files(plugin)
+
+        # Register with agents
+        self.installed_plugins[plugin.id] = plugin
+        await self._register_with_agents(plugin, agents or plugin.compatible_agents)
+
+        return True
+
+    async def update_plugins(self):
+        """Check for and apply plugin updates."""
+        for plugin_id, plugin in self.installed_plugins.items():
+            latest = await self._fetch_plugin(plugin_id, plugin.source)
+            if latest.version > plugin.version:
+                print(f"Updating {plugin.name} from {plugin.version} to {latest.version}")
+                await self.install_plugin(plugin_id, plugin.source)
+
+    async def get_agent_tools(self, agent_type: str) -> list[dict]:
+        """Get all tools available to an agent from installed plugins."""
+        tools = []
+        for plugin in self.installed_plugins.values():
+            if "*" in plugin.compatible_agents or agent_type in plugin.compatible_agents:
+                tools.extend(await self._load_plugin_tools(plugin))
+        return tools
+
+    async def _register_with_agents(self, plugin: MarketplacePlugin, agents: list[str]):
+        """Register plugin tools with specified agents."""
+        tools = await self._load_plugin_tools(plugin)
+        for agent in agents:
+            await self.redis.hset(f"agent:{agent}:plugins", plugin.id, {
+                "name": plugin.name,
+                "version": plugin.version,
+                "tools": [t["name"] for t in tools]
+            })
+
+class PluginAutoDiscovery:
+    """Automatically discover and suggest relevant plugins."""
+
+    def __init__(self, marketplace: MarketplaceClient, redis_client):
+        self.marketplace = marketplace
+        self.redis = redis_client
+
+    async def analyze_agent_needs(self, agent_id: str) -> list[MarketplacePlugin]:
+        """Analyze agent's recent tasks and suggest relevant plugins."""
+        # Get recent tasks
+        tasks = await self.redis.lrange(f"agent:{agent_id}:tasks:completed", 0, 100)
+
+        # Analyze task patterns
+        categories_needed = self._analyze_task_categories(tasks)
+
+        # Search marketplace for relevant plugins
+        suggestions = []
+        for category in categories_needed:
+            plugins = await self.marketplace.search_plugins(category=category)
+            suggestions.extend(plugins[:3])
+
+        return suggestions
+
+    async def suggest_on_error(self, agent_id: str, error: dict) -> Optional[MarketplacePlugin]:
+        """Suggest a plugin that might help with an error."""
+        # Search for plugins that handle this type of error
+        plugins = await self.marketplace.search_plugins(
+            query=error.get("type", "") + " " + error.get("message", "")[:50]
+        )
+
+        if plugins:
+            return plugins[0]
+        return None
+```
+
+### Agent Voting on Priorities
+
+Agents can vote on task priorities and suggest work items, creating a collaborative decision-making process.
+
+```python
+# packages/core/src/ai_core/voting.py
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Optional
+from uuid import UUID, uuid4
+import asyncio
+
+class VoteType(Enum):
+    PRIORITY = "priority"           # Vote on task priority
+    IMPROVEMENT = "improvement"     # Vote on improvement suggestions
+    RESOURCE = "resource"           # Vote on resource allocation
+    STRATEGY = "strategy"           # Vote on approach/strategy
+
+@dataclass
+class VotingItem:
+    id: UUID = field(default_factory=uuid4)
+    type: VoteType = VoteType.PRIORITY
+    title: str = ""
+    description: str = ""
+    options: list[str] = field(default_factory=list)
+    proposer: str = ""              # Agent that proposed
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    deadline: Optional[datetime] = None
+    votes: dict[str, str] = field(default_factory=dict)  # agent_id -> option
+    rationales: dict[str, str] = field(default_factory=dict)  # agent_id -> reasoning
+    status: str = "open"            # open, closed, decided
+    result: Optional[str] = None
+
+@dataclass
+class WorkProposal:
+    id: UUID = field(default_factory=uuid4)
+    title: str = ""
+    description: str = ""
+    proposed_by: str = ""
+    task_type: str = ""
+    estimated_effort: str = ""      # low, medium, high
+    priority_votes: dict[str, int] = field(default_factory=dict)  # agent_id -> 1-5
+    endorsements: list[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    status: str = "proposed"        # proposed, approved, rejected, in_progress, completed
+
+class AgentVotingSystem:
+    """Democratic voting system for agent collaboration."""
+
+    def __init__(self, redis_client, agents: list[str]):
+        self.redis = redis_client
+        self.agents = agents
+        self.active_votes: dict[UUID, VotingItem] = {}
+        self.work_proposals: dict[UUID, WorkProposal] = {}
+
+    async def create_vote(
+        self,
+        vote_type: VoteType,
+        title: str,
+        description: str,
+        options: list[str],
+        proposer: str,
+        deadline_hours: int = 24
+    ) -> VotingItem:
+        """Create a new voting item."""
+        vote = VotingItem(
+            type=vote_type,
+            title=title,
+            description=description,
+            options=options,
+            proposer=proposer,
+            deadline=datetime.utcnow() + timedelta(hours=deadline_hours)
+        )
+
+        self.active_votes[vote.id] = vote
+
+        # Notify all agents
+        await self.redis.publish("voting:new", {
+            "id": str(vote.id),
+            "type": vote_type.value,
+            "title": title,
+            "options": options,
+            "deadline": vote.deadline.isoformat()
+        })
+
+        # Schedule automatic closing
+        asyncio.create_task(self._schedule_close(vote))
+
+        return vote
+
+    async def cast_vote(
+        self,
+        vote_id: UUID,
+        agent_id: str,
+        choice: str,
+        rationale: str = None
+    ) -> bool:
+        """Cast a vote on an item."""
+        if vote_id not in self.active_votes:
+            raise ValueError(f"Vote {vote_id} not found")
+
+        vote = self.active_votes[vote_id]
+
+        if vote.status != "open":
+            raise ValueError("Voting is closed")
+
+        if choice not in vote.options:
+            raise ValueError(f"Invalid choice: {choice}")
+
+        vote.votes[agent_id] = choice
+        if rationale:
+            vote.rationales[agent_id] = rationale
+
+        # Broadcast vote
+        await self.redis.publish("voting:cast", {
+            "vote_id": str(vote_id),
+            "agent": agent_id,
+            "choice": choice
+        })
+
+        # Check if all agents have voted
+        if len(vote.votes) >= len(self.agents):
+            await self._close_vote(vote)
+
+        return True
+
+    async def propose_work(
+        self,
+        title: str,
+        description: str,
+        proposed_by: str,
+        task_type: str,
+        estimated_effort: str
+    ) -> WorkProposal:
+        """Propose a new work item for the team."""
+        proposal = WorkProposal(
+            title=title,
+            description=description,
+            proposed_by=proposed_by,
+            task_type=task_type,
+            estimated_effort=estimated_effort
+        )
+
+        self.work_proposals[proposal.id] = proposal
+
+        # Notify all agents
+        await self.redis.publish("proposals:new", {
+            "id": str(proposal.id),
+            "title": title,
+            "proposed_by": proposed_by,
+            "task_type": task_type
+        })
+
+        return proposal
+
+    async def vote_priority(
+        self,
+        proposal_id: UUID,
+        agent_id: str,
+        priority: int  # 1-5, 5 being highest
+    ):
+        """Vote on a work proposal's priority."""
+        if proposal_id not in self.work_proposals:
+            raise ValueError(f"Proposal {proposal_id} not found")
+
+        proposal = self.work_proposals[proposal_id]
+        proposal.priority_votes[agent_id] = max(1, min(5, priority))
+
+        # Calculate average priority
+        avg_priority = sum(proposal.priority_votes.values()) / len(proposal.priority_votes)
+
+        # Auto-approve if high priority consensus
+        if len(proposal.priority_votes) >= len(self.agents) * 0.6:
+            if avg_priority >= 4.0:
+                proposal.status = "approved"
+                await self._queue_approved_work(proposal)
+
+    async def endorse_proposal(self, proposal_id: UUID, agent_id: str):
+        """Endorse a work proposal."""
+        if proposal_id not in self.work_proposals:
+            raise ValueError(f"Proposal {proposal_id} not found")
+
+        proposal = self.work_proposals[proposal_id]
+        if agent_id not in proposal.endorsements:
+            proposal.endorsements.append(agent_id)
+
+        # Auto-approve if majority endorsement
+        if len(proposal.endorsements) >= len(self.agents) * 0.5:
+            proposal.status = "approved"
+            await self._queue_approved_work(proposal)
+
+    async def get_consensus_priorities(self) -> list[WorkProposal]:
+        """Get work items sorted by consensus priority."""
+        approved = [p for p in self.work_proposals.values() if p.status == "approved"]
+        return sorted(
+            approved,
+            key=lambda p: (
+                sum(p.priority_votes.values()) / max(len(p.priority_votes), 1),
+                len(p.endorsements)
+            ),
+            reverse=True
+        )
+
+    async def _close_vote(self, vote: VotingItem):
+        """Close voting and determine result."""
+        vote.status = "closed"
+
+        # Count votes
+        vote_counts = {}
+        for choice in vote.votes.values():
+            vote_counts[choice] = vote_counts.get(choice, 0) + 1
+
+        # Determine winner
+        if vote_counts:
+            vote.result = max(vote_counts, key=vote_counts.get)
+
+        # Broadcast result
+        await self.redis.publish("voting:closed", {
+            "vote_id": str(vote.id),
+            "result": vote.result,
+            "counts": vote_counts,
+            "rationales": vote.rationales
+        })
+
+    async def _schedule_close(self, vote: VotingItem):
+        """Schedule automatic vote closing."""
+        if vote.deadline:
+            delay = (vote.deadline - datetime.utcnow()).total_seconds()
+            if delay > 0:
+                await asyncio.sleep(delay)
+                if vote.status == "open":
+                    await self._close_vote(vote)
+
+    async def _queue_approved_work(self, proposal: WorkProposal):
+        """Queue approved work for execution."""
+        avg_priority = sum(proposal.priority_votes.values()) / max(len(proposal.priority_votes), 1)
+
+        await self.redis.zadd("tasks:approved", {
+            str(proposal.id): avg_priority
+        })
+
+        await self.redis.publish("proposals:approved", {
+            "id": str(proposal.id),
+            "title": proposal.title,
+            "priority": avg_priority
+        })
+
+
+# Example: Agent proposing work and voting
+async def example_voting_workflow():
+    """Example of agents proposing and voting on work."""
+    voting = AgentVotingSystem(redis, ["supervisor", "code_agent", "qa_agent"])
+
+    # Code agent proposes a refactoring task
+    proposal = await voting.propose_work(
+        title="Refactor authentication module",
+        description="The auth module has grown complex. Suggest splitting into smaller services.",
+        proposed_by="code_agent",
+        task_type="refactor",
+        estimated_effort="medium"
+    )
+
+    # Other agents vote on priority
+    await voting.vote_priority(proposal.id, "supervisor", priority=4)
+    await voting.vote_priority(proposal.id, "qa_agent", priority=5)  # QA sees security benefit
+    await voting.vote_priority(proposal.id, "code_agent", priority=4)
+
+    # QA agent endorses it
+    await voting.endorse_proposal(proposal.id, "qa_agent")
+
+    # Supervisor creates a vote on approach
+    vote = await voting.create_vote(
+        vote_type=VoteType.STRATEGY,
+        title="Auth refactoring approach",
+        description="How should we approach the auth module refactoring?",
+        options=[
+            "Incremental refactor with feature flags",
+            "Complete rewrite with new design",
+            "Extract to microservice"
+        ],
+        proposer="supervisor",
+        deadline_hours=12
+    )
+
+    # Agents vote with rationale
+    await voting.cast_vote(
+        vote.id, "code_agent",
+        choice="Incremental refactor with feature flags",
+        rationale="Lower risk, can ship incrementally"
+    )
+    await voting.cast_vote(
+        vote.id, "qa_agent",
+        choice="Incremental refactor with feature flags",
+        rationale="Easier to test in stages"
+    )
+```
+
 ---
 
 ## Implementation Phases
@@ -4241,6 +5104,1535 @@ docker-compose up -d
 # Web Portal: https://portal.your-domain.com
 # SSH: ssh root@your-server then `tmux attach -t ai-infrastructure`
 ```
+
+---
+
+## 25. GUI Settings Management
+
+A unified, intuitive settings interface that makes all configuration options easy to understand and control.
+
+### Settings Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           SETTINGS MANAGEMENT SYSTEM                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐             │
+│  │   Settings UI   │    │  Settings API   │    │ Settings Store  │             │
+│  │  (Next.js)      │◄──►│  (FastAPI)      │◄──►│ (PostgreSQL)    │             │
+│  │                 │    │                 │    │                 │             │
+│  │ • Visual forms  │    │ • Validation    │    │ • Persistence   │             │
+│  │ • Real-time     │    │ • Type checking │    │ • History       │             │
+│  │ • Search        │    │ • Webhooks      │    │ • Rollback      │             │
+│  │ • Categories    │    │ • Auth          │    │ • Encryption    │             │
+│  └─────────────────┘    └─────────────────┘    └─────────────────┘             │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Settings Categories
+
+```python
+# src/settings/categories.py
+
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Any, Optional, List, Dict, Callable
+import re
+
+class SettingType(Enum):
+    TEXT = "text"              # Single line text input
+    PASSWORD = "password"      # Hidden text (API keys)
+    NUMBER = "number"          # Numeric input with +/- controls
+    SLIDER = "slider"          # Range slider with min/max
+    TOGGLE = "toggle"          # On/off switch
+    SELECT = "select"          # Dropdown selection
+    MULTI_SELECT = "multi"     # Multiple selection chips
+    COLOR = "color"            # Color picker
+    TEXTAREA = "textarea"      # Multi-line text
+    FILE = "file"              # File upload
+    JSON = "json"              # JSON editor
+    CRON = "cron"              # Cron expression builder
+    KEY_VALUE = "key_value"    # Key-value pair list
+
+class SettingCategory(Enum):
+    API_KEYS = "api_keys"
+    AGENTS = "agents"
+    DATABASE = "database"
+    MEMORY = "memory"
+    SECURITY = "security"
+    NOTIFICATIONS = "notifications"
+    APPEARANCE = "appearance"
+    PERFORMANCE = "performance"
+    BACKUP = "backup"
+    DOMAINS = "domains"
+    VOICE = "voice"
+    PLUGINS = "plugins"
+
+@dataclass
+class SettingDefinition:
+    """Definition of a single setting with UI metadata."""
+    key: str
+    label: str
+    description: str
+    category: SettingCategory
+    type: SettingType
+    default: Any
+
+    # UI Metadata
+    icon: str = ""
+    placeholder: str = ""
+    help_url: str = ""
+
+    # Validation
+    required: bool = False
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    pattern: Optional[str] = None  # Regex for validation
+    options: List[Dict[str, str]] = field(default_factory=list)  # For select/multi
+
+    # Display
+    display_order: int = 0
+    visible: bool = True
+    advanced: bool = False  # Hidden in simple mode
+    restart_required: bool = False
+
+    # Dependencies
+    depends_on: Optional[str] = None  # Show only if another setting is true
+    disabled_when: Optional[str] = None  # Disable based on condition
+
+    def validate(self, value: Any) -> tuple[bool, str]:
+        """Validate a value against this setting's rules."""
+        if self.required and not value:
+            return False, f"{self.label} is required"
+
+        if value is None:
+            return True, ""
+
+        if self.type == SettingType.NUMBER or self.type == SettingType.SLIDER:
+            if self.min_value is not None and value < self.min_value:
+                return False, f"{self.label} must be at least {self.min_value}"
+            if self.max_value is not None and value > self.max_value:
+                return False, f"{self.label} must be at most {self.max_value}"
+
+        if self.pattern and self.type == SettingType.TEXT:
+            if not re.match(self.pattern, str(value)):
+                return False, f"{self.label} format is invalid"
+
+        return True, ""
+
+
+# All settings definitions
+SETTINGS_REGISTRY: List[SettingDefinition] = [
+    # ===== API KEYS =====
+    SettingDefinition(
+        key="anthropic_api_key",
+        label="Claude API Key",
+        description="Your Anthropic API key for Claude access",
+        category=SettingCategory.API_KEYS,
+        type=SettingType.PASSWORD,
+        default="",
+        icon="🔑",
+        placeholder="sk-ant-...",
+        required=True,
+        pattern=r"^sk-ant-.*",
+        help_url="https://console.anthropic.com/settings/keys",
+        display_order=1
+    ),
+    SettingDefinition(
+        key="openai_api_key",
+        label="OpenAI API Key",
+        description="For embeddings, Whisper (speech-to-text), and TTS",
+        category=SettingCategory.API_KEYS,
+        type=SettingType.PASSWORD,
+        default="",
+        icon="🔑",
+        placeholder="sk-...",
+        required=True,
+        pattern=r"^sk-.*",
+        help_url="https://platform.openai.com/api-keys",
+        display_order=2
+    ),
+    SettingDefinition(
+        key="cloudflare_api_key",
+        label="Cloudflare Global API Key",
+        description="For DNS, CDN, and security management",
+        category=SettingCategory.API_KEYS,
+        type=SettingType.PASSWORD,
+        default="",
+        icon="☁️",
+        placeholder="Your Global API Key",
+        help_url="https://dash.cloudflare.com/profile/api-tokens",
+        display_order=3
+    ),
+    SettingDefinition(
+        key="github_pat",
+        label="GitHub Personal Access Token",
+        description="For backups and version control sync",
+        category=SettingCategory.API_KEYS,
+        type=SettingType.PASSWORD,
+        default="",
+        icon="🐙",
+        placeholder="ghp_...",
+        pattern=r"^ghp_.*",
+        help_url="https://github.com/settings/tokens",
+        display_order=4
+    ),
+
+    # ===== AGENTS =====
+    SettingDefinition(
+        key="supervisor_enabled",
+        label="Enable Supervisor Agent",
+        description="Main orchestrator that coordinates all other agents",
+        category=SettingCategory.AGENTS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="👑",
+        display_order=1
+    ),
+    SettingDefinition(
+        key="code_agent_enabled",
+        label="Enable Code Agent",
+        description="Handles code generation, review, and refactoring",
+        category=SettingCategory.AGENTS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="💻",
+        display_order=2
+    ),
+    SettingDefinition(
+        key="data_agent_enabled",
+        label="Enable Data Agent",
+        description="Manages databases, queries, and data transformations",
+        category=SettingCategory.AGENTS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="📊",
+        display_order=3
+    ),
+    SettingDefinition(
+        key="infra_agent_enabled",
+        label="Enable Infrastructure Agent",
+        description="Handles deployments, Docker, and system administration",
+        category=SettingCategory.AGENTS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🏗️",
+        display_order=4
+    ),
+    SettingDefinition(
+        key="research_agent_enabled",
+        label="Enable Research Agent",
+        description="Web research, API discovery, and documentation lookup",
+        category=SettingCategory.AGENTS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🔬",
+        display_order=5
+    ),
+    SettingDefinition(
+        key="qa_agent_enabled",
+        label="Enable QA Agent",
+        description="Testing, validation, and quality assurance",
+        category=SettingCategory.AGENTS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="✅",
+        display_order=6
+    ),
+    SettingDefinition(
+        key="agent_temperature",
+        label="Agent Creativity",
+        description="Higher values make responses more creative, lower values more focused",
+        category=SettingCategory.AGENTS,
+        type=SettingType.SLIDER,
+        default=0.7,
+        icon="🌡️",
+        min_value=0.0,
+        max_value=1.0,
+        display_order=7
+    ),
+    SettingDefinition(
+        key="agent_max_tokens",
+        label="Max Response Length",
+        description="Maximum tokens per agent response",
+        category=SettingCategory.AGENTS,
+        type=SettingType.NUMBER,
+        default=4096,
+        icon="📏",
+        min_value=256,
+        max_value=100000,
+        display_order=8
+    ),
+    SettingDefinition(
+        key="agent_model",
+        label="Claude Model",
+        description="Which Claude model to use for agents",
+        category=SettingCategory.AGENTS,
+        type=SettingType.SELECT,
+        default="claude-sonnet-4-20250514",
+        icon="🤖",
+        options=[
+            {"value": "claude-sonnet-4-20250514", "label": "Claude Sonnet 4 (Recommended)"},
+            {"value": "claude-opus-4-20250514", "label": "Claude Opus 4 (Most capable)"},
+            {"value": "claude-3-5-haiku-20241022", "label": "Claude 3.5 Haiku (Fastest)"}
+        ],
+        display_order=9
+    ),
+
+    # ===== MEMORY =====
+    SettingDefinition(
+        key="memory_hot_ttl_hours",
+        label="Hot Memory Duration",
+        description="How long to keep frequently accessed memories in fast storage",
+        category=SettingCategory.MEMORY,
+        type=SettingType.NUMBER,
+        default=24,
+        icon="🔥",
+        min_value=1,
+        max_value=168,
+        display_order=1
+    ),
+    SettingDefinition(
+        key="memory_warm_ttl_days",
+        label="Warm Memory Duration",
+        description="Days before moving memories to cold storage",
+        category=SettingCategory.MEMORY,
+        type=SettingType.NUMBER,
+        default=7,
+        icon="🌡️",
+        min_value=1,
+        max_value=90,
+        display_order=2
+    ),
+    SettingDefinition(
+        key="memory_max_size_gb",
+        label="Max Memory Size (GB)",
+        description="Maximum size for the vector database",
+        category=SettingCategory.MEMORY,
+        type=SettingType.SLIDER,
+        default=10,
+        icon="💾",
+        min_value=1,
+        max_value=100,
+        display_order=3
+    ),
+    SettingDefinition(
+        key="embedding_model",
+        label="Embedding Model",
+        description="OpenAI model for generating embeddings",
+        category=SettingCategory.MEMORY,
+        type=SettingType.SELECT,
+        default="text-embedding-3-small",
+        icon="🧮",
+        options=[
+            {"value": "text-embedding-3-small", "label": "Small (Recommended - cost effective)"},
+            {"value": "text-embedding-3-large", "label": "Large (Higher quality)"},
+            {"value": "text-embedding-ada-002", "label": "Ada 002 (Legacy)"}
+        ],
+        display_order=4
+    ),
+    SettingDefinition(
+        key="auto_cleanup_enabled",
+        label="Auto Cleanup",
+        description="Automatically clean up old logs and temporary files",
+        category=SettingCategory.MEMORY,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🧹",
+        display_order=5
+    ),
+
+    # ===== SECURITY =====
+    SettingDefinition(
+        key="command_allowlist_enabled",
+        label="Enable Command Allowlist",
+        description="Only allow pre-approved commands to be executed",
+        category=SettingCategory.SECURITY,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="✅",
+        display_order=1
+    ),
+    SettingDefinition(
+        key="command_allowlist",
+        label="Allowed Commands",
+        description="Commands that agents are permitted to execute",
+        category=SettingCategory.SECURITY,
+        type=SettingType.MULTI_SELECT,
+        default=["git", "npm", "pip", "docker", "ls", "cat", "grep"],
+        icon="📋",
+        options=[
+            {"value": "git", "label": "git"},
+            {"value": "npm", "label": "npm"},
+            {"value": "pip", "label": "pip"},
+            {"value": "docker", "label": "docker"},
+            {"value": "kubectl", "label": "kubectl"},
+            {"value": "ls", "label": "ls"},
+            {"value": "cat", "label": "cat"},
+            {"value": "grep", "label": "grep"},
+            {"value": "curl", "label": "curl"},
+            {"value": "wget", "label": "wget"}
+        ],
+        depends_on="command_allowlist_enabled",
+        display_order=2
+    ),
+    SettingDefinition(
+        key="network_egress_filter",
+        label="Network Egress Filtering",
+        description="Filter outbound network connections",
+        category=SettingCategory.SECURITY,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🌐",
+        display_order=3
+    ),
+    SettingDefinition(
+        key="audit_logging_enabled",
+        label="Audit Logging",
+        description="Log all agent actions for security review",
+        category=SettingCategory.SECURITY,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="📝",
+        display_order=4
+    ),
+    SettingDefinition(
+        key="require_approval_destructive",
+        label="Require Approval for Destructive Actions",
+        description="Pause for human approval before deleting files, dropping tables, etc.",
+        category=SettingCategory.SECURITY,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="⚠️",
+        display_order=5
+    ),
+    SettingDefinition(
+        key="session_timeout_minutes",
+        label="Session Timeout",
+        description="Minutes of inactivity before logging out",
+        category=SettingCategory.SECURITY,
+        type=SettingType.NUMBER,
+        default=60,
+        icon="⏰",
+        min_value=5,
+        max_value=480,
+        display_order=6
+    ),
+
+    # ===== NOTIFICATIONS =====
+    SettingDefinition(
+        key="notifications_enabled",
+        label="Enable Notifications",
+        description="Receive notifications for important events",
+        category=SettingCategory.NOTIFICATIONS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🔔",
+        display_order=1
+    ),
+    SettingDefinition(
+        key="notification_channels",
+        label="Notification Channels",
+        description="Where to send notifications",
+        category=SettingCategory.NOTIFICATIONS,
+        type=SettingType.MULTI_SELECT,
+        default=["browser", "email"],
+        icon="📢",
+        options=[
+            {"value": "browser", "label": "Browser Push"},
+            {"value": "email", "label": "Email"},
+            {"value": "slack", "label": "Slack"},
+            {"value": "discord", "label": "Discord"},
+            {"value": "webhook", "label": "Custom Webhook"}
+        ],
+        depends_on="notifications_enabled",
+        display_order=2
+    ),
+    SettingDefinition(
+        key="notify_on_task_complete",
+        label="Notify on Task Completion",
+        description="Get notified when agents complete tasks",
+        category=SettingCategory.NOTIFICATIONS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="✅",
+        depends_on="notifications_enabled",
+        display_order=3
+    ),
+    SettingDefinition(
+        key="notify_on_error",
+        label="Notify on Errors",
+        description="Get notified when agents encounter errors",
+        category=SettingCategory.NOTIFICATIONS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="❌",
+        depends_on="notifications_enabled",
+        display_order=4
+    ),
+
+    # ===== APPEARANCE =====
+    SettingDefinition(
+        key="theme",
+        label="Theme",
+        description="Visual theme for the portal",
+        category=SettingCategory.APPEARANCE,
+        type=SettingType.SELECT,
+        default="system",
+        icon="🎨",
+        options=[
+            {"value": "light", "label": "Light"},
+            {"value": "dark", "label": "Dark"},
+            {"value": "system", "label": "System (Auto)"}
+        ],
+        display_order=1
+    ),
+    SettingDefinition(
+        key="accent_color",
+        label="Accent Color",
+        description="Primary accent color for the UI",
+        category=SettingCategory.APPEARANCE,
+        type=SettingType.COLOR,
+        default="#6366f1",
+        icon="🎨",
+        display_order=2
+    ),
+    SettingDefinition(
+        key="compact_mode",
+        label="Compact Mode",
+        description="Use smaller spacing and fonts",
+        category=SettingCategory.APPEARANCE,
+        type=SettingType.TOGGLE,
+        default=False,
+        icon="📐",
+        display_order=3
+    ),
+    SettingDefinition(
+        key="show_agent_avatars",
+        label="Show Agent Avatars",
+        description="Display avatar icons for each agent",
+        category=SettingCategory.APPEARANCE,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🖼️",
+        display_order=4
+    ),
+
+    # ===== PERFORMANCE =====
+    SettingDefinition(
+        key="max_concurrent_tasks",
+        label="Max Concurrent Tasks",
+        description="Maximum tasks that can run simultaneously across all agents",
+        category=SettingCategory.PERFORMANCE,
+        type=SettingType.SLIDER,
+        default=5,
+        icon="⚡",
+        min_value=1,
+        max_value=20,
+        display_order=1
+    ),
+    SettingDefinition(
+        key="task_timeout_seconds",
+        label="Task Timeout",
+        description="Maximum seconds a single task can run",
+        category=SettingCategory.PERFORMANCE,
+        type=SettingType.NUMBER,
+        default=300,
+        icon="⏱️",
+        min_value=30,
+        max_value=3600,
+        display_order=2
+    ),
+    SettingDefinition(
+        key="enable_caching",
+        label="Enable Response Caching",
+        description="Cache similar queries to reduce API costs",
+        category=SettingCategory.PERFORMANCE,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="💨",
+        display_order=3
+    ),
+    SettingDefinition(
+        key="cache_ttl_minutes",
+        label="Cache Duration",
+        description="Minutes to cache responses",
+        category=SettingCategory.PERFORMANCE,
+        type=SettingType.NUMBER,
+        default=30,
+        icon="⏰",
+        min_value=1,
+        max_value=1440,
+        depends_on="enable_caching",
+        display_order=4
+    ),
+
+    # ===== BACKUP =====
+    SettingDefinition(
+        key="auto_backup_enabled",
+        label="Automatic Backups",
+        description="Automatically backup configuration and data",
+        category=SettingCategory.BACKUP,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="💾",
+        display_order=1
+    ),
+    SettingDefinition(
+        key="backup_schedule",
+        label="Backup Schedule",
+        description="When to run automatic backups",
+        category=SettingCategory.BACKUP,
+        type=SettingType.CRON,
+        default="0 2 * * *",
+        icon="📅",
+        depends_on="auto_backup_enabled",
+        display_order=2
+    ),
+    SettingDefinition(
+        key="backup_retention_days",
+        label="Backup Retention",
+        description="Days to keep old backups",
+        category=SettingCategory.BACKUP,
+        type=SettingType.NUMBER,
+        default=30,
+        icon="📦",
+        min_value=1,
+        max_value=365,
+        depends_on="auto_backup_enabled",
+        display_order=3
+    ),
+    SettingDefinition(
+        key="backup_to_github",
+        label="Backup to GitHub",
+        description="Push backups to GitHub repository",
+        category=SettingCategory.BACKUP,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🐙",
+        depends_on="auto_backup_enabled",
+        display_order=4
+    ),
+
+    # ===== VOICE =====
+    SettingDefinition(
+        key="voice_enabled",
+        label="Enable Voice",
+        description="Enable voice input and output",
+        category=SettingCategory.VOICE,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🎤",
+        display_order=1
+    ),
+    SettingDefinition(
+        key="voice_model",
+        label="TTS Voice",
+        description="Voice for text-to-speech output",
+        category=SettingCategory.VOICE,
+        type=SettingType.SELECT,
+        default="nova",
+        icon="🔊",
+        options=[
+            {"value": "alloy", "label": "Alloy (Neutral)"},
+            {"value": "echo", "label": "Echo (Male)"},
+            {"value": "fable", "label": "Fable (Storytelling)"},
+            {"value": "onyx", "label": "Onyx (Deep)"},
+            {"value": "nova", "label": "Nova (Female)"},
+            {"value": "shimmer", "label": "Shimmer (Soft)"}
+        ],
+        depends_on="voice_enabled",
+        display_order=2
+    ),
+    SettingDefinition(
+        key="voice_speed",
+        label="Speech Speed",
+        description="Speed of text-to-speech output",
+        category=SettingCategory.VOICE,
+        type=SettingType.SLIDER,
+        default=1.0,
+        icon="⏩",
+        min_value=0.5,
+        max_value=2.0,
+        depends_on="voice_enabled",
+        display_order=3
+    ),
+    SettingDefinition(
+        key="auto_listen",
+        label="Auto Listen",
+        description="Automatically start listening after speaking",
+        category=SettingCategory.VOICE,
+        type=SettingType.TOGGLE,
+        default=False,
+        icon="👂",
+        depends_on="voice_enabled",
+        display_order=4
+    ),
+
+    # ===== PLUGINS =====
+    SettingDefinition(
+        key="plugins_enabled",
+        label="Enable Plugins",
+        description="Allow installation of marketplace plugins",
+        category=SettingCategory.PLUGINS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🧩",
+        display_order=1
+    ),
+    SettingDefinition(
+        key="auto_update_plugins",
+        label="Auto-Update Plugins",
+        description="Automatically update plugins when new versions are available",
+        category=SettingCategory.PLUGINS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🔄",
+        depends_on="plugins_enabled",
+        display_order=2
+    ),
+    SettingDefinition(
+        key="plugin_sandbox",
+        label="Plugin Sandbox",
+        description="Run plugins in isolated environment for security",
+        category=SettingCategory.PLUGINS,
+        type=SettingType.TOGGLE,
+        default=True,
+        icon="🔒",
+        depends_on="plugins_enabled",
+        display_order=3
+    ),
+]
+```
+
+### Settings Service
+
+```python
+# src/settings/service.py
+
+from typing import Any, Dict, List, Optional
+from datetime import datetime
+import json
+import asyncpg
+from .categories import SETTINGS_REGISTRY, SettingDefinition, SettingCategory
+
+class SettingsService:
+    """Centralized settings management with persistence and history."""
+
+    def __init__(self, db_pool: asyncpg.Pool):
+        self.db = db_pool
+        self._cache: Dict[str, Any] = {}
+        self._registry = {s.key: s for s in SETTINGS_REGISTRY}
+
+    async def initialize(self):
+        """Initialize settings table and load defaults."""
+        await self.db.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key VARCHAR(255) PRIMARY KEY,
+                value JSONB NOT NULL,
+                updated_at TIMESTAMP DEFAULT NOW(),
+                updated_by VARCHAR(255)
+            );
+
+            CREATE TABLE IF NOT EXISTS settings_history (
+                id SERIAL PRIMARY KEY,
+                key VARCHAR(255) NOT NULL,
+                old_value JSONB,
+                new_value JSONB,
+                changed_at TIMESTAMP DEFAULT NOW(),
+                changed_by VARCHAR(255),
+                reason TEXT
+            );
+        ''')
+
+        # Load existing settings into cache
+        rows = await self.db.fetch("SELECT key, value FROM settings")
+        for row in rows:
+            self._cache[row['key']] = json.loads(row['value'])
+
+        # Apply defaults for missing settings
+        for setting in SETTINGS_REGISTRY:
+            if setting.key not in self._cache:
+                self._cache[setting.key] = setting.default
+
+    async def get(self, key: str) -> Any:
+        """Get a setting value."""
+        if key in self._cache:
+            return self._cache[key]
+
+        if key in self._registry:
+            return self._registry[key].default
+
+        return None
+
+    async def get_all(self) -> Dict[str, Any]:
+        """Get all settings."""
+        result = {}
+        for setting in SETTINGS_REGISTRY:
+            result[setting.key] = self._cache.get(setting.key, setting.default)
+        return result
+
+    async def get_by_category(self, category: SettingCategory) -> Dict[str, Any]:
+        """Get settings for a specific category."""
+        result = {}
+        for setting in SETTINGS_REGISTRY:
+            if setting.category == category:
+                result[setting.key] = self._cache.get(setting.key, setting.default)
+        return result
+
+    async def set(
+        self,
+        key: str,
+        value: Any,
+        user: str = "system",
+        reason: str = ""
+    ) -> tuple[bool, str]:
+        """Set a setting value with validation."""
+        if key not in self._registry:
+            return False, f"Unknown setting: {key}"
+
+        setting = self._registry[key]
+
+        # Validate
+        is_valid, error = setting.validate(value)
+        if not is_valid:
+            return False, error
+
+        old_value = self._cache.get(key)
+
+        # Persist
+        await self.db.execute('''
+            INSERT INTO settings (key, value, updated_at, updated_by)
+            VALUES ($1, $2, NOW(), $3)
+            ON CONFLICT (key) DO UPDATE SET
+                value = $2,
+                updated_at = NOW(),
+                updated_by = $3
+        ''', key, json.dumps(value), user)
+
+        # Record history
+        await self.db.execute('''
+            INSERT INTO settings_history (key, old_value, new_value, changed_by, reason)
+            VALUES ($1, $2, $3, $4, $5)
+        ''', key, json.dumps(old_value), json.dumps(value), user, reason)
+
+        # Update cache
+        self._cache[key] = value
+
+        return True, ""
+
+    async def set_bulk(
+        self,
+        settings: Dict[str, Any],
+        user: str = "system",
+        reason: str = ""
+    ) -> Dict[str, tuple[bool, str]]:
+        """Set multiple settings at once."""
+        results = {}
+        for key, value in settings.items():
+            results[key] = await self.set(key, value, user, reason)
+        return results
+
+    async def reset_to_default(self, key: str, user: str = "system") -> bool:
+        """Reset a setting to its default value."""
+        if key not in self._registry:
+            return False
+
+        default = self._registry[key].default
+        await self.set(key, default, user, "Reset to default")
+        return True
+
+    async def reset_all(self, user: str = "system") -> None:
+        """Reset all settings to defaults."""
+        for setting in SETTINGS_REGISTRY:
+            await self.reset_to_default(setting.key, user)
+
+    async def get_history(
+        self,
+        key: Optional[str] = None,
+        limit: int = 100
+    ) -> List[Dict]:
+        """Get settings change history."""
+        if key:
+            rows = await self.db.fetch('''
+                SELECT * FROM settings_history
+                WHERE key = $1
+                ORDER BY changed_at DESC
+                LIMIT $2
+            ''', key, limit)
+        else:
+            rows = await self.db.fetch('''
+                SELECT * FROM settings_history
+                ORDER BY changed_at DESC
+                LIMIT $1
+            ''', limit)
+
+        return [dict(row) for row in rows]
+
+    async def export_settings(self) -> str:
+        """Export all settings as JSON."""
+        settings = await self.get_all()
+        return json.dumps(settings, indent=2)
+
+    async def import_settings(
+        self,
+        json_data: str,
+        user: str = "system"
+    ) -> Dict[str, tuple[bool, str]]:
+        """Import settings from JSON."""
+        try:
+            settings = json.loads(json_data)
+            return await self.set_bulk(settings, user, "Imported from JSON")
+        except json.JSONDecodeError as e:
+            return {"_error": (False, f"Invalid JSON: {e}")}
+
+    def get_schema(self) -> List[Dict]:
+        """Get the settings schema for UI generation."""
+        schema = []
+        for setting in sorted(SETTINGS_REGISTRY, key=lambda s: (s.category.value, s.display_order)):
+            schema.append({
+                "key": setting.key,
+                "label": setting.label,
+                "description": setting.description,
+                "category": setting.category.value,
+                "type": setting.type.value,
+                "default": setting.default,
+                "icon": setting.icon,
+                "placeholder": setting.placeholder,
+                "help_url": setting.help_url,
+                "required": setting.required,
+                "min_value": setting.min_value,
+                "max_value": setting.max_value,
+                "options": setting.options,
+                "advanced": setting.advanced,
+                "restart_required": setting.restart_required,
+                "depends_on": setting.depends_on,
+                "disabled_when": setting.disabled_when
+            })
+        return schema
+```
+
+### Settings API Endpoints
+
+```python
+# src/api/routes/settings.py
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from typing import Any, Dict, Optional, List
+from ...settings.service import SettingsService
+from ...settings.categories import SettingCategory
+from ..auth import get_current_user
+
+router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+class SettingUpdate(BaseModel):
+    value: Any
+    reason: Optional[str] = ""
+
+class BulkSettingUpdate(BaseModel):
+    settings: Dict[str, Any]
+    reason: Optional[str] = ""
+
+@router.get("/schema")
+async def get_settings_schema(
+    settings_service: SettingsService = Depends()
+):
+    """Get the complete settings schema for UI generation."""
+    return {
+        "schema": settings_service.get_schema(),
+        "categories": [c.value for c in SettingCategory]
+    }
+
+@router.get("/")
+async def get_all_settings(
+    settings_service: SettingsService = Depends(),
+    user = Depends(get_current_user)
+):
+    """Get all current settings values."""
+    return await settings_service.get_all()
+
+@router.get("/category/{category}")
+async def get_category_settings(
+    category: str,
+    settings_service: SettingsService = Depends(),
+    user = Depends(get_current_user)
+):
+    """Get settings for a specific category."""
+    try:
+        cat = SettingCategory(category)
+        return await settings_service.get_by_category(cat)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid category: {category}")
+
+@router.get("/{key}")
+async def get_setting(
+    key: str,
+    settings_service: SettingsService = Depends(),
+    user = Depends(get_current_user)
+):
+    """Get a single setting value."""
+    value = await settings_service.get(key)
+    if value is None:
+        raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+    return {"key": key, "value": value}
+
+@router.put("/{key}")
+async def update_setting(
+    key: str,
+    update: SettingUpdate,
+    settings_service: SettingsService = Depends(),
+    user = Depends(get_current_user)
+):
+    """Update a single setting."""
+    success, error = await settings_service.set(
+        key,
+        update.value,
+        user.username,
+        update.reason
+    )
+    if not success:
+        raise HTTPException(status_code=400, detail=error)
+    return {"key": key, "value": update.value, "updated": True}
+
+@router.put("/")
+async def update_bulk_settings(
+    update: BulkSettingUpdate,
+    settings_service: SettingsService = Depends(),
+    user = Depends(get_current_user)
+):
+    """Update multiple settings at once."""
+    results = await settings_service.set_bulk(
+        update.settings,
+        user.username,
+        update.reason
+    )
+    errors = {k: v[1] for k, v in results.items() if not v[0]}
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+    return {"updated": True, "count": len(update.settings)}
+
+@router.post("/{key}/reset")
+async def reset_setting(
+    key: str,
+    settings_service: SettingsService = Depends(),
+    user = Depends(get_current_user)
+):
+    """Reset a setting to its default value."""
+    success = await settings_service.reset_to_default(key, user.username)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Setting not found: {key}")
+    return {"key": key, "reset": True}
+
+@router.post("/reset-all")
+async def reset_all_settings(
+    settings_service: SettingsService = Depends(),
+    user = Depends(get_current_user)
+):
+    """Reset all settings to defaults. Requires admin."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin required")
+    await settings_service.reset_all(user.username)
+    return {"reset": True}
+
+@router.get("/history/")
+async def get_settings_history(
+    key: Optional[str] = None,
+    limit: int = 100,
+    settings_service: SettingsService = Depends(),
+    user = Depends(get_current_user)
+):
+    """Get settings change history."""
+    return await settings_service.get_history(key, limit)
+
+@router.get("/export")
+async def export_settings(
+    settings_service: SettingsService = Depends(),
+    user = Depends(get_current_user)
+):
+    """Export all settings as JSON."""
+    return {"json": await settings_service.export_settings()}
+
+@router.post("/import")
+async def import_settings(
+    json_data: str,
+    settings_service: SettingsService = Depends(),
+    user = Depends(get_current_user)
+):
+    """Import settings from JSON. Requires admin."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin required")
+    results = await settings_service.import_settings(json_data, user.username)
+    errors = {k: v[1] for k, v in results.items() if not v[0]}
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+    return {"imported": True}
+```
+
+### Settings UI Components (React/Next.js)
+
+```typescript
+// src/portal/components/settings/SettingsPage.tsx
+
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
+import { Slider } from '@/components/ui/slider';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
+import { toast } from 'sonner';
+import { Search, Save, RotateCcw, Download, Upload, History, HelpCircle } from 'lucide-react';
+
+interface SettingSchema {
+  key: string;
+  label: string;
+  description: string;
+  category: string;
+  type: string;
+  default: any;
+  icon: string;
+  placeholder?: string;
+  help_url?: string;
+  required?: boolean;
+  min_value?: number;
+  max_value?: number;
+  options?: Array<{ value: string; label: string }>;
+  advanced?: boolean;
+  restart_required?: boolean;
+  depends_on?: string;
+}
+
+const CATEGORY_INFO: Record<string, { icon: string; label: string; description: string }> = {
+  api_keys: { icon: '🔑', label: 'API Keys', description: 'Configure API credentials for external services' },
+  agents: { icon: '🤖', label: 'Agents', description: 'Configure AI agent behavior and capabilities' },
+  database: { icon: '💾', label: 'Database', description: 'Database connection and storage settings' },
+  memory: { icon: '🧠', label: 'Memory', description: 'Vector database and memory management' },
+  security: { icon: '🔒', label: 'Security', description: 'Security policies and access controls' },
+  notifications: { icon: '🔔', label: 'Notifications', description: 'Alert and notification preferences' },
+  appearance: { icon: '🎨', label: 'Appearance', description: 'Visual theme and UI customization' },
+  performance: { icon: '⚡', label: 'Performance', description: 'Performance tuning and optimization' },
+  backup: { icon: '💾', label: 'Backup', description: 'Backup and recovery settings' },
+  domains: { icon: '🌐', label: 'Domains', description: 'Domain and hosting configuration' },
+  voice: { icon: '🎤', label: 'Voice', description: 'Voice input and output settings' },
+  plugins: { icon: '🧩', label: 'Plugins', description: 'Plugin and marketplace settings' },
+};
+
+export default function SettingsPage() {
+  const [schema, setSchema] = useState<SettingSchema[]>([]);
+  const [values, setValues] = useState<Record<string, any>>({});
+  const [originalValues, setOriginalValues] = useState<Record<string, any>>({});
+  const [categories, setCategories] = useState<string[]>([]);
+  const [activeCategory, setActiveCategory] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [hasChanges, setHasChanges] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  useEffect(() => {
+    // Check for unsaved changes
+    const changed = Object.keys(values).some(
+      key => JSON.stringify(values[key]) !== JSON.stringify(originalValues[key])
+    );
+    setHasChanges(changed);
+  }, [values, originalValues]);
+
+  const loadSettings = async () => {
+    const [schemaRes, valuesRes] = await Promise.all([
+      fetch('/api/settings/schema'),
+      fetch('/api/settings/')
+    ]);
+
+    const schemaData = await schemaRes.json();
+    const valuesData = await valuesRes.json();
+
+    setSchema(schemaData.schema);
+    setCategories(schemaData.categories);
+    setActiveCategory(schemaData.categories[0]);
+    setValues(valuesData);
+    setOriginalValues(valuesData);
+  };
+
+  const handleValueChange = (key: string, value: any) => {
+    setValues(prev => ({ ...prev, [key]: value }));
+  };
+
+  const saveSettings = async () => {
+    setSaving(true);
+    try {
+      const changedSettings: Record<string, any> = {};
+      Object.keys(values).forEach(key => {
+        if (JSON.stringify(values[key]) !== JSON.stringify(originalValues[key])) {
+          changedSettings[key] = values[key];
+        }
+      });
+
+      const res = await fetch('/api/settings/', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: changedSettings, reason: 'Updated via UI' })
+      });
+
+      if (res.ok) {
+        setOriginalValues({ ...values });
+        toast.success('Settings saved successfully');
+      } else {
+        const error = await res.json();
+        toast.error(`Failed to save: ${JSON.stringify(error.detail)}`);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const resetCategory = async (category: string) => {
+    const categorySettings = schema.filter(s => s.category === category);
+    const resetValues: Record<string, any> = {};
+    categorySettings.forEach(s => {
+      resetValues[s.key] = s.default;
+    });
+    setValues(prev => ({ ...prev, ...resetValues }));
+  };
+
+  const exportSettings = async () => {
+    const res = await fetch('/api/settings/export');
+    const data = await res.json();
+    const blob = new Blob([data.json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'settings.json';
+    a.click();
+  };
+
+  const filteredSchema = schema.filter(setting => {
+    // Category filter
+    if (setting.category !== activeCategory) return false;
+
+    // Advanced filter
+    if (setting.advanced && !showAdvanced) return false;
+
+    // Search filter
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      return (
+        setting.label.toLowerCase().includes(query) ||
+        setting.description.toLowerCase().includes(query) ||
+        setting.key.toLowerCase().includes(query)
+      );
+    }
+
+    // Dependency filter
+    if (setting.depends_on && !values[setting.depends_on]) return false;
+
+    return true;
+  });
+
+  const renderSettingInput = (setting: SettingSchema) => {
+    const value = values[setting.key] ?? setting.default;
+
+    switch (setting.type) {
+      case 'toggle':
+        return (
+          <Switch
+            checked={value}
+            onCheckedChange={(checked) => handleValueChange(setting.key, checked)}
+          />
+        );
+
+      case 'text':
+      case 'password':
+        return (
+          <Input
+            type={setting.type}
+            value={value}
+            onChange={(e) => handleValueChange(setting.key, e.target.value)}
+            placeholder={setting.placeholder}
+            className="max-w-md"
+          />
+        );
+
+      case 'number':
+        return (
+          <Input
+            type="number"
+            value={value}
+            onChange={(e) => handleValueChange(setting.key, Number(e.target.value))}
+            min={setting.min_value}
+            max={setting.max_value}
+            className="max-w-32"
+          />
+        );
+
+      case 'slider':
+        return (
+          <div className="flex items-center gap-4 max-w-md">
+            <Slider
+              value={[value]}
+              onValueChange={([v]) => handleValueChange(setting.key, v)}
+              min={setting.min_value}
+              max={setting.max_value}
+              step={setting.max_value && setting.max_value <= 2 ? 0.1 : 1}
+              className="flex-1"
+            />
+            <span className="text-sm font-mono w-12 text-right">{value}</span>
+          </div>
+        );
+
+      case 'select':
+        return (
+          <Select value={value} onValueChange={(v) => handleValueChange(setting.key, v)}>
+            <SelectTrigger className="max-w-md">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {setting.options?.map(opt => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        );
+
+      case 'multi':
+        return (
+          <div className="flex flex-wrap gap-2">
+            {setting.options?.map(opt => (
+              <Badge
+                key={opt.value}
+                variant={value?.includes(opt.value) ? 'default' : 'outline'}
+                className="cursor-pointer"
+                onClick={() => {
+                  const current = value || [];
+                  const newValue = current.includes(opt.value)
+                    ? current.filter((v: string) => v !== opt.value)
+                    : [...current, opt.value];
+                  handleValueChange(setting.key, newValue);
+                }}
+              >
+                {opt.label}
+              </Badge>
+            ))}
+          </div>
+        );
+
+      case 'color':
+        return (
+          <div className="flex items-center gap-2">
+            <input
+              type="color"
+              value={value}
+              onChange={(e) => handleValueChange(setting.key, e.target.value)}
+              className="w-10 h-10 rounded cursor-pointer"
+            />
+            <Input
+              value={value}
+              onChange={(e) => handleValueChange(setting.key, e.target.value)}
+              className="max-w-32 font-mono"
+            />
+          </div>
+        );
+
+      default:
+        return (
+          <Input
+            value={value}
+            onChange={(e) => handleValueChange(setting.key, e.target.value)}
+            placeholder={setting.placeholder}
+            className="max-w-md"
+          />
+        );
+    }
+  };
+
+  return (
+    <div className="container mx-auto py-6 max-w-6xl">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-3xl font-bold">Settings</h1>
+          <p className="text-muted-foreground">
+            Configure your AI infrastructure
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={exportSettings}>
+            <Download className="w-4 h-4 mr-2" />
+            Export
+          </Button>
+          <Button variant="outline">
+            <Upload className="w-4 h-4 mr-2" />
+            Import
+          </Button>
+          <Button variant="outline">
+            <History className="w-4 h-4 mr-2" />
+            History
+          </Button>
+          <Button
+            onClick={saveSettings}
+            disabled={!hasChanges || saving}
+          >
+            <Save className="w-4 h-4 mr-2" />
+            {saving ? 'Saving...' : 'Save Changes'}
+          </Button>
+        </div>
+      </div>
+
+      {/* Search and filters */}
+      <div className="flex items-center gap-4 mb-6">
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder="Search settings..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-10"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch
+            id="advanced"
+            checked={showAdvanced}
+            onCheckedChange={setShowAdvanced}
+          />
+          <label htmlFor="advanced" className="text-sm">
+            Show advanced settings
+          </label>
+        </div>
+      </div>
+
+      {/* Category tabs */}
+      <Tabs value={activeCategory} onValueChange={setActiveCategory}>
+        <TabsList className="flex flex-wrap h-auto gap-1 mb-6">
+          {categories.map(cat => (
+            <TabsTrigger key={cat} value={cat} className="flex items-center gap-1">
+              <span>{CATEGORY_INFO[cat]?.icon}</span>
+              <span>{CATEGORY_INFO[cat]?.label || cat}</span>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        {categories.map(cat => (
+          <TabsContent key={cat} value={cat}>
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <span className="text-2xl">{CATEGORY_INFO[cat]?.icon}</span>
+                      {CATEGORY_INFO[cat]?.label || cat}
+                    </CardTitle>
+                    <CardDescription>
+                      {CATEGORY_INFO[cat]?.description}
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => resetCategory(cat)}
+                  >
+                    <RotateCcw className="w-4 h-4 mr-2" />
+                    Reset to defaults
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-6">
+                  {filteredSchema.map(setting => (
+                    <div
+                      key={setting.key}
+                      className="flex items-start justify-between py-4 border-b last:border-0"
+                    >
+                      <div className="flex-1 pr-8">
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg">{setting.icon}</span>
+                          <label className="font-medium">
+                            {setting.label}
+                          </label>
+                          {setting.required && (
+                            <Badge variant="destructive" className="text-xs">
+                              Required
+                            </Badge>
+                          )}
+                          {setting.restart_required && (
+                            <Badge variant="secondary" className="text-xs">
+                              Restart required
+                            </Badge>
+                          )}
+                          {setting.help_url && (
+                            <a
+                              href={setting.help_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-muted-foreground hover:text-foreground"
+                            >
+                              <HelpCircle className="w-4 h-4" />
+                            </a>
+                          )}
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {setting.description}
+                        </p>
+                      </div>
+                      <div className="flex-shrink-0">
+                        {renderSettingInput(setting)}
+                      </div>
+                    </div>
+                  ))}
+
+                  {filteredSchema.length === 0 && (
+                    <div className="text-center py-8 text-muted-foreground">
+                      No settings found
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ))}
+      </Tabs>
+
+      {/* Unsaved changes indicator */}
+      {hasChanges && (
+        <div className="fixed bottom-4 right-4 bg-primary text-primary-foreground px-4 py-2 rounded-lg shadow-lg flex items-center gap-2">
+          <span>You have unsaved changes</span>
+          <Button size="sm" variant="secondary" onClick={saveSettings}>
+            Save now
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+### Settings Features Summary
+
+| Feature | Description |
+|---------|-------------|
+| **Categorized Settings** | 12 logical categories with icons and descriptions |
+| **Visual Controls** | Toggles, sliders, dropdowns, color pickers, multi-select |
+| **Search** | Real-time search across all settings |
+| **Validation** | Client and server-side validation with helpful errors |
+| **Dependencies** | Settings can show/hide based on other settings |
+| **History** | Full change history with rollback capability |
+| **Import/Export** | Backup and restore settings as JSON |
+| **Defaults** | Reset individual settings or entire categories |
+| **Advanced Mode** | Hide complex settings from basic users |
+| **Help Links** | Direct links to documentation for each setting |
+| **Unsaved Indicator** | Visual reminder of pending changes |
+| **Real-time Preview** | Changes reflect immediately in UI |
 
 ---
 
