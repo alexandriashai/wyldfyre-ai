@@ -593,6 +593,8 @@ class MemoryManager:
 
 ```python
 # packages/memory/src/ai_memory/signals.py
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum, auto
 
 class SignalType(Enum):
@@ -1341,7 +1343,7 @@ All security-relevant events are logged to a structured audit trail:
 
 **Audit Log Storage:**
 ```sql
--- PostgreSQL audit_logs table
+-- PostgreSQL audit_logs table (partitioned for retention)
 CREATE TABLE audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1354,15 +1356,15 @@ CREATE TABLE audit_logs (
     action VARCHAR(20) NOT NULL,
     outcome VARCHAR(20) NOT NULL,
     details JSONB,
-    risk_level VARCHAR(20) DEFAULT 'low',
+    risk_level VARCHAR(20) DEFAULT 'low'
+) PARTITION BY RANGE (timestamp);
 
-    -- Indexes for common queries
-    INDEX idx_audit_timestamp (timestamp DESC),
-    INDEX idx_audit_actor (actor_type, actor_id),
-    INDEX idx_audit_risk (risk_level, timestamp DESC)
-);
+-- Create indexes on partitioned table
+CREATE INDEX idx_audit_timestamp ON audit_logs(timestamp DESC);
+CREATE INDEX idx_audit_actor ON audit_logs(actor_type, actor_id);
+CREATE INDEX idx_audit_risk ON audit_logs(risk_level, timestamp DESC);
 
--- Retention: Partition by month, retain 12 months
+-- Create monthly partitions (example for January 2025)
 CREATE TABLE audit_logs_y2025m01 PARTITION OF audit_logs
     FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
 ```
@@ -1373,6 +1375,7 @@ All user inputs are sanitized before processing:
 
 ```python
 # services/api/src/api/middleware/sanitization.py
+from pathlib import Path
 from pydantic import BaseModel, field_validator
 import bleach
 import re
@@ -1665,16 +1668,21 @@ groups:
 
 ```python
 # services/api/src/api/routes/health.py
-from fastapi import APIRouter, Response
-from datetime import datetime
+from fastapi import APIRouter, Response, Depends
+from datetime import datetime, timezone
 import asyncio
+import json
+from typing import Annotated
+
+from ..dependencies import get_redis, check_redis, check_postgres, check_qdrant
+from redis.asyncio import Redis
 
 router = APIRouter(prefix="/health", tags=["Health"])
 
 @router.get("/live")
 async def liveness():
     """Kubernetes liveness probe - is the process running?"""
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 @router.get("/ready")
 async def readiness():
@@ -1700,7 +1708,7 @@ async def readiness():
     )
 
 @router.get("/agents")
-async def agent_health():
+async def agent_health(redis: Annotated[Redis, Depends(get_redis)]):
     """Check status of all agents."""
     agents = ["supervisor", "code", "data", "infra", "research", "qa"]
     statuses = {}
@@ -1708,7 +1716,7 @@ async def agent_health():
     for agent in agents:
         last_heartbeat = await redis.get(f"agent:{agent}:heartbeat")
         if last_heartbeat:
-            age = datetime.utcnow() - datetime.fromisoformat(last_heartbeat)
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(last_heartbeat)
             statuses[agent] = "ok" if age.seconds < 60 else "stale"
         else:
             statuses[agent] = "unknown"
@@ -1724,8 +1732,10 @@ async def agent_health():
 
 ```python
 # packages/messaging/src/ai_messaging/retry.py
+import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-import asyncio
+
+logger = logging.getLogger(__name__)
 
 class RetryConfig:
     """Configurable retry policies for different operations."""
@@ -1784,14 +1794,20 @@ Failed messages are preserved for debugging and replay:
 
 ```python
 # packages/messaging/src/ai_messaging/dlq.py
-from datetime import datetime
+from datetime import datetime, timezone
 import json
+import traceback
+import uuid
 
 class DeadLetterQueue:
     """Handle messages that fail processing after all retries."""
 
     DLQ_PREFIX = "ai:dlq:"
     MAX_RETENTION_DAYS = 7
+
+    def __init__(self, redis, alert_manager=None):
+        self.redis = redis
+        self.alert_manager = alert_manager
 
     async def send_to_dlq(
         self,
@@ -1808,7 +1824,7 @@ class DeadLetterQueue:
             "error_type": type(error).__name__,
             "error_message": str(error),
             "attempts": attempts,
-            "failed_at": datetime.utcnow().isoformat(),
+            "failed_at": datetime.now(timezone.utc).isoformat(),
             "stack_trace": traceback.format_exc()
         }
 
@@ -1844,8 +1860,12 @@ Prevent cascade failures when downstream services are unhealthy:
 ```python
 # packages/core/src/ai_core/circuit_breaker.py
 from enum import Enum
-from datetime import datetime, timedelta
-import asyncio
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+class CircuitOpenError(Exception):
+    """Raised when circuit breaker is open and rejecting requests."""
+    pass
 
 class CircuitState(Enum):
     CLOSED = "closed"      # Normal operation
@@ -1868,11 +1888,11 @@ class CircuitBreaker:
         self.state = CircuitState.CLOSED
         self.failures = 0
         self.successes = 0
-        self.last_failure_time: datetime = None
+        self.last_failure_time: Optional[datetime] = None
 
     async def call(self, func, *args, **kwargs):
         if self.state == CircuitState.OPEN:
-            if datetime.utcnow() - self.last_failure_time > self.timeout:
+            if self.last_failure_time and datetime.now(timezone.utc) - self.last_failure_time > self.timeout:
                 self.state = CircuitState.HALF_OPEN
                 self.successes = 0
             else:
@@ -1895,7 +1915,7 @@ class CircuitBreaker:
 
     def _on_failure(self):
         self.failures += 1
-        self.last_failure_time = datetime.utcnow()
+        self.last_failure_time = datetime.now(timezone.utc)
 
         if self.failures >= self.failure_threshold:
             self.state = CircuitState.OPEN
@@ -1914,7 +1934,10 @@ Automatic recovery when agents crash:
 ```python
 # packages/tmux_manager/src/ai_tmux/recovery.py
 import asyncio
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger(__name__)
 
 class AgentWatchdog:
     """Monitor and restart crashed agents."""
@@ -1923,9 +1946,10 @@ class AgentWatchdog:
     MAX_RESTART_ATTEMPTS = 3
     RESTART_BACKOFF = [10, 30, 60]  # seconds
 
-    def __init__(self, tmux_manager, redis):
+    def __init__(self, tmux_manager, redis, alert_manager=None):
         self.tmux = tmux_manager
         self.redis = redis
+        self.alert_manager = alert_manager
         self.restart_counts: dict[str, int] = {}
 
     async def monitor_loop(self):
@@ -1945,7 +1969,7 @@ class AgentWatchdog:
                 continue
 
             last_beat = datetime.fromisoformat(heartbeat)
-            if datetime.utcnow() - last_beat > timedelta(seconds=90):
+            if datetime.now(timezone.utc) - last_beat > timedelta(seconds=90):
                 await self.handle_stale_agent(agent, last_beat)
 
     async def handle_missing_agent(self, agent: str):
@@ -1967,7 +1991,12 @@ class AgentWatchdog:
 
         if attempts >= self.MAX_RESTART_ATTEMPTS:
             logger.critical(f"Agent {agent} exceeded max restart attempts")
-            await self.alert_critical(agent)
+            if self.alert_manager:
+                await self.alert_manager.send(
+                    severity="critical",
+                    title=f"Agent {agent} failed to restart",
+                    message=f"Exceeded {self.MAX_RESTART_ATTEMPTS} restart attempts"
+                )
             return
 
         backoff = self.RESTART_BACKOFF[min(attempts, len(self.RESTART_BACKOFF) - 1)]
@@ -1993,17 +2022,26 @@ Proper cleanup when stopping services:
 
 ```python
 # services/supervisor/src/supervisor/shutdown.py
-import signal
 import asyncio
+import logging
+import signal
+from datetime import datetime, timezone
+from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 class GracefulShutdown:
-    def __init__(self):
+    def __init__(self, name: str, redis, state_manager=None):
+        self.name = name
+        self.redis = redis
+        self.state_manager = state_manager
         self.shutdown_event = asyncio.Event()
         self.active_tasks: set[asyncio.Task] = set()
 
     def setup_handlers(self):
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
-            asyncio.get_event_loop().add_signal_handler(
+            loop.add_signal_handler(
                 sig, lambda: asyncio.create_task(self.shutdown())
             )
 
@@ -2027,12 +2065,13 @@ class GracefulShutdown:
                     task.cancel()
 
         # Persist state
-        await self.save_state()
+        if self.state_manager:
+            await self.state_manager.save()
 
         # Send final heartbeat
         await self.redis.set(
             f"agent:{self.name}:shutdown",
-            datetime.utcnow().isoformat()
+            datetime.now(timezone.utc).isoformat()
         )
 
         logger.info("Shutdown complete")
@@ -2047,8 +2086,11 @@ class GracefulShutdown:
 ```python
 # packages/core/src/ai_core/cost_tracking.py
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import date as date_type
 from decimal import Decimal
+from typing import Optional
+
+from .metrics import llm_tokens_total, llm_cost_total
 
 @dataclass
 class TokenPricing:
@@ -2062,8 +2104,9 @@ class TokenPricing:
     OPENAI_TTS = Decimal("15.00")  # per 1M chars
 
 class CostTracker:
-    def __init__(self, db, budget_alert_threshold: Decimal = Decimal("100")):
+    def __init__(self, db, alert_manager=None, budget_alert_threshold: Decimal = Decimal("100")):
         self.db = db
+        self.alert_manager = alert_manager
         self.budget_threshold = budget_alert_threshold
 
     async def record_usage(
@@ -2090,9 +2133,9 @@ class CostTracker:
         # Check daily budget
         await self._check_budget_alert()
 
-    async def get_daily_summary(self, date: date = None) -> dict:
+    async def get_daily_summary(self, target_date: Optional[date_type] = None) -> dict:
         """Get usage summary for a specific day."""
-        date = date or date.today()
+        query_date = target_date or date_type.today()
 
         result = await self.db.fetch("""
             SELECT
@@ -2104,10 +2147,10 @@ class CostTracker:
             FROM api_usage
             WHERE DATE(timestamp) = $1
             GROUP BY provider, model
-        """, date)
+        """, query_date)
 
         return {
-            "date": date.isoformat(),
+            "date": query_date.isoformat(),
             "breakdown": [dict(r) for r in result],
             "total_cost": sum(r["total_cost"] for r in result)
         }
@@ -2120,7 +2163,7 @@ class CostTracker:
             WHERE DATE(timestamp) = CURRENT_DATE
         """)
 
-        if Decimal(str(today_cost)) > self.budget_threshold:
+        if Decimal(str(today_cost)) > self.budget_threshold and self.alert_manager:
             await self.alert_manager.send(
                 severity="warning",
                 title="Daily API Budget Exceeded",
@@ -2234,12 +2277,19 @@ budgets:
     hard_limit: 2000.00
 
   per_agent:
-    supervisor: 30.00/day
-    code: 25.00/day
-    data: 15.00/day
-    infra: 10.00/day
-    research: 20.00/day
-    qa: 15.00/day
+    # Daily budget limits per agent (in USD)
+    supervisor:
+      daily_limit: 30.00
+    code:
+      daily_limit: 25.00
+    data:
+      daily_limit: 15.00
+    infra:
+      daily_limit: 10.00
+    research:
+      daily_limit: 20.00
+    qa:
+      daily_limit: 15.00
 
 actions:
   on_warning:
@@ -2425,14 +2475,14 @@ class CloudflareTools:
             return data["result"]
 
     async def add_dns_record(self, zone_id: str, name: str, content: str,
-                            type: str = "A", proxied: bool = True, ttl: int = 1):
+                            record_type: str = "A", proxied: bool = True, ttl: int = 1):
         """Add a DNS record for a new domain."""
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.BASE_URL}/zones/{zone_id}/dns_records",
                 headers=self.headers,
                 json={
-                    "type": type, "name": name, "content": content,
+                    "type": record_type, "name": name, "content": content,
                     "proxied": proxied, "ttl": ttl
                 }
             )
@@ -3286,22 +3336,28 @@ echo "Start Agents: python scripts/start-agents-dev.py"
 
 ```yaml
 # docker-compose.dev.yml
+# NOTE: Create a .env file with the following variables for development:
+#   POSTGRES_USER=ai_infra
+#   POSTGRES_PASSWORD=<your-secure-password>
+#   POSTGRES_DB=ai_infrastructure
+#   GRAFANA_ADMIN_PASSWORD=<your-secure-password>
+
 version: "3.8"
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: ai_infra
-      POSTGRES_PASSWORD: dev_password
-      POSTGRES_DB: ai_infrastructure
+      POSTGRES_USER: ${POSTGRES_USER:-ai_infra}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_infrastructure}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/migrations:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ai_infra"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ai_infra}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -3352,7 +3408,7 @@ services:
     ports:
       - "3001:3000"
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
     volumes:
       - ./infrastructure/grafana/dashboards:/etc/grafana/provisioning/dashboards
     profiles: ["observability"]
