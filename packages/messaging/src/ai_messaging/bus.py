@@ -4,7 +4,7 @@ Message bus for request/response and event-driven communication.
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,7 +15,7 @@ from .messages import BaseMessage, MessageType, TaskRequest, TaskResponse
 
 logger = get_logger(__name__)
 
-Handler = Callable[[BaseMessage], asyncio.coroutine]
+Handler = Callable[[BaseMessage], Awaitable[None]]
 
 
 @dataclass

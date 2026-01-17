@@ -6,7 +6,6 @@ WARM (Qdrant): Synthesized learnings, 30-day retention, searchable
 COLD (File): Immutable historical reference, 365-day retention
 """
 
-import asyncio
 import json
 from datetime import datetime, timedelta
 from enum import Enum

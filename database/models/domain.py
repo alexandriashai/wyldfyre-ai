@@ -3,22 +3,13 @@ Domain model for managed domains and SSL certificates.
 """
 
 from datetime import datetime
-from enum import Enum as PyEnum
 
 from sqlalchemy import Boolean, DateTime, Enum, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from ai_core import DomainStatus
+
 from .base import Base, TimestampMixin, UUIDMixin
-
-
-class DomainStatus(str, PyEnum):
-    """Domain provisioning status."""
-    PENDING = "pending"
-    DNS_CONFIGURED = "dns_configured"
-    SSL_PENDING = "ssl_pending"
-    ACTIVE = "active"
-    ERROR = "error"
-    SUSPENDED = "suspended"
 
 
 class Domain(Base, UUIDMixin, TimestampMixin):

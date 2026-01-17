@@ -8,20 +8,18 @@ This package provides inter-service communication:
 - Message schemas
 """
 
+from ai_core import AgentStatus, AgentType, MessageType, TaskStatus
+
 from .bus import MessageBus
 from .client import RedisClient, get_redis_client, redis_client_context
 from .messages import (
     AgentHeartbeat,
-    AgentStatus,
     AgentStatusMessage,
-    AgentType,
     BaseMessage,
-    MessageType,
     SystemAlert,
     TaskProgress,
     TaskRequest,
     TaskResponse,
-    TaskStatus,
     ToolCall,
     ToolResult,
     UserNotification,
