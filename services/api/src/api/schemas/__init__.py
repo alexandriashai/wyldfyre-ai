@@ -7,6 +7,8 @@ from .auth import (
     LoginResponse,
     RefreshRequest,
     RegisterRequest,
+    UpdatePasswordRequest,
+    UpdateProfileRequest,
     UserResponse,
 )
 from .common import (
@@ -30,6 +32,8 @@ __all__ = [
     "LoginResponse",
     "RefreshRequest",
     "RegisterRequest",
+    "UpdatePasswordRequest",
+    "UpdateProfileRequest",
     "UserResponse",
     # Common
     "ErrorResponse",

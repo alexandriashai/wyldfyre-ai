@@ -10,6 +10,7 @@ from .domains import router as domains_router
 from .files import router as files_router
 from .health import router as health_router
 from .memory import router as memory_router
+from .settings import router as settings_router
 from .tasks import router as tasks_router
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "files_router",
     "health_router",
     "memory_router",
+    "settings_router",
     "tasks_router",
 ]

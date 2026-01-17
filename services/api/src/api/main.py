@@ -26,6 +26,7 @@ from .routes import (
     files_router,
     health_router,
     memory_router,
+    settings_router,
     tasks_router,
 )
 from .websocket.handlers import AgentResponseHandler
@@ -126,13 +127,14 @@ def create_app() -> FastAPI:
 
     # Include routers
     app.include_router(health_router)
-    app.include_router(auth_router, prefix="/api/v1")
-    app.include_router(agents_router, prefix="/api/v1")
-    app.include_router(tasks_router, prefix="/api/v1")
-    app.include_router(conversations_router, prefix="/api/v1")
-    app.include_router(domains_router, prefix="/api/v1")
-    app.include_router(files_router, prefix="/api/v1")
-    app.include_router(memory_router, prefix="/api/v1")
+    app.include_router(auth_router, prefix="/api")
+    app.include_router(agents_router, prefix="/api")
+    app.include_router(tasks_router, prefix="/api")
+    app.include_router(conversations_router, prefix="/api")
+    app.include_router(domains_router, prefix="/api")
+    app.include_router(files_router, prefix="/api")
+    app.include_router(memory_router, prefix="/api")
+    app.include_router(settings_router, prefix="/api")
     app.include_router(chat_router)  # WebSocket at root level
 
     # Prometheus metrics endpoint

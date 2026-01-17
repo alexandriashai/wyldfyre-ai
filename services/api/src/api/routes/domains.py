@@ -189,3 +189,26 @@ async def renew_ssl(
     """
     result = await domain_service.renew_ssl(domain_name)
     return result
+
+
+@router.post("/{domain_name}/deploy", response_model=dict[str, Any])
+async def deploy_domain(
+    domain_name: str,
+    current_user: AdminUserDep,
+    domain_service: DomainService = Depends(get_domain_service),
+) -> dict[str, Any]:
+    """
+    Deploy/provision a domain on the server.
+
+    Alias for /provision endpoint for frontend compatibility.
+    Triggers the Infra Agent to set up the domain infrastructure.
+    """
+    try:
+        result = await domain_service.provision_domain(domain_name)
+        return result
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
