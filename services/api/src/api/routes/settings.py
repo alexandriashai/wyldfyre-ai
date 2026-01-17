@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_core import get_logger
@@ -40,7 +41,7 @@ async def get_notification_settings(
     from ai_db import User
 
     result = await db.execute(
-        __import__("sqlalchemy").select(User).where(User.id == current_user.sub)
+        select(User).where(User.id == current_user.sub)
     )
     user = result.scalar_one_or_none()
 
@@ -80,7 +81,7 @@ async def update_notification_settings(
     from ai_db import User
 
     result = await db.execute(
-        __import__("sqlalchemy").select(User).where(User.id == current_user.sub)
+        select(User).where(User.id == current_user.sub)
     )
     user = result.scalar_one_or_none()
 
