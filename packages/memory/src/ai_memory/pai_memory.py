@@ -350,15 +350,212 @@ class PAIMemory:
         )
         return learning_ids
 
-    async def archive_old_warm(self, older_than_days: int = 30) -> int:
-        """Archive old WARM tier data to COLD tier."""
+    async def archive_old_warm(
+        self,
+        older_than_days: int = 30,
+        high_confidence_days: int = 60,
+        high_confidence_threshold: float = 0.9,
+        batch_size: int = 100,
+        delete_after_archive: bool = True,
+    ) -> int:
+        """
+        Archive old WARM tier data to COLD tier.
+
+        Retention Policy:
+        - Standard learnings: Archive after `older_than_days` (default 30)
+        - High-confidence learnings (>= threshold): Keep longer, archive after
+          `high_confidence_days` (default 60)
+        - Error learnings: Always archive after standard period
+        - After successful archive, optionally delete from WARM tier
+
+        Args:
+            older_than_days: Days before archiving standard learnings
+            high_confidence_days: Days before archiving high-confidence learnings
+            high_confidence_threshold: Confidence level considered "high"
+            batch_size: Number of documents to process per batch
+            delete_after_archive: Whether to delete from WARM after archiving
+
+        Returns:
+            Number of learnings archived
+        """
         if not self._qdrant:
             return 0
 
-        cutoff = datetime.utcnow() - timedelta(days=older_than_days)
-        archived_count = 0
+        now = datetime.utcnow()
+        standard_cutoff = now - timedelta(days=older_than_days)
+        high_confidence_cutoff = now - timedelta(days=high_confidence_days)
 
-        # This would require scrolling through Qdrant
-        # Implementation depends on specific retention policy
-        logger.info("Archive operation completed", archived=archived_count)
+        archived_count = 0
+        deleted_ids: list[str] = []
+        offset = None
+
+        logger.info(
+            "Starting WARM tier archive",
+            standard_cutoff=standard_cutoff.isoformat(),
+            high_confidence_cutoff=high_confidence_cutoff.isoformat(),
+        )
+
+        while True:
+            # Scroll through all documents in batches
+            documents, offset = await self._qdrant.scroll(
+                limit=batch_size,
+                offset=offset,
+            )
+
+            if not documents:
+                break
+
+            for doc in documents:
+                metadata = doc.get("metadata", {})
+                created_at_str = metadata.get("created_at")
+
+                if not created_at_str:
+                    continue
+
+                try:
+                    created_at = datetime.fromisoformat(created_at_str)
+                except ValueError:
+                    logger.warning(
+                        "Invalid created_at format",
+                        doc_id=doc["id"],
+                        created_at=created_at_str,
+                    )
+                    continue
+
+                confidence = metadata.get("confidence", 0.5)
+                category = metadata.get("category", "general")
+
+                # Determine if this learning should be archived
+                should_archive = False
+
+                if category == "error":
+                    # Error learnings: use standard cutoff
+                    should_archive = created_at < standard_cutoff
+                elif confidence >= high_confidence_threshold:
+                    # High-confidence learnings: keep longer
+                    should_archive = created_at < high_confidence_cutoff
+                else:
+                    # Standard learnings
+                    should_archive = created_at < standard_cutoff
+
+                if should_archive:
+                    # Reconstruct Learning object
+                    learning = Learning(
+                        content=doc.get("text", ""),
+                        phase=PAIPhase(metadata.get("phase", "learn")),
+                        category=category,
+                        task_id=metadata.get("task_id"),
+                        agent_type=metadata.get("agent_type"),
+                        confidence=confidence,
+                        metadata={
+                            k: v for k, v in metadata.items()
+                            if k not in ("phase", "category", "task_id",
+                                        "agent_type", "confidence", "created_at")
+                        },
+                    )
+                    learning.created_at = created_at
+
+                    # Generate summary based on phase and category
+                    summary = self._generate_archive_summary(learning)
+
+                    try:
+                        await self.archive_to_cold(learning, summary=summary)
+                        archived_count += 1
+                        deleted_ids.append(doc["id"])
+                    except Exception as e:
+                        logger.error(
+                            "Failed to archive learning",
+                            doc_id=doc["id"],
+                            error=str(e),
+                        )
+
+            # Delete archived documents from WARM tier in batches
+            if delete_after_archive and len(deleted_ids) >= batch_size:
+                await self._qdrant.delete_batch(deleted_ids)
+                deleted_ids = []
+
+            if offset is None:
+                break
+
+        # Delete any remaining archived documents
+        if delete_after_archive and deleted_ids:
+            await self._qdrant.delete_batch(deleted_ids)
+
+        logger.info(
+            "WARM tier archive completed",
+            archived=archived_count,
+            deleted=delete_after_archive,
+        )
         return archived_count
+
+    def _generate_archive_summary(self, learning: Learning) -> str:
+        """Generate a summary for an archived learning."""
+        phase_summaries = {
+            PAIPhase.OBSERVE: "Observation from task execution",
+            PAIPhase.THINK: "Analysis and reasoning insight",
+            PAIPhase.PLAN: "Planning decision or strategy",
+            PAIPhase.BUILD: "Implementation approach or pattern",
+            PAIPhase.EXECUTE: "Execution outcome or behavior",
+            PAIPhase.VERIFY: "Verification result or quality check",
+            PAIPhase.LEARN: "Extracted learning or improvement",
+        }
+
+        base_summary = phase_summaries.get(learning.phase, "General learning")
+
+        parts = [base_summary]
+
+        if learning.category:
+            parts.append(f"Category: {learning.category}")
+
+        if learning.agent_type:
+            parts.append(f"Agent: {learning.agent_type}")
+
+        if learning.confidence >= 0.9:
+            parts.append("High confidence")
+        elif learning.confidence < 0.6:
+            parts.append("Low confidence")
+
+        return " | ".join(parts)
+
+    async def cleanup_cold_storage(self, older_than_days: int = 365) -> int:
+        """
+        Remove very old COLD tier data.
+
+        Args:
+            older_than_days: Days before permanent deletion (default 365)
+
+        Returns:
+            Number of files deleted
+        """
+        cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+        deleted_count = 0
+
+        for phase in PAIPhase:
+            phase_dir = self._cold_path / "Learning" / phase.value.upper()
+            if not phase_dir.exists():
+                continue
+
+            for filepath in phase_dir.glob("*.json"):
+                try:
+                    # Parse timestamp from filename
+                    ts_str = filepath.stem.split("_")[0] + "_" + filepath.stem.split("_")[1]
+                    file_time = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+
+                    if file_time < cutoff:
+                        filepath.unlink()
+                        deleted_count += 1
+                        logger.debug("Deleted old COLD file", path=str(filepath))
+
+                except (IndexError, ValueError) as e:
+                    logger.warning(
+                        "Could not parse timestamp from filename",
+                        path=str(filepath),
+                        error=str(e),
+                    )
+
+        logger.info(
+            "COLD tier cleanup completed",
+            deleted=deleted_count,
+            cutoff=cutoff.isoformat(),
+        )
+        return deleted_count
