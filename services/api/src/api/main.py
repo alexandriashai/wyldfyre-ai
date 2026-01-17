@@ -1,0 +1,188 @@
+"""
+FastAPI application entry point.
+"""
+
+import asyncio
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+from ai_core import configure_logging, get_logger, get_settings
+from ai_messaging import get_redis_client
+
+from .config import get_api_config
+from .database import close_db, init_db
+from .middleware import LoggingMiddleware, RateLimitMiddleware
+from .routes import (
+    agents_router,
+    auth_router,
+    chat_router,
+    conversations_router,
+    domains_router,
+    files_router,
+    health_router,
+    memory_router,
+    tasks_router,
+)
+from .websocket.handlers import AgentResponseHandler
+from .websocket.manager import get_connection_manager
+
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """
+    Application lifespan handler.
+
+    Manages startup and shutdown tasks.
+    """
+    # Startup
+    logger.info("Starting API server...")
+
+    # Configure logging
+    settings = get_settings()
+    configure_logging(
+        level=settings.logging.level,
+        json_format=settings.logging.json_format,
+    )
+
+    # Initialize database
+    try:
+        await init_db()
+        logger.info("Database initialized")
+    except Exception as e:
+        logger.error("Database initialization failed", error=str(e))
+        # Continue without database for now
+
+    # Initialize Redis
+    try:
+        redis = await get_redis_client()
+        await redis.ping()
+        logger.info("Redis connected")
+    except Exception as e:
+        logger.error("Redis connection failed", error=str(e))
+
+    # Start agent response handler
+    agent_handler = None
+    try:
+        redis = await get_redis_client()
+        manager = get_connection_manager()
+        agent_handler = AgentResponseHandler(manager, redis)
+        asyncio.create_task(agent_handler.start())
+        logger.info("Agent response handler started")
+    except Exception as e:
+        logger.error("Failed to start agent response handler", error=str(e))
+
+    logger.info("API server started")
+
+    yield
+
+    # Shutdown
+    logger.info("Shutting down API server...")
+
+    # Stop agent response handler
+    if agent_handler:
+        await agent_handler.stop()
+
+    # Close database
+    await close_db()
+
+    logger.info("API server stopped")
+
+
+def create_app() -> FastAPI:
+    """
+    Create and configure the FastAPI application.
+    """
+    config = get_api_config()
+
+    app = FastAPI(
+        title="AI Infrastructure API",
+        description="Backend API for AI Infrastructure multi-agent system",
+        version="0.1.0",
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+        lifespan=lifespan,
+    )
+
+    # Add CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=config.cors_origins,
+        allow_credentials=config.cors_allow_credentials,
+        allow_methods=config.cors_allow_methods,
+        allow_headers=config.cors_allow_headers,
+    )
+
+    # Add custom middleware
+    app.add_middleware(LoggingMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+
+    # Include routers
+    app.include_router(health_router)
+    app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(agents_router, prefix="/api/v1")
+    app.include_router(tasks_router, prefix="/api/v1")
+    app.include_router(conversations_router, prefix="/api/v1")
+    app.include_router(domains_router, prefix="/api/v1")
+    app.include_router(files_router, prefix="/api/v1")
+    app.include_router(memory_router, prefix="/api/v1")
+    app.include_router(chat_router)  # WebSocket at root level
+
+    # Prometheus metrics endpoint
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> bytes:
+        """Prometheus metrics endpoint."""
+        return generate_latest()
+
+    # Global exception handler
+    @app.exception_handler(Exception)
+    async def global_exception_handler(
+        request: Request,
+        exc: Exception,
+    ) -> JSONResponse:
+        """Handle uncaught exceptions."""
+        logger.error(
+            "Unhandled exception",
+            path=request.url.path,
+            error=str(exc),
+            exc_info=exc,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error",
+                "detail": str(exc) if config.debug else None,
+            },
+        )
+
+    return app
+
+
+# Create application instance
+app = create_app()
+
+
+def main() -> None:
+    """Run the API server."""
+    import uvicorn
+
+    config = get_api_config()
+
+    uvicorn.run(
+        "api.main:app",
+        host=config.host,
+        port=config.port,
+        reload=config.reload,
+        log_level="info" if not config.debug else "debug",
+    )
+
+
+if __name__ == "__main__":
+    main()
