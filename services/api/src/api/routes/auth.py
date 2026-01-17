@@ -12,6 +12,9 @@ from ..schemas import (
     LoginResponse,
     RefreshRequest,
     RegisterRequest,
+    SuccessResponse,
+    UpdatePasswordRequest,
+    UpdateProfileRequest,
     UserResponse,
 )
 
@@ -165,3 +168,50 @@ async def get_current_user(
         )
 
     return UserResponse.model_validate(user)
+
+
+@router.put("/profile", response_model=UserResponse)
+async def update_profile(
+    request: UpdateProfileRequest,
+    current_user: CurrentUserDep,
+    auth_service: AuthServiceDep,
+) -> UserResponse:
+    """
+    Update current user's profile.
+    """
+    try:
+        user = await auth_service.update_profile(
+            user_id=current_user.sub,
+            display_name=request.display_name,
+        )
+        return UserResponse.model_validate(user)
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.put("/password", response_model=SuccessResponse)
+async def update_password(
+    request: UpdatePasswordRequest,
+    current_user: CurrentUserDep,
+    auth_service: AuthServiceDep,
+) -> SuccessResponse:
+    """
+    Update current user's password.
+    """
+    try:
+        await auth_service.update_password(
+            user_id=current_user.sub,
+            current_password=request.current_password,
+            new_password=request.new_password,
+        )
+        return SuccessResponse(message="Password updated successfully")
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )

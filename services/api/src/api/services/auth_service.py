@@ -265,3 +265,67 @@ class AuthService:
 
         logger.info("User authenticated", user_id=user.id)
         return user
+
+    async def update_profile(
+        self,
+        user_id: str,
+        display_name: str | None = None,
+    ) -> Any:
+        """
+        Update user profile.
+
+        Args:
+            user_id: User ID
+            display_name: New display name
+
+        Returns:
+            Updated User object
+
+        Raises:
+            ValueError: If user not found
+        """
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            raise ValueError("User not found")
+
+        if display_name is not None:
+            user.display_name = display_name
+
+        await self.db.flush()
+        await self.db.refresh(user)
+
+        logger.info("User profile updated", user_id=user_id)
+        return user
+
+    async def update_password(
+        self,
+        user_id: str,
+        current_password: str,
+        new_password: str,
+    ) -> bool:
+        """
+        Update user password.
+
+        Args:
+            user_id: User ID
+            current_password: Current plain text password
+            new_password: New plain text password
+
+        Returns:
+            True if password updated successfully
+
+        Raises:
+            ValueError: If user not found or current password incorrect
+        """
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            raise ValueError("User not found")
+
+        if not self.verify_password(current_password, user.password_hash):
+            raise ValueError("Current password is incorrect")
+
+        user.password_hash = self.hash_password(new_password)
+        await self.db.flush()
+
+        logger.info("User password updated", user_id=user_id)
+        return True

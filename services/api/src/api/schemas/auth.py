@@ -44,8 +44,22 @@ class UserResponse(BaseModel):
     id: str
     email: str
     username: str
+    display_name: str | None = None
     is_admin: bool
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class UpdateProfileRequest(BaseModel):
+    """Profile update request."""
+
+    display_name: str | None = Field(None, min_length=1, max_length=100)
+
+
+class UpdatePasswordRequest(BaseModel):
+    """Password update request."""
+
+    current_password: str
+    new_password: str = Field(min_length=8, max_length=128)
