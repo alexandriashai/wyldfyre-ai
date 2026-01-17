@@ -1,25 +1,127 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuthStore } from "@/stores/auth-store";
+import { authApi, settingsApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
-import { User, Key, Bell, Shield, Loader2 } from "lucide-react";
+import { User, Key, Bell, Shield, Loader2, CheckCircle, AlertCircle } from "lucide-react";
+
+interface NotificationSettings {
+  task_completions: boolean;
+  agent_errors: boolean;
+  ssl_expiration: boolean;
+  system_updates: boolean;
+}
 
 export default function SettingsPage() {
-  const { user } = useAuthStore();
+  const { user, token, fetchUser } = useAuthStore();
   const [displayName, setDisplayName] = useState(user?.display_name || "");
-  const [isSaving, setIsSaving] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [profileMessage, setProfileMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Password state
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [isSavingPassword, setIsSavingPassword] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Notifications state
+  const [notifications, setNotifications] = useState<NotificationSettings>({
+    task_completions: true,
+    agent_errors: true,
+    ssl_expiration: true,
+    system_updates: false,
+  });
+  const [isSavingNotifications, setIsSavingNotifications] = useState(false);
+
+  // Update display name when user changes
+  useEffect(() => {
+    if (user?.display_name) {
+      setDisplayName(user.display_name);
+    }
+  }, [user?.display_name]);
+
+  // Fetch notification settings on mount
+  useEffect(() => {
+    if (token) {
+      settingsApi.getNotifications(token)
+        .then(setNotifications)
+        .catch(() => {
+          // Use default settings if fetch fails
+        });
+    }
+  }, [token]);
 
   const handleSaveProfile = async () => {
-    setIsSaving(true);
-    // TODO: Implement profile update API call
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setIsSaving(false);
+    if (!token) return;
+    setIsSavingProfile(true);
+    setProfileMessage(null);
+
+    try {
+      await authApi.updateProfile(token, { display_name: displayName });
+      await fetchUser();
+      setProfileMessage({ type: "success", text: "Profile updated successfully" });
+    } catch (error) {
+      setProfileMessage({ type: "error", text: error instanceof Error ? error.message : "Failed to update profile" });
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const handleUpdatePassword = async () => {
+    if (!token) return;
+
+    if (newPassword !== confirmPassword) {
+      setPasswordMessage({ type: "error", text: "Passwords do not match" });
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      setPasswordMessage({ type: "error", text: "Password must be at least 8 characters" });
+      return;
+    }
+
+    setIsSavingPassword(true);
+    setPasswordMessage(null);
+
+    try {
+      await authApi.updatePassword(token, {
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordMessage({ type: "success", text: "Password updated successfully" });
+    } catch (error) {
+      setPasswordMessage({ type: "error", text: error instanceof Error ? error.message : "Failed to update password" });
+    } finally {
+      setIsSavingPassword(false);
+    }
+  };
+
+  const handleNotificationChange = async (key: keyof NotificationSettings, value: boolean) => {
+    if (!token) return;
+
+    const newSettings = { ...notifications, [key]: value };
+    setNotifications(newSettings);
+    setIsSavingNotifications(true);
+
+    try {
+      await settingsApi.updateNotifications(token, { [key]: value });
+    } catch (error) {
+      // Revert on error
+      setNotifications(notifications);
+    } finally {
+      setIsSavingNotifications(false);
+    }
   };
 
   return (
@@ -60,6 +162,19 @@ export default function SettingsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {profileMessage && (
+                <div className={`flex items-center gap-2 rounded-md p-3 text-sm ${
+                  profileMessage.type === "success" ? "bg-green-500/15 text-green-500" : "bg-destructive/15 text-destructive"
+                }`}>
+                  {profileMessage.type === "success" ? (
+                    <CheckCircle className="h-4 w-4" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4" />
+                  )}
+                  {profileMessage.text}
+                </div>
+              )}
+
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
                 <Input
@@ -91,8 +206,8 @@ export default function SettingsPage() {
 
               <Separator className="my-4" />
 
-              <Button onClick={handleSaveProfile} disabled={isSaving}>
-                {isSaving ? (
+              <Button onClick={handleSaveProfile} disabled={isSavingProfile}>
+                {isSavingProfile ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     Saving...
@@ -114,24 +229,64 @@ export default function SettingsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {passwordMessage && (
+                <div className={`flex items-center gap-2 rounded-md p-3 text-sm ${
+                  passwordMessage.type === "success" ? "bg-green-500/15 text-green-500" : "bg-destructive/15 text-destructive"
+                }`}>
+                  {passwordMessage.type === "success" ? (
+                    <CheckCircle className="h-4 w-4" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4" />
+                  )}
+                  {passwordMessage.text}
+                </div>
+              )}
+
               <div className="space-y-2">
                 <Label htmlFor="currentPassword">Current Password</Label>
-                <Input id="currentPassword" type="password" />
+                <Input
+                  id="currentPassword"
+                  type="password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                />
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="newPassword">New Password</Label>
-                <Input id="newPassword" type="password" />
+                <Input
+                  id="newPassword"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                />
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="confirmPassword">Confirm New Password</Label>
-                <Input id="confirmPassword" type="password" />
+                <Input
+                  id="confirmPassword"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
               </div>
 
               <Separator className="my-4" />
 
-              <Button>Update Password</Button>
+              <Button
+                onClick={handleUpdatePassword}
+                disabled={isSavingPassword || !currentPassword || !newPassword || !confirmPassword}
+              >
+                {isSavingPassword ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Updating...
+                  </>
+                ) : (
+                  "Update Password"
+                )}
+              </Button>
             </CardContent>
           </Card>
         </TabsContent>
@@ -147,49 +302,65 @@ export default function SettingsPage() {
             <CardContent>
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">Task Completions</p>
+                  <div className="space-y-0.5">
+                    <Label>Task Completions</Label>
                     <p className="text-sm text-muted-foreground">
                       Notify when agents complete tasks
                     </p>
                   </div>
-                  <input type="checkbox" defaultChecked className="h-4 w-4" />
+                  <Switch
+                    checked={notifications.task_completions}
+                    onCheckedChange={(checked) => handleNotificationChange("task_completions", checked)}
+                    disabled={isSavingNotifications}
+                  />
                 </div>
 
                 <Separator />
 
                 <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">Agent Errors</p>
+                  <div className="space-y-0.5">
+                    <Label>Agent Errors</Label>
                     <p className="text-sm text-muted-foreground">
                       Notify when agents encounter errors
                     </p>
                   </div>
-                  <input type="checkbox" defaultChecked className="h-4 w-4" />
+                  <Switch
+                    checked={notifications.agent_errors}
+                    onCheckedChange={(checked) => handleNotificationChange("agent_errors", checked)}
+                    disabled={isSavingNotifications}
+                  />
                 </div>
 
                 <Separator />
 
                 <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">SSL Expiration</p>
+                  <div className="space-y-0.5">
+                    <Label>SSL Expiration</Label>
                     <p className="text-sm text-muted-foreground">
                       Notify before SSL certificates expire
                     </p>
                   </div>
-                  <input type="checkbox" defaultChecked className="h-4 w-4" />
+                  <Switch
+                    checked={notifications.ssl_expiration}
+                    onCheckedChange={(checked) => handleNotificationChange("ssl_expiration", checked)}
+                    disabled={isSavingNotifications}
+                  />
                 </div>
 
                 <Separator />
 
                 <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">System Updates</p>
+                  <div className="space-y-0.5">
+                    <Label>System Updates</Label>
                     <p className="text-sm text-muted-foreground">
                       Notify about system updates and maintenance
                     </p>
                   </div>
-                  <input type="checkbox" className="h-4 w-4" />
+                  <Switch
+                    checked={notifications.system_updates}
+                    onCheckedChange={(checked) => handleNotificationChange("system_updates", checked)}
+                    disabled={isSavingNotifications}
+                  />
                 </div>
               </div>
             </CardContent>
@@ -211,7 +382,7 @@ export default function SettingsPage() {
                   <span className="text-xs text-green-500">Connected</span>
                 </div>
                 <Input
-                  value="sk-ant-••••••••••••••••••••••••"
+                  value="sk-ant-api03-••••••••••••••••"
                   disabled
                   className="font-mono text-sm"
                 />
@@ -223,7 +394,7 @@ export default function SettingsPage() {
                   <span className="text-xs text-green-500">Connected</span>
                 </div>
                 <Input
-                  value="sk-••••••••••••••••••••••••"
+                  value="sk-proj-••••••••••••••••"
                   disabled
                   className="font-mono text-sm"
                 />
