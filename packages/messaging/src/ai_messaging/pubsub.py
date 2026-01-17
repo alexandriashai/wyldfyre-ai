@@ -4,7 +4,7 @@ Redis Pub/Sub implementation for real-time messaging.
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,7 +16,8 @@ from .client import RedisClient
 
 logger = get_logger(__name__)
 
-MessageHandler = Callable[[str, dict[str, Any]], asyncio.coroutine]
+# Handler receives message content as a string (JSON)
+MessageHandler = Callable[[str], Awaitable[None]]
 
 
 @dataclass
@@ -110,18 +111,21 @@ class PubSubManager:
             await self._pubsub.unsubscribe(channel)
             logger.info("Unsubscribed from channel", channel=channel)
 
-    async def publish(self, channel: str, message: dict[str, Any]) -> int:
+    async def publish(self, channel: str, message: str | dict[str, Any]) -> int:
         """
         Publish message to channel.
 
         Args:
             channel: Channel name
-            message: Message data (will be JSON serialized)
+            message: Message data (string or dict; dicts will be JSON serialized)
 
         Returns:
             Number of subscribers that received the message
         """
-        data = json.dumps(message)
+        if isinstance(message, dict):
+            data = json.dumps(message)
+        else:
+            data = message
         count = await self._client.client.publish(channel, data)
         messages_published_total.labels(channel=channel).inc()
         logger.debug("Published message", channel=channel, subscribers=count)
@@ -167,16 +171,13 @@ class PubSubManager:
             return
 
         try:
-            data = message.get("data", "{}")
+            data = message.get("data", "")
             if isinstance(data, bytes):
                 data = data.decode()
-            parsed = json.loads(data)
 
-            await subscription.handler(channel, parsed)
+            # Pass raw string data to handler (handler can parse as needed)
+            await subscription.handler(data)
             messages_consumed_total.labels(channel=channel, status="success").inc()
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse message", channel=channel, error=str(e))
-            messages_consumed_total.labels(channel=channel, status="error").inc()
         except Exception as e:
             logger.error("Error handling message", channel=channel, error=str(e))
             messages_consumed_total.labels(channel=channel, status="error").inc()

@@ -5,6 +5,7 @@ Database connection and session management.
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -109,7 +110,3 @@ async def close_db() -> None:
         _engine = None
         _session_factory = None
         logger.info("Database connection closed")
-
-
-# Import text for raw SQL
-from sqlalchemy import text

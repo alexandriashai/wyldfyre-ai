@@ -47,8 +47,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Configure logging
     settings = get_settings()
     configure_logging(
-        level=settings.logging.level,
-        json_format=settings.logging.json_format,
+        log_level=settings.logging.level,
+        log_format=settings.logging.format,
     )
 
     # Initialize database
