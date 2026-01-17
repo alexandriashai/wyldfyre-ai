@@ -24,7 +24,7 @@ This document provides specific, actionable steps for building the Multi-Agent A
 
 Create the base directory structure:
 
-```
+```bash
 mkdir -p packages/{core,messaging,memory,tmux_manager}/src
 mkdir -p services/{api,supervisor,voice}/src
 mkdir -p services/agents/{base,code_agent,data_agent,infra_agent,research_agent,qa_agent}/src
@@ -34,6 +34,7 @@ mkdir -p infrastructure/{docker,nginx,systemd,scripts}
 mkdir -p config/{tmux,prompts}
 mkdir -p pai/{.claude/commands,MEMORY/{Learning/{OBSERVE,THINK,PLAN,BUILD,EXECUTE,VERIFY,LEARN,ALGORITHM},Signals/{ratings,sentiment,behavioral,verification},Work/{active,archive}},TELOS,hooks}
 mkdir -p tests/{unit,integration,e2e}
+mkdir -p docs
 ```
 
 - [ ] **1.1.1** Create root configuration files
@@ -85,7 +86,16 @@ Location: `packages/core/src/ai_core/`
   ```toml
   [project]
   name = "ai-core"
-  dependencies = ["pydantic>=2.0", "pydantic-settings", "structlog"]
+  dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings",
+    "structlog",
+    "boto3",
+    "prometheus-client",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp"
+  ]
   ```
 
 - [ ] **1.3.2** Create `config.py`:
@@ -120,6 +130,24 @@ Location: `packages/core/src/ai_core/`
   - Tracer provider configuration
   - Span helpers for agents
 
+- [ ] **1.3.7** Create `secrets.py`:
+  - AWS Secrets Manager client
+  - Secret retrieval with caching (`@lru_cache`)
+  - `get_secret(name)` method
+  - `get_api_keys()` for startup loading
+  - Prefix-based secret organization
+
+- [ ] **1.3.8** Create `circuit_breaker.py`:
+  - `CircuitState` enum (CLOSED, OPEN, HALF_OPEN)
+  - `CircuitBreaker` class
+  - Failure threshold tracking
+  - Automatic recovery with timeout
+  - Half-open state testing
+
+- [ ] **1.3.9** Create `__init__.py` files:
+  - Export all public classes and functions
+  - Version information
+
 ### Step 1.4: Messaging Package (`packages/messaging`)
 
 Location: `packages/messaging/src/ai_messaging/`
@@ -128,7 +156,7 @@ Location: `packages/messaging/src/ai_messaging/`
   ```toml
   [project]
   name = "ai-messaging"
-  dependencies = ["redis>=5.0", "ai-core"]
+  dependencies = ["redis>=5.0", "tenacity", "ai-core"]
   ```
 
 - [ ] **1.4.2** Create `protocols.py`:
@@ -166,7 +194,8 @@ Location: `packages/messaging/src/ai_messaging/`
 - [ ] **1.4.7** Create `retry.py`:
   - Retry strategies with tenacity
   - Exponential backoff configuration
-  - Circuit breaker implementation
+  - Retry decorators for different operation types
+  - Integration with circuit breaker from core package
 
 - [ ] **1.4.8** Create `dlq.py`:
   - Dead letter queue management
@@ -182,7 +211,7 @@ Location: `packages/memory/src/ai_memory/`
   ```toml
   [project]
   name = "ai-memory"
-  dependencies = ["qdrant-client", "openai>=1.0", "ai-core", "ai-messaging"]
+  dependencies = ["qdrant-client", "openai>=1.0", "aiofiles", "ai-core", "ai-messaging"]
   ```
 
 - [ ] **1.5.2** Create `schemas.py`:
@@ -270,7 +299,14 @@ Location: `packages/tmux_manager/src/ai_tmux/`
   - Automatic restart with backoff
   - Health status reporting
 
-- [ ] **1.6.6** Create `config/tmux/session.yaml`:
+- [ ] **1.6.6** Create `recovery.py`:
+  - Agent crash recovery logic
+  - Restart attempt tracking
+  - Backoff intervals (10s, 30s, 60s)
+  - Max restart attempts (3)
+  - Alert on recovery failure
+
+- [ ] **1.6.7** Create `config/tmux/session.yaml`:
   - tmuxp configuration file
   - Window definitions for all 6 agents
   - Monitor and logs windows
@@ -302,13 +338,17 @@ Location: `packages/tmux_manager/src/ai_tmux/`
 - [ ] **1.8.1** Create initial PostgreSQL migrations:
   - `database/migrations/001_create_users.sql`
   - `database/migrations/002_create_conversations.sql`
-  - `database/migrations/003_create_tasks.sql`
-  - `database/migrations/004_create_audit_logs.sql`
-  - `database/migrations/005_create_domains.sql`
+  - `database/migrations/003_create_messages.sql`
+  - `database/migrations/004_create_attachments.sql`
+  - `database/migrations/005_create_tasks.sql`
+  - `database/migrations/006_create_audit_logs.sql`
+  - `database/migrations/007_create_domains.sql`
 
 - [ ] **1.8.2** Create database models (SQLAlchemy):
   - `database/models/user.py`
   - `database/models/conversation.py`
+  - `database/models/message.py`
+  - `database/models/attachment.py`
   - `database/models/task.py`
   - `database/models/audit_log.py`
   - `database/models/domain.py`
@@ -344,7 +384,7 @@ Location: `services/agents/base/src/agent_base/`
   ```toml
   [project]
   name = "agent-base"
-  dependencies = ["anthropic", "ai-core", "ai-messaging", "ai-memory"]
+  dependencies = ["anthropic", "httpx", "ai-core", "ai-messaging", "ai-memory"]
   ```
 
 - [ ] **2.1.2** Create `agent.py`:
@@ -564,6 +604,7 @@ Location: `services/agents/code_agent/src/code_agent/`
 - [ ] **3.2.5** Create `tools/certbot.py` (detailed in Phase 4)
 - [ ] **3.2.6** Create `tools/domains.py` (detailed in Phase 4)
 - [ ] **3.2.7** Create `tools/systemd.py` (detailed in Phase 4)
+- [ ] **3.2.8** Create `tools/cloudflare.py` (detailed in Phase 4)
 
 ### Step 3.3: Research Agent (`services/agents/research_agent`)
 
@@ -845,58 +886,85 @@ Location: `services/agents/infra_agent/src/infra_agent/tools/domains.py`
         ssl: true
     ```
 
-### Step 4.5: Systemd Management
+### Step 4.5: Cloudflare Integration
+
+Location: `services/agents/infra_agent/src/infra_agent/tools/cloudflare.py`
+
+- [ ] **4.5.1** Zone management:
+  - List all zones in account
+  - Create new zone for domain
+  - Get zone details
+  - Cache zone ID mappings
+
+- [ ] **4.5.2** DNS record management:
+  - Add DNS record (A, CNAME, etc.)
+  - Update existing records
+  - Delete records
+  - List records for zone
+
+- [ ] **4.5.3** Cache operations:
+  - Purge entire cache
+  - Purge specific files
+  - Development mode toggle
+
+- [ ] **4.5.4** WAF/Security (paid features):
+  - Create custom WAF rules
+  - Manage firewall rules
+  - Rate limiting configuration
+
+### Step 4.6: Systemd Management
 
 Location: `services/agents/infra_agent/src/infra_agent/tools/systemd.py`
 
-- [ ] **4.5.1** Service operations:
+- [ ] **4.6.1** Service operations:
   - Start/stop/restart service
   - Enable/disable service
   - View service status
   - View service logs (journalctl)
 
-- [ ] **4.5.2** Service creation:
+- [ ] **4.6.2** Service creation:
   - Create service unit file
   - Reload systemd daemon
   - Enable and start service
 
-### Step 4.6: SSH Access Configuration
+### Step 4.7: SSH Access Configuration
 
-- [ ] **4.6.1** Create `infrastructure/scripts/setup-ssh.sh`:
+- [ ] **4.7.1** Create `infrastructure/scripts/setup-ssh.sh`:
   - SSH hardening configuration
   - Key-only authentication
   - Fail2ban setup
   - Allowed users whitelist
 
-- [ ] **4.6.2** Document SSH access:
+- [ ] **4.7.2** Document SSH access:
   - Connection instructions
   - Tmux attach command
   - Window navigation
 
-### Step 4.7: Infrastructure Templates
+### Step 4.8: Infrastructure Templates
 
-- [ ] **4.7.1** Create `infrastructure/nginx/sites-available/template.conf`:
+- [ ] **4.8.1** Create `infrastructure/nginx/sites-available/template.conf`:
   - Static site template
   - Reverse proxy template
   - SSL configuration snippet
 
-- [ ] **4.7.2** Create `infrastructure/nginx/snippets/`:
+- [ ] **4.8.2** Create `infrastructure/nginx/snippets/`:
   - `ssl-params.conf`
   - `security-headers.conf`
   - `proxy-params.conf`
 
-- [ ] **4.7.3** Create systemd unit templates:
+- [ ] **4.8.3** Create systemd unit templates:
   - `infrastructure/systemd/ai-infrastructure.service`
   - `infrastructure/systemd/ai-api.service`
   - `infrastructure/systemd/ai-agents.service`
 
-### Step 4.8: Phase 4 Verification
+### Step 4.9: Phase 4 Verification
 
-- [ ] **4.8.1** Add test domain via infra agent
-- [ ] **4.8.2** SSL certificate obtained
-- [ ] **4.8.3** Domain accessible via HTTPS
-- [ ] **4.8.4** Docker containers manageable
-- [ ] **4.8.5** Remove domain cleans up properly
+- [ ] **4.9.1** Add test domain via infra agent
+- [ ] **4.9.2** SSL certificate obtained
+- [ ] **4.9.3** Domain accessible via HTTPS
+- [ ] **4.9.4** Docker containers manageable
+- [ ] **4.9.5** Cloudflare DNS configured
+- [ ] **4.9.6** Remove domain cleans up properly
 
 ---
 
@@ -1332,6 +1400,12 @@ Location: `services/voice/src/voice_service/`
   - Chunk handling for streaming
   - Noise reduction (optional)
 
+- [ ] **7.2.4** Create `streaming.py`:
+  - Real-time audio streaming handler
+  - WebSocket audio chunk management
+  - Buffering and batching for API calls
+  - Stream state management
+
 ### Step 7.3: Text-to-Speech
 
 - [ ] **7.3.1** Create `synthesis.py`:
@@ -1548,7 +1622,7 @@ Location: `services/voice/src/voice_service/`
 | Supervisor | 3 | Full system access, orchestration |
 | Code Agent | 1 | Git, file ops, testing |
 | Data Agent | 1 | SQL, data analysis |
-| Infra Agent | 2 | Docker, Nginx, SSL |
+| Infra Agent | 2 | Docker, Nginx, SSL, Cloudflare |
 | Research Agent | 1 | Web search, documentation |
 | QA Agent | 1 | Testing, security scanning |
 
@@ -1593,7 +1667,7 @@ Before deployment, ensure all required environment variables are set:
 - [ ] `ANTHROPIC_API_KEY` - Claude API
 - [ ] `OPENAI_API_KEY` - Embeddings, Whisper, TTS
 - [ ] `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` - Secrets Manager
-- [ ] `CLOUDFLARE_API_KEY`, `CLOUDFLARE_EMAIL` - Domain management
+- [ ] `CLOUDFLARE_API_KEY`, `CLOUDFLARE_EMAIL`, `CLOUDFLARE_ACCOUNT_ID` - Domain/DNS management
 - [ ] `GITHUB_PAT` - Code backup
 - [ ] `POSTGRES_PASSWORD` - Database
 - [ ] `REDIS_PASSWORD` - Message bus
