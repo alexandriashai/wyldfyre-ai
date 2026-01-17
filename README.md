@@ -7,9 +7,11 @@ A self-hosted, multi-agent AI infrastructure system powered by Claude. Talk to *
 - **Multi-Agent System**: 6 specialized AI agents coordinated by Wyld (the Supervisor)
 - **PAI Integration**: Personal AI framework for continuous learning and improvement
 - **Web Portal**: Modern Next.js interface for interacting with your AI team
+- **Progressive Web App**: Install on any device - mobile-friendly with offline support
 - **Infrastructure Management**: Docker, Nginx, SSL, and domain management
 - **Voice Interface**: Speech-to-text and text-to-speech capabilities
 - **3-Tier Memory**: HOT (Redis), WARM (Qdrant), COLD (File) for persistent learning
+- **Beautiful UI**: Themed with golds, purples, creams, and dark slate colors
 
 ## Quick Start
 
@@ -96,6 +98,25 @@ curl -fsSL https://raw.githubusercontent.com/alexandriashai/AI-Infrastructure/ma
 | API | 8000 |
 | Voice Service | 8001 |
 | Prometheus | 9090 |
+
+## Install as App (PWA)
+
+Wyld Fyre AI is a Progressive Web App that can be installed on any device:
+
+**Desktop (Chrome/Edge)**
+1. Navigate to `http://localhost:3000`
+2. Click the install icon in the address bar
+3. Click "Install"
+
+**iOS (Safari)**
+1. Navigate to your Wyld Fyre URL
+2. Tap the Share button
+3. Tap "Add to Home Screen"
+
+**Android (Chrome)**
+1. Navigate to your Wyld Fyre URL
+2. Tap the menu (three dots)
+3. Tap "Install app" or "Add to Home Screen"
 
 ## Commands
 

@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <!-- Background gradient - dark slate -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1625"/>
+      <stop offset="100%" style="stop-color:#2d1f47"/>
+    </linearGradient>
+
+    <!-- Face - purple -->
+    <linearGradient id="faceGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#9333ea"/>
+      <stop offset="100%" style="stop-color:#7c3aed"/>
+    </linearGradient>
+
+    <!-- Flame colors -->
+    <linearGradient id="flameRed" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#dc2626"/>
+      <stop offset="100%" style="stop-color:#ef4444"/>
+    </linearGradient>
+
+    <linearGradient id="flameOrange" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#ea580c"/>
+      <stop offset="100%" style="stop-color:#f97316"/>
+    </linearGradient>
+
+    <linearGradient id="flameGold" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#f59e0b"/>
+      <stop offset="100%" style="stop-color:#fbbf24"/>
+    </linearGradient>
+
+    <linearGradient id="flameYellow" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#fbbf24"/>
+      <stop offset="100%" style="stop-color:#fef3c7"/>
+    </linearGradient>
+
+    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#d97706"/>
+      <stop offset="50%" style="stop-color:#fbbf24"/>
+      <stop offset="100%" style="stop-color:#d97706"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="256" fill="url(#bgGrad)"/>
+
+  <!-- Subtle ring -->
+  <circle cx="256" cy="256" r="248" fill="none" stroke="url(#ringGrad)" stroke-width="2" opacity="0.4"/>
+
+  <!-- Flame strand 1 - far right, red -->
+  <path d="M340 450
+           C360 420 380 380 385 340
+           C390 300 385 260 375 220
+           C365 180 350 140 340 100
+           C335 75 335 55 340 35
+           C330 60 325 85 325 110
+           C325 150 335 190 340 230
+           C345 270 345 310 335 350
+           C325 390 310 420 340 450Z"
+        fill="url(#flameRed)"/>
+
+  <!-- Flame strand 2 - orange -->
+  <path d="M300 450
+           C330 410 355 360 355 310
+           C355 260 340 210 320 160
+           C305 120 295 80 300 45
+           C285 80 280 115 285 155
+           C290 200 305 245 310 290
+           C315 340 305 390 300 450Z"
+        fill="url(#flameOrange)"/>
+
+  <!-- Flame strand 3 - gold/yellow center -->
+  <path d="M260 440
+           C295 400 315 350 310 295
+           C305 240 280 190 265 140
+           C255 105 255 70 265 40
+           C245 70 240 105 245 145
+           C250 190 270 240 275 290
+           C280 340 270 395 260 440Z"
+        fill="url(#flameGold)"/>
+
+  <!-- Flame strand 4 - bright yellow inner -->
+  <path d="M230 420
+           C260 380 275 330 270 280
+           C265 230 245 185 235 140
+           C228 110 230 80 240 55
+           C220 80 215 115 220 150
+           C225 190 240 235 245 280
+           C250 325 242 375 230 420Z"
+        fill="url(#flameYellow)"/>
+
+  <!-- Face silhouette - profile facing left -->
+  <path d="M215 460
+           C185 450 160 420 150 385
+           C140 350 145 315 155 285
+           L165 260
+           C155 250 150 235 152 220
+           C154 205 165 195 178 192
+           C170 178 170 162 178 150
+           C186 138 200 135 212 140
+           C208 125 215 110 230 105
+           C240 102 252 108 260 118
+           C275 100 290 95 305 105
+           C295 125 290 145 290 165
+           C290 190 280 210 265 225
+           C280 245 288 270 285 295
+           C282 325 265 350 245 370
+           C275 385 290 410 285 440
+           C280 465 255 480 225 475
+           C220 470 217 465 215 460Z"
+        fill="url(#faceGrad)"/>
+
+  <!-- Eye - closed crescent moon shape -->
+  <path d="M195 195
+           Q210 182 230 185
+           Q245 188 250 198
+           Q235 208 215 206
+           Q198 204 195 195Z"
+        fill="#fbbf24"/>
+
+  <!-- Eyebrow hint -->
+  <path d="M200 175
+           Q220 168 240 172
+           Q250 175 255 180"
+        fill="none" stroke="#7c3aed" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+
+  <!-- Nose bridge highlight -->
+  <path d="M165 260
+           Q170 250 175 245
+           Q173 255 168 265
+           Q165 268 165 260Z"
+        fill="#a855f7" opacity="0.4"/>
+
+  <!-- Lips subtle -->
+  <path d="M170 320
+           Q185 312 205 315
+           Q220 318 228 325
+           Q210 330 190 328
+           Q175 326 170 320Z"
+        fill="#8b5cf6" opacity="0.5"/>
+
+  <!-- Extra flame wisp top right -->
+  <path d="M375 75
+           C380 55 375 35 365 20
+           C365 40 370 60 375 75Z"
+        fill="#f97316" opacity="0.9"/>
+
+  <!-- Extra flame wisp -->
+  <path d="M395 120
+           C402 95 398 70 388 50
+           C388 75 392 100 395 120Z"
+        fill="#ef4444" opacity="0.8"/>
+</svg>
