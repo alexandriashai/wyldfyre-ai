@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { conversationsApi } from "@/lib/api";
+import { notifications } from "@/lib/notifications";
 
 interface Message {
   id: string;
@@ -26,6 +27,8 @@ interface ChatState {
   isSending: boolean;
   error: string | null;
   streamingMessage: string;
+  // Track if app is in foreground for notifications
+  isAppFocused: boolean;
 
   // Actions
   fetchConversations: (token: string) => Promise<void>;
@@ -33,12 +36,14 @@ interface ChatState {
   createConversation: (token: string, title?: string) => Promise<Conversation>;
   deleteConversation: (token: string, id: string) => Promise<void>;
   addMessage: (message: Message) => void;
+  receiveMessage: (message: Message, showNotification?: boolean) => void;
   updateStreamingMessage: (content: string) => void;
   finalizeStreamingMessage: (message: Message) => void;
   clearStreamingMessage: () => void;
   setIsSending: (isSending: boolean) => void;
   setError: (error: string | null) => void;
   clearMessages: () => void;
+  setAppFocused: (focused: boolean) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -49,6 +54,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isSending: false,
   error: null,
   streamingMessage: "",
+  isAppFocused: true,
 
   fetchConversations: async (token: string) => {
     set({ isLoading: true, error: null });
@@ -132,15 +138,56 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
   },
 
+  // New method that also handles notifications
+  receiveMessage: (message: Message, showNotification = true) => {
+    const state = get();
+
+    // Add message to store
+    set((state) => ({
+      messages: [...state.messages, message],
+    }));
+
+    // Show notification if app is not focused and message is from assistant
+    if (
+      showNotification &&
+      !state.isAppFocused &&
+      message.role === "assistant" &&
+      state.currentConversation
+    ) {
+      const agentName = message.agent || "Wyld";
+      const preview = message.content.slice(0, 150);
+
+      notifications.newMessage(
+        agentName,
+        preview,
+        state.currentConversation.id
+      );
+    }
+  },
+
   updateStreamingMessage: (content: string) => {
     set({ streamingMessage: content });
   },
 
   finalizeStreamingMessage: (message: Message) => {
+    const state = get();
+
     set((state) => ({
       messages: [...state.messages, message],
       streamingMessage: "",
     }));
+
+    // Show notification if app is not focused
+    if (!state.isAppFocused && state.currentConversation) {
+      const agentName = message.agent || "Wyld";
+      const preview = message.content.slice(0, 150);
+
+      notifications.newMessage(
+        agentName,
+        preview,
+        state.currentConversation.id
+      );
+    }
   },
 
   clearStreamingMessage: () => {
@@ -156,4 +203,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clearMessages: () => {
     set({ messages: [], currentConversation: null });
   },
+
+  setAppFocused: (focused: boolean) => {
+    set({ isAppFocused: focused });
+  },
 }));
+
+// Track app focus state for notifications
+if (typeof window !== "undefined") {
+  window.addEventListener("focus", () => {
+    useChatStore.getState().setAppFocused(true);
+  });
+
+  window.addEventListener("blur", () => {
+    useChatStore.getState().setAppFocused(false);
+  });
+
+  // Also track visibility changes (e.g., switching tabs)
+  document.addEventListener("visibilitychange", () => {
+    useChatStore.getState().setAppFocused(!document.hidden);
+  });
+}
