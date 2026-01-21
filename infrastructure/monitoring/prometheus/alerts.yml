@@ -164,3 +164,59 @@ groups:
         annotations:
           summary: "SSL certificate expired for {{ $labels.domain }}"
           description: "Certificate has expired and needs immediate renewal"
+
+  - name: wyld-fyre-api-costs
+    rules:
+      - alert: HighHourlyCost
+        expr: rate(claude_api_cost_dollars[1h]) * 3600 > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High hourly API cost"
+          description: "API spending rate is ${{ $value | printf \"%.2f\" }}/hour which exceeds $10/hour threshold"
+
+      - alert: DailyBudgetWarning
+        expr: increase(claude_api_cost_dollars[24h]) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Daily API budget warning"
+          description: "24-hour API spending has reached ${{ $value | printf \"%.2f\" }}, exceeding $50 warning threshold"
+
+      - alert: DailyBudgetExceeded
+        expr: increase(claude_api_cost_dollars[24h]) > 100
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Daily API budget exceeded"
+          description: "24-hour API spending is ${{ $value | printf \"%.2f\" }}, exceeding $100 daily budget"
+
+      - alert: AgentHighTokenRate
+        expr: rate(claude_api_tokens_total[5m]) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent {{ $labels.agent_type }} has high token usage"
+          description: "Agent {{ $labels.agent_type }} is consuming {{ $value | printf \"%.0f\" }} tokens/sec"
+
+      - alert: CostSpikeDetected
+        expr: rate(claude_api_cost_dollars[5m]) > 3 * avg_over_time(rate(claude_api_cost_dollars[1h])[24h:1h])
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual API cost spike detected"
+          description: "Current cost rate is 3x higher than 24-hour average for {{ $labels.agent_type }}"
+
+      - alert: ExpensiveModelOveruse
+        expr: rate(claude_api_cost_dollars{model=~".*opus.*"}[1h]) / rate(claude_api_cost_dollars[1h]) > 0.8
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "High usage of expensive Opus model"
+          description: "Opus model accounts for {{ $value | humanizePercentage }} of API costs in the last hour"

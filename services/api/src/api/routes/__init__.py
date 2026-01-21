@@ -14,6 +14,7 @@ from .memory import router as memory_router
 from .notifications import router as notifications_router
 from .settings import router as settings_router
 from .tasks import router as tasks_router
+from .usage import router as usage_router
 
 __all__ = [
     "agents_router",
@@ -28,4 +29,5 @@ __all__ = [
     "notifications_router",
     "settings_router",
     "tasks_router",
+    "usage_router",
 ]

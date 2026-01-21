@@ -9,12 +9,31 @@ Provides the foundation for all specialized agents with:
 """
 
 import asyncio
+import importlib.util
 import time
+import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from anthropic import AsyncAnthropic
+
+
+# Load PAI hooks dynamically
+def _load_pai_hook(hook_name: str):
+    """Dynamically load PAI hook module."""
+    hook_path = Path("/home/wyld-core/pai/hooks") / f"{hook_name}.py"
+    if hook_path.exists():
+        try:
+            spec = importlib.util.spec_from_file_location(hook_name, hook_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        except Exception as e:
+            from ai_core import get_logger
+            get_logger(__name__).warning(f"Failed to load PAI hook {hook_name}: {e}")
+    return None
 
 from ai_core import (
     AgentStatus,
@@ -27,7 +46,9 @@ from ai_core import (
     agent_task_duration_seconds,
     agent_tasks_total,
     agent_tool_calls_total,
+    calculate_cost,
     claude_api_tokens_total,
+    get_cost_tracker,
     get_logger,
     get_settings,
 )
@@ -405,6 +426,27 @@ class BaseAgent(ABC):
         # Publish initial thinking action
         await self.publish_action(ACTION_THINKING, "Analyzing request...")
 
+        # === Execute pre_task hook ===
+        pre_hook = _load_pai_hook("pre_task")
+        hook_context = {}
+        if pre_hook and hasattr(pre_hook, "pre_task_hook") and self._memory:
+            try:
+                hook_context = await pre_hook.pre_task_hook(
+                    agent_type=self.agent_type.value,
+                    task_type=request.task_type,
+                    task_input=request.payload,
+                    memory=self._memory,
+                    permission_level=self._permission_context.base_level.value if self._permission_context else 1,
+                )
+                # Inject relevant learnings into task context
+                if hook_context.get("relevant_learnings"):
+                    if not hasattr(request, "_pai_context"):
+                        request._pai_context = {}
+                    request._pai_context["learnings"] = hook_context["relevant_learnings"]
+                    request._pai_context["correlation_id"] = hook_context.get("correlation_id")
+            except Exception as e:
+                logger.warning(f"Pre-task hook failed: {e}")
+
         try:
             # Call hook
             await self.on_task_start(request)
@@ -429,6 +471,33 @@ class BaseAgent(ABC):
             else:
                 # Reset conversation for non-chat tasks
                 self._state.conversation_history = []
+
+            # === THINK phase: Analysis and reasoning ===
+            if self._memory:
+                relevant_learnings = getattr(request, "_pai_context", {}).get("learnings", [])
+                await self._memory.store_task_trace(
+                    task_id=task_id,
+                    phase=PAIPhase.THINK,
+                    data={
+                        "agent_type": self.agent_type.value,
+                        "task_type": request.task_type,
+                        "relevant_learnings_count": len(relevant_learnings),
+                        "message_length": len(user_message),
+                    },
+                )
+
+            # === PLAN phase: Tool selection and strategy ===
+            if self._memory:
+                available_tools = self._tool_registry.get_claude_schemas(self.config.permission_level)
+                await self._memory.store_task_trace(
+                    task_id=task_id,
+                    phase=PAIPhase.PLAN,
+                    data={
+                        "agent_type": self.agent_type.value,
+                        "available_tools_count": len(available_tools) if available_tools else 0,
+                        "max_iterations": request.max_iterations or self.config.max_tool_iterations,
+                    },
+                )
 
             # Execute with Claude (with optional iteration limit override)
             result = await self._execute_with_claude(
@@ -457,6 +526,23 @@ class BaseAgent(ABC):
                     phase=PAIPhase.VERIFY,
                     data={"success": True, "duration_ms": duration_ms},
                 )
+
+            # === Execute post_task hook ===
+            post_hook = _load_pai_hook("post_task")
+            if post_hook and hasattr(post_hook, "post_task_hook") and self._memory:
+                try:
+                    correlation_id = hook_context.get("correlation_id", task_id)
+                    await post_hook.post_task_hook(
+                        agent_type=self.agent_type.value,
+                        task_type=request.task_type,
+                        task_result=result,
+                        correlation_id=correlation_id,
+                        memory=self._memory,
+                        success=True,
+                        permission_level=self._permission_context.base_level.value if self._permission_context else 1,
+                    )
+                except Exception as e:
+                    logger.warning(f"Post-task hook failed: {e}")
 
             self._state.tasks_completed += 1
 
@@ -490,6 +576,64 @@ class BaseAgent(ABC):
 
             # Call error hook
             await self.on_task_error(request, e)
+
+            # === Store error in PAI memory ===
+            if self._memory:
+                try:
+                    from ai_memory import Learning
+
+                    # Store error trace
+                    error_trace = {
+                        "phase": PAIPhase.VERIFY.value,
+                        "task_id": task_id,
+                        "agent_type": self.agent_type.value,
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "traceback": traceback.format_exc(),
+                        "context": {
+                            "task_type": request.task_type,
+                            "task_description": str(request.payload)[:200] if request.payload else "",
+                        },
+                    }
+                    await self._memory.store_task_trace(
+                        task_id=task_id,
+                        phase=PAIPhase.VERIFY,
+                        data=error_trace,
+                    )
+
+                    # Store as learning for future reference
+                    error_learning = Learning(
+                        content=f"Error in {request.task_type}: {type(e).__name__} - {str(e)}",
+                        phase=PAIPhase.VERIFY,
+                        category="error",
+                        task_id=task_id,
+                        agent_type=self.agent_type.value,
+                        confidence=0.95,
+                        metadata={"error_type": type(e).__name__},
+                        created_by_agent=self.agent_type.value,
+                        permission_level=self._permission_context.base_level.value if self._permission_context else 1,
+                    )
+                    await self._memory.store_learning(error_learning, agent_type=self.agent_type.value)
+
+                    # Execute post_task hook for failed tasks
+                    post_hook = _load_pai_hook("post_task")
+                    if post_hook and hasattr(post_hook, "post_task_hook"):
+                        try:
+                            correlation_id = hook_context.get("correlation_id", task_id)
+                            await post_hook.post_task_hook(
+                                agent_type=self.agent_type.value,
+                                task_type=request.task_type,
+                                task_result={"error": str(e), "error_type": type(e).__name__},
+                                correlation_id=correlation_id,
+                                memory=self._memory,
+                                success=False,
+                                permission_level=self._permission_context.base_level.value if self._permission_context else 1,
+                            )
+                        except Exception as hook_err:
+                            logger.warning(f"Post-task hook failed for error case: {hook_err}")
+
+                except Exception as mem_error:
+                    logger.warning(f"Failed to store error in PAI memory: {mem_error}")
 
             return TaskResponse(
                 task_id=task_id,
@@ -640,11 +784,35 @@ class BaseAgent(ABC):
                 token_type="output",
             ).inc(response.usage.output_tokens)
 
+            # Calculate cost for display (cost_tracker will handle metrics and DB)
+            cached_tokens = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            usage_cost = calculate_cost(
+                model=self.config.model,
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                cached_tokens=cached_tokens,
+            )
+
+            # Record to database and Prometheus (async, non-blocking)
+            # Note: cost_tracker handles both DB persistence and Prometheus metrics
+            asyncio.create_task(
+                get_cost_tracker().record_usage(
+                    model=self.config.model,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                    cached_tokens=cached_tokens,
+                    agent_type=self.agent_type,
+                    agent_name=self.config.name,
+                    task_id=task_id,
+                    correlation_id=getattr(self, "_correlation_id", None),
+                )
+            )
+
             # Publish API response action
             total_tokens = response.usage.input_tokens + response.usage.output_tokens
             await self.publish_action(
                 ACTION_API_RESPONSE,
-                f"Received response ({total_tokens:,} tokens)"
+                f"Received response ({total_tokens:,} tokens, ${float(usage_cost.total_cost):.6f})"
             )
 
             # Check stop reason
@@ -663,12 +831,29 @@ class BaseAgent(ABC):
             elif response.stop_reason == "tool_use":
                 # Execute tools
                 tool_results = []
+                tool_step = 0
+                tools_success = 0
+                tools_failed = 0
 
                 for block in response.content:
                     if block.type == "tool_use":
                         tool_name = block.name
                         tool_input = block.input
                         tool_use_id = block.id
+                        tool_step += 1
+
+                        # === BUILD phase: Tool preparation ===
+                        if self._memory:
+                            await self._memory.store_task_trace(
+                                task_id=task_id,
+                                phase=PAIPhase.BUILD,
+                                data={
+                                    "agent_type": self.agent_type.value,
+                                    "tool_name": tool_name,
+                                    "step": tool_step,
+                                    "iteration": iterations,
+                                },
+                            )
 
                         # Publish tool call action to frontend
                         await self.publish_action(
@@ -700,6 +885,12 @@ class BaseAgent(ABC):
                                 "_agent": self,  # Pass agent for action publishing
                             },
                         )
+
+                        # Track success/failure for EXECUTE phase
+                        if result.success:
+                            tools_success += 1
+                        else:
+                            tools_failed += 1
 
                         # Track tool call with status
                         agent_tool_calls_total.labels(
@@ -742,6 +933,21 @@ class BaseAgent(ABC):
                                     duration_ms=0,
                                 ).model_dump_json(),
                             )
+
+                # === EXECUTE phase: Tool execution summary ===
+                if self._memory:
+                    await self._memory.store_task_trace(
+                        task_id=task_id,
+                        phase=PAIPhase.EXECUTE,
+                        data={
+                            "agent_type": self.agent_type.value,
+                            "iteration": iterations,
+                            "tools_executed": tool_step,
+                            "tools_success": tools_success,
+                            "tools_failed": tools_failed,
+                            "success_rate": tools_success / tool_step if tool_step > 0 else 1.0,
+                        },
+                    )
 
                 # Add assistant response and tool results to history
                 self._state.conversation_history.append(

@@ -16,6 +16,23 @@ from .circuit_breaker import (
     circuit_breaker,
     get_circuit_breaker,
 )
+from .cost_tracker import (
+    CostTracker,
+    DailyUsage,
+    UsageSummary,
+    configure_cost_tracker,
+    get_cost_tracker,
+)
+from .pricing import (
+    MODEL_PRICING,
+    Provider,
+    UsageCost,
+    calculate_cost,
+    estimate_cost,
+    format_cost,
+    get_model_pricing,
+    get_model_provider,
+)
 from .enums import (
     AgentStatus,
     AgentType,
@@ -189,6 +206,20 @@ __all__ = [
     "CircuitOpenError",
     "circuit_breaker",
     "get_circuit_breaker",
+    # Pricing & Cost Tracking
+    "Provider",
+    "UsageCost",
+    "MODEL_PRICING",
+    "calculate_cost",
+    "estimate_cost",
+    "format_cost",
+    "get_model_pricing",
+    "get_model_provider",
+    "CostTracker",
+    "UsageSummary",
+    "DailyUsage",
+    "get_cost_tracker",
+    "configure_cost_tracker",
     # Permissions
     "PermissionContext",
     "ElevationRequest",

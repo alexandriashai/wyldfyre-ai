@@ -560,3 +560,155 @@ export const notificationsApi = {
     return handleResponse<{ message: string }>(response);
   },
 };
+
+// Usage Types
+export interface ModelBreakdown {
+  model: string;
+  cost: number;
+  percentage: number;
+}
+
+export interface AgentBreakdown {
+  agent_type: string;
+  cost: number;
+  percentage: number;
+}
+
+export interface DailySummary {
+  total_cost: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cached_tokens: number;
+  request_count: number;
+  period_start: string;
+  period_end: string;
+  breakdown_by_model: ModelBreakdown[];
+  breakdown_by_agent: AgentBreakdown[];
+}
+
+export interface DailyUsagePoint {
+  date: string;
+  cost: number;
+  tokens: number;
+  requests: number;
+}
+
+export interface UsageHistory {
+  period_days: number;
+  total_cost: number;
+  total_tokens: number;
+  total_requests: number;
+  daily_data: DailyUsagePoint[];
+}
+
+export interface BudgetAlert {
+  id: string;
+  name: string;
+  description: string | null;
+  threshold_amount: number;
+  period: string;
+  current_spend: number;
+  percentage_used: number;
+  is_exceeded: boolean;
+  is_active: boolean;
+  last_triggered_at: string | null;
+  trigger_count: number;
+}
+
+export interface BudgetStatus {
+  daily_spend: number;
+  daily_limit: number;
+  daily_percentage: number;
+  hourly_rate: number;
+  projected_daily: number;
+  alerts: BudgetAlert[];
+}
+
+export interface UsageRecord {
+  id: string;
+  provider: string;
+  model: string;
+  usage_type: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  cost_total: number;
+  agent_type: string | null;
+  agent_name: string | null;
+  task_id: string | null;
+  correlation_id: string | null;
+  latency_ms: number | null;
+  created_at: string;
+}
+
+// Usage Analytics API
+export const usageApi = {
+  async daily(token: string, date?: string) {
+    const searchParams = new URLSearchParams();
+    if (date) searchParams.set('date', date);
+
+    const url = `${API_BASE_URL}/api/usage/daily${searchParams.toString() ? `?${searchParams}` : ''}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<DailySummary>(response);
+  },
+
+  async byAgent(token: string, days: number = 30) {
+    const searchParams = new URLSearchParams({ days: days.toString() });
+
+    const response = await fetch(`${API_BASE_URL}/api/usage/by-agent?${searchParams}`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{
+      period_days: number;
+      total_cost: number;
+      breakdown: AgentBreakdown[];
+    }>(response);
+  },
+
+  async history(token: string, days: number = 30) {
+    const searchParams = new URLSearchParams({ days: days.toString() });
+
+    const response = await fetch(`${API_BASE_URL}/api/usage/history?${searchParams}`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<UsageHistory>(response);
+  },
+
+  async budget(token: string) {
+    const response = await fetch(`${API_BASE_URL}/api/usage/budget`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<BudgetStatus>(response);
+  },
+
+  async records(token: string, params?: {
+    page?: number;
+    page_size?: number;
+    agent_type?: string;
+    model?: string;
+  }) {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.set('page', params.page.toString());
+    if (params?.page_size) searchParams.set('page_size', params.page_size.toString());
+    if (params?.agent_type) searchParams.set('agent_type', params.agent_type);
+    if (params?.model) searchParams.set('model', params.model);
+
+    const url = `${API_BASE_URL}/api/usage/records${searchParams.toString() ? `?${searchParams}` : ''}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{
+      records: UsageRecord[];
+      total: number;
+      page: number;
+      page_size: number;
+    }>(response);
+  },
+};

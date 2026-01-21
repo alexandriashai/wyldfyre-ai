@@ -52,6 +52,11 @@ class Learning:
         agent_type: str | None = None,
         confidence: float = 0.8,
         metadata: dict[str, Any] | None = None,
+        # ACL fields
+        created_by_agent: str = "",
+        permission_level: int = 1,
+        sensitivity: str = "internal",
+        allowed_agents: list[str] | None = None,
     ):
         self.content = content
         self.phase = phase
@@ -61,6 +66,11 @@ class Learning:
         self.confidence = confidence
         self.metadata = metadata or {}
         self.created_at = datetime.now(timezone.utc)
+        # ACL fields
+        self.created_by_agent = created_by_agent or agent_type or ""
+        self.permission_level = permission_level  # Minimum level to access (1=READ_WRITE default)
+        self.sensitivity = sensitivity  # public/internal/restricted
+        self.allowed_agents = allowed_agents or []  # Optional whitelist
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -73,6 +83,11 @@ class Learning:
             "confidence": self.confidence,
             "metadata": self.metadata,
             "created_at": self.created_at.isoformat(),
+            # ACL fields
+            "created_by_agent": self.created_by_agent,
+            "permission_level": self.permission_level,
+            "sensitivity": self.sensitivity,
+            "allowed_agents": self.allowed_agents,
         }
 
     @classmethod
@@ -86,6 +101,11 @@ class Learning:
             agent_type=data.get("agent_type"),
             confidence=data.get("confidence", 0.8),
             metadata=data.get("metadata", {}),
+            # ACL fields
+            created_by_agent=data.get("created_by_agent", ""),
+            permission_level=data.get("permission_level", 1),
+            sensitivity=data.get("sensitivity", "internal"),
+            allowed_agents=data.get("allowed_agents", []),
         )
         if "created_at" in data:
             learning.created_at = datetime.fromisoformat(data["created_at"])
@@ -128,6 +148,65 @@ class PAIMemory:
             phase_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info("PAI Memory initialized")
+
+    # =========================================================================
+    # ACL (Access Control List) Methods
+    # =========================================================================
+
+    def _check_memory_acl(
+        self,
+        learning: Learning | dict[str, Any],
+        agent_type: str,
+        permission_level: int,
+        capabilities: set[str] | None = None,
+    ) -> bool:
+        """
+        Balanced ACL check - enables work while protecting sensitive data.
+
+        Args:
+            learning: Learning object or dict with ACL fields
+            agent_type: Type of agent requesting access
+            permission_level: Agent's permission level (1-4)
+            capabilities: Optional set of agent capabilities
+
+        Returns:
+            True if access allowed, False otherwise
+        """
+        if isinstance(learning, dict):
+            required_level = learning.get("permission_level", 1)
+            sensitivity = learning.get("sensitivity", "internal")
+            allowed = learning.get("allowed_agents", [])
+            created_by = learning.get("created_by_agent", "")
+            category = learning.get("category", "")
+        else:
+            required_level = learning.permission_level
+            sensitivity = learning.sensitivity
+            allowed = learning.allowed_agents
+            created_by = learning.created_by_agent
+            category = learning.category
+
+        # Rule 1: Creator always has access (enables continuity)
+        if created_by == agent_type:
+            return True
+
+        # Rule 2: Supervisor (level 4) can access everything (oversight)
+        if permission_level >= 4:
+            return True
+
+        # Rule 3: Public learnings are accessible to all
+        if sensitivity == "public":
+            return True
+
+        # Rule 4: Internal learnings - accessible to same level or higher
+        if sensitivity == "internal":
+            return permission_level >= required_level
+
+        # Rule 5: Restricted - only whitelisted agents
+        if sensitivity == "restricted":
+            return agent_type in allowed
+
+        # Default: allow (err on side of productivity)
+        return True
 
     # =========================================================================
     # HOT Tier Operations (Redis)
@@ -187,11 +266,64 @@ class PAIMemory:
     # WARM Tier Operations (Qdrant)
     # =========================================================================
 
-    async def store_learning(self, learning: Learning) -> str | None:
-        """Store a learning in WARM tier (Qdrant)."""
+    async def store_learning(
+        self,
+        learning: Learning,
+        agent_type: str = "",
+        deduplicate: bool = True,
+    ) -> str | None:
+        """
+        Store a learning in WARM tier (Qdrant) with optional deduplication.
+
+        Args:
+            learning: Learning object to store
+            agent_type: Optional override for created_by_agent field
+            deduplicate: Whether to check for duplicate learnings (default True)
+
+        Returns:
+            Document ID if stored successfully, None otherwise
+        """
         if not self._qdrant:
             logger.warning("Qdrant not configured, skipping WARM storage")
             return None
+
+        # Set creator if not already set
+        if not learning.created_by_agent:
+            learning.created_by_agent = agent_type or learning.agent_type or ""
+
+        # === Deduplication check ===
+        if deduplicate:
+            try:
+                # Search for similar existing learnings using semantic search
+                similar = await self._qdrant.search(
+                    query=learning.content,
+                    limit=3,
+                    filter={"agent_type": learning.agent_type} if learning.agent_type else None,
+                )
+
+                # Check for high similarity matches
+                for result in similar:
+                    score = result.get("score", 0)
+                    existing = result.get("metadata", result)
+
+                    # Check if same agent and category with high similarity
+                    if (
+                        score >= 0.92
+                        and existing.get("agent_type") == learning.agent_type
+                        and existing.get("category") == learning.category
+                    ):
+                        existing_id = result.get("id", "unknown")
+                        logger.info(
+                            f"Duplicate learning detected (score={score:.3f}), skipping: {learning.content[:50]}..."
+                        )
+                        memory_operations_total.labels(
+                            tier="warm", operation="deduplicate", status="skipped"
+                        ).inc()
+                        return existing_id  # Return existing ID
+
+            except Exception as e:
+                # If deduplication fails, continue with storage
+                logger.warning(f"Deduplication check failed, proceeding with storage: {e}")
 
         doc_id = await self._qdrant.upsert(
             id=None,
@@ -203,6 +335,11 @@ class PAIMemory:
                 "agent_type": learning.agent_type,
                 "confidence": learning.confidence,
                 "created_at": learning.created_at.isoformat(),
+                # ACL fields
+                "created_by_agent": learning.created_by_agent,
+                "permission_level": learning.permission_level,
+                "sensitivity": learning.sensitivity,
+                "allowed_agents": learning.allowed_agents,
                 **learning.metadata,
             },
         )
@@ -217,8 +354,23 @@ class PAIMemory:
         phase: PAIPhase | None = None,
         category: str | None = None,
         limit: int = 10,
+        agent_type: str = "supervisor",
+        permission_level: int = 4,
     ) -> list[dict[str, Any]]:
-        """Search learnings in WARM tier."""
+        """
+        Search learnings in WARM tier with ACL filtering.
+
+        Args:
+            query: Search query
+            phase: Optional PAI phase filter
+            category: Optional category filter
+            limit: Maximum results to return
+            agent_type: Type of agent making the request (for ACL)
+            permission_level: Permission level of requesting agent (1-4)
+
+        Returns:
+            List of learning dicts that pass ACL checks
+        """
         if not self._qdrant:
             return []
 
@@ -228,11 +380,28 @@ class PAIMemory:
         if category:
             filter_dict["category"] = category
 
-        return await self._qdrant.search(
+        # Request more results than limit to account for ACL filtering
+        results = await self._qdrant.search(
             query=query,
-            limit=limit,
+            limit=limit * 2,  # Over-fetch to account for ACL filtering
             filter=filter_dict if filter_dict else None,
         )
+
+        # Filter results by ACL
+        filtered_results = []
+        for result in results:
+            if self._check_memory_acl(result, agent_type, permission_level):
+                filtered_results.append(result)
+            else:
+                logger.debug(
+                    f"ACL blocked access to learning for {agent_type}",
+                    extra={"category": result.get("category", "unknown")},
+                )
+
+            if len(filtered_results) >= limit:
+                break
+
+        return filtered_results
 
     # =========================================================================
     # COLD Tier Operations (File Archive)
@@ -266,6 +435,47 @@ class PAIMemory:
         ).inc()
         logger.info("Archived learning to COLD tier", path=str(filepath))
         return filepath
+
+    async def flush(self, task_id: str | None = None) -> dict[str, int]:
+        """
+        Flush pending operations and ensure data persistence.
+
+        Args:
+            task_id: Optional task ID to flush specific task data
+
+        Returns:
+            Dict with counts of flushed items per tier
+        """
+        flushed = {"hot": 0, "warm": 0, "cold": 0}
+
+        try:
+            # 1. Promote eligible HOT data to WARM
+            if task_id:
+                traces = await self.get_task_traces(task_id)
+                for trace in traces:
+                    if trace.get("phase") == PAIPhase.VERIFY.value:
+                        promoted = await self.promote_to_warm(task_id)
+                        flushed["warm"] = len(promoted)
+                        break
+
+            # 2. Archive old WARM data to COLD
+            archived = await self.archive_old_warm(older_than_days=30)
+            flushed["cold"] = archived
+
+            # 3. Ensure Redis persistence (if configured for AOF)
+            if self._redis:
+                try:
+                    await self._redis.bgsave()
+                except Exception as redis_err:
+                    # bgsave may fail if already in progress, which is fine
+                    logger.debug(f"Redis bgsave skipped: {redis_err}")
+
+            logger.info(f"PAI flush complete: {flushed}")
+            return flushed
+
+        except Exception as e:
+            logger.error(f"PAI flush error: {e}")
+            raise
 
     async def read_cold(self, filepath: Path) -> dict[str, Any] | None:
         """Read archived data from COLD tier."""

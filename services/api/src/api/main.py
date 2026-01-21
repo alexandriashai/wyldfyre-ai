@@ -11,11 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from ai_core import configure_logging, get_logger, get_settings
+from ai_core import configure_cost_tracker, configure_logging, get_logger, get_settings
 from ai_messaging import get_redis_client
 
 from .config import get_api_config
-from .database import close_db, init_db
+from .database import close_db, get_session_factory, init_db
 from .middleware import LoggingMiddleware, RateLimitMiddleware
 from .routes import (
     agents_router,
@@ -30,6 +30,7 @@ from .routes import (
     notifications_router,
     settings_router,
     tasks_router,
+    usage_router,
 )
 from .websocket.handlers import AgentResponseHandler
 from .websocket.manager import get_connection_manager
@@ -58,6 +59,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await init_db()
         logger.info("Database initialized")
+
+        # Configure cost tracker with database session factory
+        configure_cost_tracker(get_session_factory())
+        logger.info("Cost tracker configured")
     except Exception as e:
         logger.error("Database initialization failed", error=str(e))
         # Continue without database for now
@@ -139,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(settings_router, prefix="/api")
     app.include_router(notifications_router, prefix="/api")
     app.include_router(grafana_router, prefix="/api")  # Grafana SSO proxy
+    app.include_router(usage_router, prefix="/api")  # Usage analytics
     app.include_router(chat_router)  # WebSocket at root level
 
     # Prometheus metrics endpoint
