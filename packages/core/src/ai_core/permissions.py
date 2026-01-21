@@ -8,6 +8,7 @@ Provides:
 - ElevationManager: Manages the elevation workflow and tracking
 """
 
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -558,11 +559,15 @@ class ElevationManager:
 
 # Global elevation manager instance
 _elevation_manager: ElevationManager | None = None
+_elevation_lock = threading.Lock()
 
 
 def get_elevation_manager() -> ElevationManager:
-    """Get or create the global elevation manager."""
+    """Get or create the global elevation manager (thread-safe)."""
     global _elevation_manager
     if _elevation_manager is None:
-        _elevation_manager = ElevationManager()
+        with _elevation_lock:
+            # Double-check locking pattern for thread safety
+            if _elevation_manager is None:
+                _elevation_manager = ElevationManager()
     return _elevation_manager

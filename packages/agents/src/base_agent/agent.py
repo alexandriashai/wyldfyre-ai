@@ -293,12 +293,44 @@ class BaseAgent(ABC):
 
         logger.info("Agent started", agent=self.name)
 
-    async def stop(self) -> None:
-        """Stop the agent."""
-        logger.info("Stopping agent", agent=self.name)
+    async def stop(self, graceful_timeout: float = 30.0) -> None:
+        """
+        Stop the agent gracefully.
+
+        Waits for current task to complete before shutting down.
+        This prevents data loss and ensures clean state.
+
+        Args:
+            graceful_timeout: Max seconds to wait for current task (default: 30)
+        """
+        logger.info("Stopping agent", agent=self.name, graceful=True)
 
         self._running = False
 
+        # Wait for current task to complete (with timeout)
+        if self._state.current_task_id:
+            logger.info(
+                "Waiting for current task to complete",
+                agent=self.name,
+                task_id=self._state.current_task_id,
+            )
+            try:
+                # Wait up to graceful_timeout for task to complete
+                start = time.time()
+                while self._state.current_task_id and (time.time() - start) < graceful_timeout:
+                    await asyncio.sleep(0.5)
+
+                if self._state.current_task_id:
+                    logger.warning(
+                        "Task did not complete within shutdown timeout",
+                        agent=self.name,
+                        task_id=self._state.current_task_id,
+                        timeout=graceful_timeout,
+                    )
+            except Exception as e:
+                logger.warning("Error waiting for task completion", error=str(e))
+
+        # Stop heartbeat
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             try:
@@ -306,11 +338,25 @@ class BaseAgent(ABC):
             except asyncio.CancelledError:
                 pass
 
+        # Flush any pending memory writes
+        if self._memory:
+            try:
+                logger.debug("Flushing memory writes", agent=self.name)
+                await self._memory.flush()
+            except Exception as e:
+                logger.warning("Error flushing memory", error=str(e))
+
+        # Unsubscribe and stop pubsub
         if self._pubsub:
+            try:
+                # Unsubscribe from task channel before stopping
+                await self._pubsub.unsubscribe(f"agent:{self.agent_type.value}:tasks")
+            except Exception as e:
+                logger.warning("Error unsubscribing", error=str(e))
             await self._pubsub.stop()
 
         await self._publish_status(AgentStatus.OFFLINE)
-        logger.info("Agent stopped", agent=self.name)
+        logger.info("Agent stopped gracefully", agent=self.name)
 
     async def process_task(self, request: TaskRequest) -> TaskResponse:
         """

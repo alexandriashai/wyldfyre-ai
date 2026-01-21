@@ -10,6 +10,7 @@ import { PWAInstallPrompt } from "@/components/pwa/install-prompt";
 import { PWAUpdatePrompt } from "@/components/pwa/update-prompt";
 import { NetworkStatus } from "@/components/pwa/network-status";
 import { FlameLoader } from "@/components/brand/logo";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 // Service Worker Registration
 function useServiceWorker() {
@@ -109,17 +110,19 @@ export function Providers({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <AuthInitializer>
-          {children}
-          <CommandPalette />
-          <PWAInstallPrompt />
-          <PWAUpdatePrompt />
-          <NetworkStatus />
-          <Toaster />
-        </AuthInitializer>
-      </TooltipProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AuthInitializer>
+            {children}
+            <CommandPalette />
+            <PWAInstallPrompt />
+            <PWAUpdatePrompt />
+            <NetworkStatus />
+            <Toaster />
+          </AuthInitializer>
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

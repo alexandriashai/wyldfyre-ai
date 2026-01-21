@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { create } from "zustand";
 import { agentsApi } from "@/lib/api";
 import { notifications } from "@/lib/notifications";
@@ -270,16 +271,59 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 }));
 
 // Track app focus state for notifications
+// Note: These listeners are intentionally global and never removed
+// They persist for the lifetime of the app
 if (typeof window !== "undefined") {
-  window.addEventListener("focus", () => {
-    useAgentStore.getState().setAppFocused(true);
-  });
+  const handleFocus = () => useAgentStore.getState().setAppFocused(true);
+  const handleBlur = () => useAgentStore.getState().setAppFocused(false);
+  const handleVisibility = () => useAgentStore.getState().setAppFocused(!document.hidden);
 
-  window.addEventListener("blur", () => {
-    useAgentStore.getState().setAppFocused(false);
-  });
-
-  document.addEventListener("visibilitychange", () => {
-    useAgentStore.getState().setAppFocused(!document.hidden);
-  });
+  window.addEventListener("focus", handleFocus);
+  window.addEventListener("blur", handleBlur);
+  document.addEventListener("visibilitychange", handleVisibility);
 }
+
+// === Selector hooks for performance ===
+// These minimize re-renders by selecting only the data needed
+
+/**
+ * Get a specific agent by name. Only re-renders when that agent changes.
+ */
+export const useAgent = (name: string) =>
+  useAgentStore(useCallback((state) => state.agents.find((a) => a.name === name), [name]));
+
+/**
+ * Get a specific agent's status. Only re-renders when status changes.
+ */
+export const useAgentStatus = (name: string) =>
+  useAgentStore(
+    useCallback(
+      (state) => {
+        const agent = state.agents.find((a) => a.name === name);
+        return agent?.status;
+      },
+      [name]
+    )
+  );
+
+/**
+ * Get list of agent names only. Avoids re-renders from status/task changes.
+ */
+export const useAgentNames = () =>
+  useAgentStore(
+    useCallback((state) => state.agents.map((a) => a.name), [])
+  );
+
+/**
+ * Get just the loading and error state.
+ */
+export const useAgentLoadingState = () =>
+  useAgentStore(
+    useCallback((state) => ({ isLoading: state.isLoading, error: state.error }), [])
+  );
+
+/**
+ * Get the current action log.
+ */
+export const useActionLog = () =>
+  useAgentStore(useCallback((state) => state.actionLog, []));

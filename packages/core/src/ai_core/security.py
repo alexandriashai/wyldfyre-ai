@@ -7,6 +7,7 @@ agents to work freely in approved directories.
 
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -314,13 +315,17 @@ class SecurityValidator:
 
 
 _security_validator: SecurityValidator | None = None
+_security_lock = threading.Lock()
 
 
 def get_security_validator() -> SecurityValidator:
-    """Get or create the global security validator."""
+    """Get or create the global security validator (thread-safe)."""
     global _security_validator
     if _security_validator is None:
-        _security_validator = SecurityValidator()
+        with _security_lock:
+            # Double-check locking pattern for thread safety
+            if _security_validator is None:
+                _security_validator = SecurityValidator()
     return _security_validator
 
 

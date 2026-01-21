@@ -25,6 +25,13 @@ from .messages import (
     UserNotification,
 )
 from .pubsub import Channels, PubSubManager
+from .locks import (
+    DistributedLock,
+    LockError,
+    LockTimeoutError,
+    AgentStatusLock,
+    TaskLock,
+)
 
 __version__ = "0.1.0"
 
@@ -39,6 +46,12 @@ __all__ = [
     "Channels",
     # Message Bus
     "MessageBus",
+    # Distributed Locks
+    "DistributedLock",
+    "LockError",
+    "LockTimeoutError",
+    "AgentStatusLock",
+    "TaskLock",
     # Messages
     "BaseMessage",
     "MessageType",

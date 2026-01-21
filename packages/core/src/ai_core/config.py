@@ -22,8 +22,12 @@ class DatabaseSettings(BaseSettings):
     user: str = "ai_infra"
     password: SecretStr = SecretStr("")
     database: str = "ai_infrastructure"
+    # Connection pool settings
     pool_size: int = 10
     max_overflow: int = 20
+    pool_timeout: int = 30  # Seconds to wait for connection from pool
+    pool_recycle: int = 1800  # Recycle connections after 30 minutes
+    pool_pre_ping: bool = True  # Verify connections before use
 
     @property
     def url(self) -> str:
@@ -45,7 +49,12 @@ class RedisSettings(BaseSettings):
     port: int = 6379
     password: SecretStr = SecretStr("")
     db: int = 0
+    # Connection pool settings
     max_connections: int = 50
+    socket_timeout: float = 5.0  # Seconds for socket operations
+    socket_connect_timeout: float = 5.0  # Seconds for connection
+    retry_on_timeout: bool = True
+    health_check_interval: int = 30  # Seconds between health checks
 
     @property
     def url(self) -> str:
