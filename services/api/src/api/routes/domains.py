@@ -72,6 +72,7 @@ async def create_domain(
         domain = await domain_service.create_domain(
             domain_name=request.domain_name,
             proxy_target=request.proxy_target,
+            web_root=request.web_root,
             ssl_enabled=request.ssl_enabled,
             dns_provider=request.dns_provider,
             project_id=request.project_id,
@@ -225,3 +226,19 @@ async def deploy_domain(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         )
+
+
+@router.post("/{domain_name}/sync", response_model=dict[str, Any])
+async def sync_domain_config(
+    domain_name: str,
+    current_user: AdminUserDep,
+    domain_service: DomainService = Depends(get_domain_service),
+) -> dict[str, Any]:
+    """
+    Sync domain configuration from nginx config file.
+
+    Asks the Infra Agent to read the nginx config and update
+    the domain record with web_root and other values.
+    """
+    result = await domain_service.sync_domain_config(domain_name)
+    return result

@@ -13,7 +13,9 @@ from database.models import Conversation, Domain, Project, ProjectStatus
 from ..database import get_db_session
 from ..dependencies import CurrentUserDep
 from ..schemas.project import (
+    ProjectContextResponse,
     ProjectCreate,
+    ProjectDomainInfo,
     ProjectListResponse,
     ProjectResponse,
     ProjectUpdate,
@@ -80,6 +82,7 @@ async def create_project(
     project = Project(
         name=request.name,
         description=request.description,
+        agent_context=request.agent_context,
         color=request.color,
         icon=request.icon,
         user_id=current_user.sub,
@@ -144,6 +147,7 @@ async def get_project(
         id=project.id,
         name=project.name,
         description=project.description,
+        agent_context=project.agent_context,
         status=project.status,
         color=project.color,
         icon=project.icon,
@@ -242,3 +246,55 @@ async def delete_project(
             user_id=current_user.sub,
         )
         return {"message": f"Project {project_id} deleted"}
+
+
+@router.get("/{project_id}/context", response_model=ProjectContextResponse)
+async def get_project_context(
+    project_id: str,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> ProjectContextResponse:
+    """
+    Get full project context for agent injection.
+
+    Returns project details with all associated domains, including
+    web roots and other context information for AI agents.
+    """
+    result = await db.execute(
+        select(Project).where(
+            Project.id == project_id,
+            Project.user_id == current_user.sub,
+        )
+    )
+    project = result.scalar_one_or_none()
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {project_id} not found",
+        )
+
+    # Get all domains associated with this project
+    domains_result = await db.execute(
+        select(Domain).where(Domain.project_id == project_id)
+    )
+    domains = list(domains_result.scalars().all())
+
+    domain_infos = [
+        ProjectDomainInfo(
+            domain_name=d.domain_name,
+            web_root=d.web_root,
+            proxy_target=d.proxy_target,
+            is_primary=d.is_primary,
+            status=d.status.value,
+        )
+        for d in domains
+    ]
+
+    return ProjectContextResponse(
+        id=project.id,
+        name=project.name,
+        description=project.description,
+        agent_context=project.agent_context,
+        domains=domain_infos,
+    )

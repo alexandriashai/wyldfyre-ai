@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -70,6 +71,7 @@ export default function ProjectsPage() {
   const [showDeleteProject, setShowDeleteProject] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
   const [projectDescription, setProjectDescription] = useState("");
+  const [projectAgentContext, setProjectAgentContext] = useState("");
   const [projectColor, setProjectColor] = useState(PROJECT_COLORS[0]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -112,6 +114,7 @@ export default function ProjectsPage() {
       await createProject(token, {
         name: projectName.trim(),
         description: projectDescription.trim() || undefined,
+        agent_context: projectAgentContext.trim() || undefined,
         color: projectColor,
       });
       setShowNewProject(false);
@@ -131,6 +134,7 @@ export default function ProjectsPage() {
       await updateProject(token, showEditProject, {
         name: projectName.trim(),
         description: projectDescription.trim() || undefined,
+        agent_context: projectAgentContext.trim() || undefined,
         color: projectColor,
       });
       setShowEditProject(null);
@@ -173,6 +177,7 @@ export default function ProjectsPage() {
     if (project) {
       setProjectName(project.name);
       setProjectDescription(project.description || "");
+      setProjectAgentContext(project.agent_context || "");
       setProjectColor(project.color || PROJECT_COLORS[0]);
       setShowEditProject(projectId);
     }
@@ -181,6 +186,7 @@ export default function ProjectsPage() {
   const resetForm = () => {
     setProjectName("");
     setProjectDescription("");
+    setProjectAgentContext("");
     setProjectColor(PROJECT_COLORS[0]);
   };
 
@@ -337,6 +343,19 @@ export default function ProjectsPage() {
               />
             </div>
             <div className="grid gap-2">
+              <Label htmlFor="project-context">Agent Context (optional)</Label>
+              <Textarea
+                id="project-context"
+                placeholder="Instructions or context for AI agents working on this project. Include info about domains, directories, tech stack, etc."
+                value={projectAgentContext}
+                onChange={(e) => setProjectAgentContext(e.target.value)}
+                rows={4}
+              />
+              <p className="text-xs text-muted-foreground">
+                This context will be provided to agents when working on this project
+              </p>
+            </div>
+            <div className="grid gap-2">
               <Label>Color</Label>
               <div className="flex gap-2">
                 {PROJECT_COLORS.map((color) => (
@@ -404,6 +423,19 @@ export default function ProjectsPage() {
                 value={projectDescription}
                 onChange={(e) => setProjectDescription(e.target.value)}
               />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="edit-project-context">Agent Context</Label>
+              <Textarea
+                id="edit-project-context"
+                placeholder="Instructions or context for AI agents working on this project"
+                value={projectAgentContext}
+                onChange={(e) => setProjectAgentContext(e.target.value)}
+                rows={4}
+              />
+              <p className="text-xs text-muted-foreground">
+                This context will be provided to agents when working on this project
+              </p>
             </div>
             <div className="grid gap-2">
               <Label>Color</Label>

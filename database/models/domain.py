@@ -47,6 +47,7 @@ class Domain(Base, UUIDMixin, TimestampMixin):
     # Nginx config
     nginx_config_path: Mapped[str | None] = mapped_column(String(500))
     proxy_target: Mapped[str | None] = mapped_column(String(255))  # localhost:3000
+    web_root: Mapped[str | None] = mapped_column(String(500))  # /var/www/example.com
 
     # Metadata
     notes: Mapped[str | None] = mapped_column(Text)

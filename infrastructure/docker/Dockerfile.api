@@ -58,6 +58,9 @@ COPY services/api/ services/api/
 COPY config/ config/
 COPY alembic.ini alembic.ini
 
+# Reinstall editable packages to update links to new source location
+RUN pip install -e packages/core -e packages/messaging -e packages/memory -e database -e services/api --no-deps
+
 # Set ownership
 RUN chown -R appuser:appuser /app
 

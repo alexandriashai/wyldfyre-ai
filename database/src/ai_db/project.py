@@ -11,7 +11,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
-    from .conversation import Conversation
     from .domain import Domain
     from .task import Task
     from .user import User
@@ -63,15 +62,6 @@ class Project(Base, UUIDMixin, TimestampMixin):
     user: Mapped["User"] = relationship("User", back_populates="projects")
 
     # Child relationships
-    conversations: Mapped[list["Conversation"]] = relationship(
-        "Conversation",
-        back_populates="project",
-        cascade="all, delete-orphan",
-    )
-    tasks: Mapped[list["Task"]] = relationship(
-        "Task",
-        back_populates="project",
-    )
     domains: Mapped[list["Domain"]] = relationship(
         "Domain",
         back_populates="project",

@@ -24,7 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, Loader2, Filter } from "lucide-react";
+import { Plus, Loader2, Filter, RefreshCw } from "lucide-react";
 import { toast } from "@/hooks/useToast";
 
 export default function DomainsPage() {
@@ -38,6 +38,11 @@ export default function DomainsPage() {
   const [projectFilter, setProjectFilter] = useState<string>("all");
   const [isAdding, setIsAdding] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [editDomain, setEditDomain] = useState<Domain | null>(null);
+  const [editProjectId, setEditProjectId] = useState<string>("");
+  const [editWebRoot, setEditWebRoot] = useState<string>("");
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   useEffect(() => {
     if (token) {
@@ -136,6 +141,65 @@ export default function DomainsPage() {
         variant: "destructive",
       });
       setDeleteConfirm(null);
+    }
+  };
+
+  const handleEditOpen = (domain: Domain) => {
+    setEditDomain(domain);
+    setEditProjectId(domain.project_id || "none");
+    setEditWebRoot(domain.web_root || "");
+  };
+
+  const handleUpdate = async () => {
+    if (!token || !editDomain) return;
+    setIsUpdating(true);
+    try {
+      await domainsApi.update(token, editDomain.domain_name, {
+        project_id: editProjectId === "none" ? null : editProjectId,
+        web_root: editWebRoot || undefined,
+      });
+      toast({
+        title: "Domain updated",
+        description: `${editDomain.domain_name} has been updated.`,
+      });
+      setEditDomain(null);
+      fetchDomains();
+    } catch (error) {
+      console.error("Failed to update domain:", error);
+      const message = error instanceof ApiError ? error.message : "Failed to update domain";
+      toast({
+        title: "Update failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleSync = async () => {
+    if (!token || !editDomain) return;
+    setIsSyncing(true);
+    try {
+      const result = await domainsApi.sync(token, editDomain.domain_name);
+      toast({
+        title: "Sync started",
+        description: result.message || "Syncing nginx config values...",
+      });
+      // Refresh the domains list after a short delay to allow sync to complete
+      setTimeout(() => {
+        fetchDomains();
+      }, 2000);
+    } catch (error) {
+      console.error("Failed to sync domain:", error);
+      const message = error instanceof ApiError ? error.message : "Failed to sync domain config";
+      toast({
+        title: "Sync failed",
+        description: message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -252,6 +316,7 @@ export default function DomainsPage() {
             domains={domains}
             onDeploy={handleDeploy}
             onDelete={(name) => setDeleteConfirm(name)}
+            onEdit={handleEditOpen}
           />
         </div>
       )}
@@ -275,6 +340,85 @@ export default function DomainsPage() {
               onClick={() => deleteConfirm && handleDelete(deleteConfirm)}
             >
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit domain dialog */}
+      <Dialog open={!!editDomain} onOpenChange={() => setEditDomain(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Domain</DialogTitle>
+            <DialogDescription>
+              Update settings for {editDomain?.domain_name}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-project">Project</Label>
+              <Select value={editProjectId} onValueChange={setEditProjectId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a project" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No project</SelectItem>
+                  {projects.map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="h-2 w-2 rounded-full"
+                          style={{ backgroundColor: project.color || "#6B7280" }}
+                        />
+                        {project.name}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="edit-web-root">Web Root</Label>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleSync}
+                  disabled={isSyncing}
+                  className="h-7 text-xs"
+                >
+                  {isSyncing ? (
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3 mr-1" />
+                  )}
+                  Sync from nginx
+                </Button>
+              </div>
+              <Input
+                id="edit-web-root"
+                placeholder="/var/www/example.com"
+                value={editWebRoot}
+                onChange={(e) => setEditWebRoot(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                The directory path where the website files are stored
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditDomain(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleUpdate} disabled={isUpdating}>
+              {isUpdating ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Save Changes"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

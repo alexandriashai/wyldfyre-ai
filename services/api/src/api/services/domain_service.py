@@ -80,6 +80,7 @@ class DomainService:
         self,
         domain_name: str,
         proxy_target: str | None = None,
+        web_root: str | None = None,
         ssl_enabled: bool = True,
         dns_provider: str = "cloudflare",
         project_id: str | None = None,
@@ -90,6 +91,7 @@ class DomainService:
         Args:
             domain_name: The domain name
             proxy_target: Optional proxy target (e.g., localhost:3000)
+            web_root: Optional web root directory (e.g., /var/www/example.com)
             ssl_enabled: Whether to enable SSL
             dns_provider: DNS provider name
             project_id: Optional project to associate with
@@ -116,6 +118,7 @@ class DomainService:
         domain = Domain(
             domain_name=domain_name,
             proxy_target=proxy_target,
+            web_root=web_root,
             ssl_enabled=ssl_enabled,
             dns_provider=dns_provider,
             project_id=project_id,
@@ -159,6 +162,7 @@ class DomainService:
         # Apply allowed updates
         allowed_fields = {
             "proxy_target",
+            "web_root",
             "ssl_enabled",
             "ssl_auto_renew",
             "notes",
@@ -325,6 +329,53 @@ class DomainService:
             "success": True,
             "task_id": task_id,
             "message": f"SSL renewal started for {domain_name}",
+        }
+
+    async def sync_domain_config(self, domain_name: str) -> dict[str, Any]:
+        """
+        Sync domain configuration from nginx config file.
+
+        Asks the Infra Agent to read the nginx config and update
+        the domain record with web_root and other values.
+
+        Args:
+            domain_name: The domain to sync
+
+        Returns:
+            Task submission result with task_id for tracking
+        """
+        from uuid import uuid4
+
+        domain = await self.get_domain(domain_name)
+        if not domain:
+            raise ValueError(f"Domain {domain_name} not found")
+
+        task_id = str(uuid4())
+
+        # Publish sync task to infra agent
+        await self.pubsub.publish(
+            channel="infra-agent:tasks",
+            message={
+                "task_id": task_id,
+                "action": "sync_nginx_config",
+                "payload": {
+                    "domain": domain_name,
+                    "nginx_config_path": domain.nginx_config_path,
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        logger.info(
+            "Domain config sync requested",
+            domain=domain_name,
+            task_id=task_id,
+        )
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "message": f"Config sync started for {domain_name}",
         }
 
     def _validate_domain_name(self, domain_name: str) -> bool:

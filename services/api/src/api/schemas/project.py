@@ -14,6 +14,7 @@ class ProjectCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
+    agent_context: str | None = None
     color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str | None = Field(None, max_length=50)
 
@@ -23,6 +24,7 @@ class ProjectUpdate(BaseModel):
 
     name: str | None = Field(None, min_length=1, max_length=255)
     description: str | None = None
+    agent_context: str | None = None
     status: ProjectStatus | None = None
     color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str | None = Field(None, max_length=50)
@@ -34,6 +36,7 @@ class ProjectResponse(BaseModel):
     id: str
     name: str
     description: str | None
+    agent_context: str | None
     status: ProjectStatus
     color: str | None
     icon: str | None
@@ -63,3 +66,26 @@ class ProjectListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class ProjectDomainInfo(BaseModel):
+    """Domain info for project context."""
+
+    domain_name: str
+    web_root: str | None
+    proxy_target: str | None
+    is_primary: bool
+    status: str
+
+
+class ProjectContextResponse(BaseModel):
+    """Full project context for agent injection."""
+
+    id: str
+    name: str
+    description: str | None
+    agent_context: str | None
+    domains: list[ProjectDomainInfo] = []
+
+    class Config:
+        from_attributes = True

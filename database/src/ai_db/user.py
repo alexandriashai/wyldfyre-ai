@@ -11,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
+    from .project import Project
     from .task import Task
 
 
@@ -37,6 +38,7 @@ class User(Base, UUIDMixin, TimestampMixin):
 
     # Relationships
     tasks: Mapped[list["Task"]] = relationship("Task", back_populates="user")
+    projects: Mapped[list["Project"]] = relationship("Project", back_populates="user")
 
     def __repr__(self) -> str:
         return f"<User {self.username}>"

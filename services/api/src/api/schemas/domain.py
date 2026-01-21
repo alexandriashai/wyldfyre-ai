@@ -22,6 +22,10 @@ class DomainCreate(BaseModel):
         default=None,
         description="Proxy target (e.g., localhost:3000)",
     )
+    web_root: str | None = Field(
+        default=None,
+        description="Web root directory (e.g., /var/www/example.com)",
+    )
     ssl_enabled: bool = Field(default=True, description="Enable SSL/TLS")
     dns_provider: str = Field(default="cloudflare", description="DNS provider")
     project_id: str | None = Field(
@@ -34,6 +38,7 @@ class DomainUpdate(BaseModel):
     """Domain update request."""
 
     proxy_target: str | None = None
+    web_root: str | None = None
     ssl_enabled: bool | None = None
     ssl_auto_renew: bool | None = None
     notes: str | None = None
@@ -63,6 +68,7 @@ class DomainResponse(BaseModel):
     # Nginx
     nginx_config_path: str | None
     proxy_target: str | None
+    web_root: str | None
 
     # Project association
     project_id: str | None = None

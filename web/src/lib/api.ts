@@ -292,7 +292,8 @@ export interface Project {
   id: string;
   name: string;
   description: string | null;
-  status: 'ACTIVE' | 'ARCHIVED' | 'COMPLETED';
+  agent_context: string | null;
+  status: 'active' | 'archived' | 'completed';
   color: string | null;
   icon: string | null;
   user_id: string;
@@ -335,7 +336,7 @@ export const projectsApi = {
     return handleResponse<ProjectWithStats>(response);
   },
 
-  async create(token: string, data: { name: string; description?: string; color?: string; icon?: string }) {
+  async create(token: string, data: { name: string; description?: string; agent_context?: string; color?: string; icon?: string }) {
     const response = await fetch(`${API_BASE_URL}/api/projects`, {
       method: 'POST',
       headers: getHeaders(token),
@@ -344,7 +345,7 @@ export const projectsApi = {
     return handleResponse<Project>(response);
   },
 
-  async update(token: string, id: string, data: { name?: string; description?: string; status?: string; color?: string; icon?: string }) {
+  async update(token: string, id: string, data: { name?: string; description?: string; agent_context?: string; status?: string; color?: string; icon?: string }) {
     const response = await fetch(`${API_BASE_URL}/api/projects/${id}`, {
       method: 'PATCH',
       headers: getHeaders(token),
@@ -579,6 +580,9 @@ export interface Domain {
   status: string;
   ssl_enabled: boolean;
   ssl_expires_at: string | null;
+  web_root: string | null;
+  proxy_target: string | null;
+  nginx_config_path: string | null;
   project_id: string | null;
   project_name: string | null;
   created_at: string;
@@ -602,6 +606,7 @@ export const domainsApi = {
   async create(token: string, data: {
     domain_name: string;
     proxy_target?: string;
+    web_root?: string;
     ssl_enabled?: boolean;
     project_id?: string;
   }) {
@@ -619,6 +624,28 @@ export const domainsApi = {
       headers: getHeaders(token),
     });
     return handleResponse<{ task_id: string; message: string }>(response);
+  },
+
+  async sync(token: string, domainName: string) {
+    const response = await fetch(`${API_BASE_URL}/api/domains/${domainName}/sync`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ task_id: string; message: string; success: boolean }>(response);
+  },
+
+  async update(token: string, domainName: string, data: {
+    proxy_target?: string;
+    web_root?: string;
+    ssl_enabled?: boolean;
+    project_id?: string | null;
+  }) {
+    const response = await fetch(`${API_BASE_URL}/api/domains/${domainName}`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<Domain>(response);
   },
 
   async delete(token: string, domainName: string) {

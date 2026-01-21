@@ -11,6 +11,7 @@ from ai_core import AgentType, DomainStatus, TaskStatus
 
 from .base import Base, TimestampMixin, UUIDMixin, generate_uuid
 from .domain import Domain
+from .project import Project, ProjectStatus
 from .task import Task
 from .user import User
 
@@ -27,8 +28,10 @@ __all__ = [
     "TaskStatus",
     "AgentType",
     "DomainStatus",
+    "ProjectStatus",
     # Models
     "User",
     "Task",
     "Domain",
+    "Project",
 ]

@@ -11,13 +11,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Globe, Lock, Upload, Trash2, ExternalLink, FolderKanban } from "lucide-react";
+import { Globe, Lock, Upload, Trash2, ExternalLink, FolderKanban, Pencil } from "lucide-react";
 import { Domain } from "@/lib/api";
 
 interface DomainTableProps {
   domains: Domain[];
   onDeploy?: (name: string) => void;
   onDelete?: (name: string) => void;
+  onEdit?: (domain: Domain) => void;
 }
 
 const statusColors: Record<string, string> = {
@@ -27,7 +28,7 @@ const statusColors: Record<string, string> = {
   deleted: "bg-gray-500/10 text-gray-500",
 };
 
-export function DomainTable({ domains, onDeploy, onDelete }: DomainTableProps) {
+export function DomainTable({ domains, onDeploy, onDelete, onEdit }: DomainTableProps) {
   if (domains.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
@@ -95,6 +96,14 @@ export function DomainTable({ domains, onDeploy, onDelete }: DomainTableProps) {
             </TableCell>
             <TableCell className="text-right">
               <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onEdit?.(domain)}
+                  title="Edit domain"
+                >
+                  <Pencil className="h-4 w-4" />
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
