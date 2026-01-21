@@ -28,6 +28,7 @@ from .routes import (
     health_router,
     memory_router,
     notifications_router,
+    projects_router,
     settings_router,
     tasks_router,
     usage_router,
@@ -137,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/api")
     app.include_router(agents_router, prefix="/api")
     app.include_router(tasks_router, prefix="/api")
+    app.include_router(projects_router, prefix="/api")  # Project organization
     app.include_router(conversations_router, prefix="/api")
     app.include_router(domains_router, prefix="/api")
     app.include_router(files_router, prefix="/api")

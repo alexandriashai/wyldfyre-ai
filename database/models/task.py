@@ -13,6 +13,9 @@ from ai_core import AgentType, TaskStatus
 from .base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
+    from .conversation import Conversation
+    from .domain import Domain
+    from .project import Project
     from .user import User
 
 
@@ -60,6 +63,33 @@ class Task(Base, UUIDMixin, TimestampMixin):
         index=True,
     )
     user: Mapped["User | None"] = relationship("User", back_populates="tasks")
+
+    # Project relationship (optional)
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        index=True,
+    )
+    project: Mapped["Project | None"] = relationship("Project", back_populates="tasks")
+
+    # Conversation relationship (optional)
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        index=True,
+    )
+    conversation: Mapped["Conversation | None"] = relationship(
+        "Conversation",
+        back_populates="tasks",
+    )
+
+    # Domain relationship (optional)
+    domain_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("domains.id", ondelete="SET NULL"),
+        index=True,
+    )
+    domain: Mapped["Domain | None"] = relationship("Domain")
 
     # Parent task for subtasks
     parent_task_id: Mapped[str | None] = mapped_column(

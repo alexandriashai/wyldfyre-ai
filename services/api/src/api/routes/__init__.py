@@ -12,6 +12,7 @@ from .grafana_proxy import router as grafana_router
 from .health import router as health_router
 from .memory import router as memory_router
 from .notifications import router as notifications_router
+from .projects import router as projects_router
 from .settings import router as settings_router
 from .tasks import router as tasks_router
 from .usage import router as usage_router
@@ -27,6 +28,7 @@ __all__ = [
     "health_router",
     "memory_router",
     "notifications_router",
+    "projects_router",
     "settings_router",
     "tasks_router",
     "usage_router",

@@ -40,8 +40,28 @@ class PAIPhase(str, Enum):
     LEARN = "learn"
 
 
+class LearningScope(str, Enum):
+    """
+    Scope levels for learning isolation.
+
+    GLOBAL: Shared across all projects - general patterns, best practices
+    PROJECT: Specific to a project - project conventions, architecture decisions
+    DOMAIN: Specific to a domain/site - site-specific configs, client preferences
+    """
+    GLOBAL = "global"
+    PROJECT = "project"
+    DOMAIN = "domain"
+
+
 class Learning:
-    """Represents a learning extracted from a task."""
+    """
+    Represents a learning extracted from a task.
+
+    Learnings can be scoped at three levels:
+    - GLOBAL: Applies to all projects (general patterns, best practices)
+    - PROJECT: Specific to a project (conventions, architecture decisions)
+    - DOMAIN: Specific to a domain/site (client preferences, site configs)
+    """
 
     def __init__(
         self,
@@ -57,6 +77,10 @@ class Learning:
         permission_level: int = 1,
         sensitivity: str = "internal",
         allowed_agents: list[str] | None = None,
+        # Scope fields for project isolation
+        scope: LearningScope = LearningScope.GLOBAL,
+        project_id: str | None = None,
+        domain_id: str | None = None,
     ):
         self.content = content
         self.phase = phase
@@ -71,6 +95,10 @@ class Learning:
         self.permission_level = permission_level  # Minimum level to access (1=READ_WRITE default)
         self.sensitivity = sensitivity  # public/internal/restricted
         self.allowed_agents = allowed_agents or []  # Optional whitelist
+        # Scope fields
+        self.scope = scope
+        self.project_id = project_id
+        self.domain_id = domain_id
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -88,11 +116,22 @@ class Learning:
             "permission_level": self.permission_level,
             "sensitivity": self.sensitivity,
             "allowed_agents": self.allowed_agents,
+            # Scope fields
+            "scope": self.scope.value,
+            "project_id": self.project_id,
+            "domain_id": self.domain_id,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Learning":
         """Create from dictionary."""
+        # Parse scope with backward compatibility
+        scope_str = data.get("scope", "global")
+        try:
+            scope = LearningScope(scope_str)
+        except ValueError:
+            scope = LearningScope.GLOBAL
+
         learning = cls(
             content=data["content"],
             phase=PAIPhase(data["phase"]),
@@ -106,10 +145,35 @@ class Learning:
             permission_level=data.get("permission_level", 1),
             sensitivity=data.get("sensitivity", "internal"),
             allowed_agents=data.get("allowed_agents", []),
+            # Scope fields
+            scope=scope,
+            project_id=data.get("project_id"),
+            domain_id=data.get("domain_id"),
         )
         if "created_at" in data:
             learning.created_at = datetime.fromisoformat(data["created_at"])
         return learning
+
+    def is_accessible_in_context(
+        self,
+        project_id: str | None = None,
+        domain_id: str | None = None,
+    ) -> bool:
+        """
+        Check if this learning is accessible in the given project/domain context.
+
+        Rules:
+        - GLOBAL learnings are always accessible
+        - PROJECT learnings only accessible if project_id matches
+        - DOMAIN learnings only accessible if domain_id matches
+        """
+        if self.scope == LearningScope.GLOBAL:
+            return True
+        if self.scope == LearningScope.PROJECT:
+            return self.project_id is not None and self.project_id == project_id
+        if self.scope == LearningScope.DOMAIN:
+            return self.domain_id is not None and self.domain_id == domain_id
+        return True  # Default allow
 
 
 class PAIMemory:
@@ -340,6 +404,10 @@ class PAIMemory:
                 "permission_level": learning.permission_level,
                 "sensitivity": learning.sensitivity,
                 "allowed_agents": learning.allowed_agents,
+                # Scope fields for project isolation
+                "scope": learning.scope.value,
+                "project_id": learning.project_id,
+                "domain_id": learning.domain_id,
                 **learning.metadata,
             },
         )
@@ -356,9 +424,18 @@ class PAIMemory:
         limit: int = 10,
         agent_type: str = "supervisor",
         permission_level: int = 4,
+        # Scope filtering - pass current context to filter learnings
+        project_id: str | None = None,
+        domain_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """
-        Search learnings in WARM tier with ACL filtering.
+        Search learnings in WARM tier with ACL and scope filtering.
+
+        Scope Filtering Rules:
+        - GLOBAL learnings are always included
+        - PROJECT learnings only included if project_id matches
+        - DOMAIN learnings only included if domain_id matches
+        - Learnings from other projects/domains are excluded
 
         Args:
             query: Search query
@@ -367,9 +444,11 @@ class PAIMemory:
             limit: Maximum results to return
             agent_type: Type of agent making the request (for ACL)
             permission_level: Permission level of requesting agent (1-4)
+            project_id: Current project context (for scope filtering)
+            domain_id: Current domain context (for scope filtering)
 
         Returns:
-            List of learning dicts that pass ACL checks
+            List of learning dicts that pass ACL and scope checks
         """
         if not self._qdrant:
             return []
@@ -380,23 +459,51 @@ class PAIMemory:
         if category:
             filter_dict["category"] = category
 
-        # Request more results than limit to account for ACL filtering
+        # Request more results than limit to account for ACL + scope filtering
         results = await self._qdrant.search(
             query=query,
-            limit=limit * 2,  # Over-fetch to account for ACL filtering
+            limit=limit * 3,  # Over-fetch to account for filtering
             filter=filter_dict if filter_dict else None,
         )
 
-        # Filter results by ACL
+        # Filter results by ACL and scope
         filtered_results = []
         for result in results:
-            if self._check_memory_acl(result, agent_type, permission_level):
-                filtered_results.append(result)
-            else:
+            # Check ACL first
+            if not self._check_memory_acl(result, agent_type, permission_level):
                 logger.debug(
                     f"ACL blocked access to learning for {agent_type}",
                     extra={"category": result.get("category", "unknown")},
                 )
+                continue
+
+            # Check scope - determine if learning is accessible in current context
+            result_scope = result.get("scope", "global")
+            result_project = result.get("project_id")
+            result_domain = result.get("domain_id")
+
+            if result_scope == "global":
+                # Global learnings are always accessible
+                filtered_results.append(result)
+            elif result_scope == "project":
+                # Project learnings only if we're in that project
+                if project_id and result_project == project_id:
+                    filtered_results.append(result)
+                else:
+                    logger.debug(
+                        f"Scope blocked project learning (current={project_id}, learning={result_project})"
+                    )
+            elif result_scope == "domain":
+                # Domain learnings only if we're in that domain
+                if domain_id and result_domain == domain_id:
+                    filtered_results.append(result)
+                else:
+                    logger.debug(
+                        f"Scope blocked domain learning (current={domain_id}, learning={result_domain})"
+                    )
+            else:
+                # Unknown scope - treat as global (backward compatibility)
+                filtered_results.append(result)
 
             if len(filtered_results) >= limit:
                 break

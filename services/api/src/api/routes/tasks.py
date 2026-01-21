@@ -25,12 +25,17 @@ async def list_tasks(
     current_user: CurrentUserDep,
     db: AsyncSession = Depends(get_db_session),
     status_filter: TaskStatus | None = Query(None, alias="status"),
+    project_id: str | None = Query(None, description="Filter by project"),
+    conversation_id: str | None = Query(None, description="Filter by conversation"),
+    domain_id: str | None = Query(None, description="Filter by domain"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ) -> TaskListResponse:
     """
-    List tasks for the current user.
+    List tasks for the current user with optional filters.
     """
+    from sqlalchemy import func
+
     from ai_db import Task
 
     # Build query
@@ -38,15 +43,26 @@ async def list_tasks(
 
     if status_filter:
         query = query.where(Task.status == status_filter)
+    if project_id:
+        query = query.where(Task.project_id == project_id)
+    if conversation_id:
+        query = query.where(Task.conversation_id == conversation_id)
+    if domain_id:
+        query = query.where(Task.domain_id == domain_id)
 
-    # Get total count
-    count_query = select(Task.id).where(Task.user_id == current_user.sub)
+    # Get total count using func.count() for efficiency
+    count_query = select(func.count(Task.id)).where(Task.user_id == current_user.sub)
     if status_filter:
         count_query = count_query.where(Task.status == status_filter)
+    if project_id:
+        count_query = count_query.where(Task.project_id == project_id)
+    if conversation_id:
+        count_query = count_query.where(Task.conversation_id == conversation_id)
+    if domain_id:
+        count_query = count_query.where(Task.domain_id == domain_id)
 
-    # This is a simplified count - in production use func.count()
     count_result = await db.execute(count_query)
-    total = len(list(count_result.scalars().all()))
+    total = count_result.scalar() or 0
 
     # Apply pagination
     query = (

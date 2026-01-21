@@ -3,14 +3,19 @@ Memory tools for vector search and knowledge storage.
 
 These tools allow agents to:
 - Search the vector database for relevant information
-- Store new learnings and knowledge
+- Store new learnings and knowledge with scope isolation
 - Manage memory collections
+
+Scope Levels:
+- GLOBAL: Shared across all projects (general patterns, best practices)
+- PROJECT: Specific to a project (conventions, architecture decisions)
+- DOMAIN: Specific to a domain/site (client preferences, site configs)
 """
 
 from typing import Any
 
 from ai_core import get_logger, get_settings
-from ai_memory import QdrantStore
+from ai_memory import LearningScope, QdrantStore
 
 from ..tools import ToolResult, tool
 
@@ -31,7 +36,12 @@ async def _get_qdrant_store(collection: str | None = None) -> QdrantStore:
     name="search_memory",
     description="""Search the vector database for relevant information using semantic similarity.
     Use this to find past learnings, stored knowledge, or similar content.
-    The search uses embeddings to find semantically similar content, not just keyword matches.""",
+    The search uses embeddings to find semantically similar content, not just keyword matches.
+
+    Scope Filtering:
+    - Pass project_id to include GLOBAL + that project's learnings
+    - Pass domain_id to include GLOBAL + that domain's learnings
+    - Learnings from other projects/domains are automatically excluded""",
     parameters={
         "type": "object",
         "properties": {
@@ -57,6 +67,14 @@ async def _get_qdrant_store(collection: str | None = None) -> QdrantStore:
                 "type": "object",
                 "description": "Metadata filter (e.g., {\"category\": \"ssl\", \"agent\": \"infra\"})",
             },
+            "project_id": {
+                "type": "string",
+                "description": "Project context - returns GLOBAL + this project's learnings only",
+            },
+            "domain_id": {
+                "type": "string",
+                "description": "Domain context - returns GLOBAL + this domain's learnings only",
+            },
         },
         "required": ["query"],
     },
@@ -67,23 +85,55 @@ async def search_memory(
     limit: int = 10,
     score_threshold: float = 0.7,
     filter: dict[str, Any] | None = None,
+    project_id: str | None = None,
+    domain_id: str | None = None,
 ) -> ToolResult:
-    """Search vector database for relevant information."""
+    """Search vector database for relevant information with scope filtering."""
     store = None
     try:
         store = await _get_qdrant_store(collection)
 
+        # Over-fetch to account for scope filtering
+        fetch_limit = limit * 3 if (project_id or domain_id) else limit
+
         results = await store.search(
             query=query,
-            limit=limit,
+            limit=fetch_limit,
             score_threshold=score_threshold,
             filter=filter,
         )
+
+        # Apply scope filtering if project/domain context provided
+        if project_id or domain_id:
+            filtered_results = []
+            for r in results:
+                metadata = r.get("metadata", r)
+                scope = metadata.get("scope", "global")
+                result_project = metadata.get("project_id")
+                result_domain = metadata.get("domain_id")
+
+                if scope == "global":
+                    filtered_results.append(r)
+                elif scope == "project":
+                    if project_id and result_project == project_id:
+                        filtered_results.append(r)
+                elif scope == "domain":
+                    if domain_id and result_domain == domain_id:
+                        filtered_results.append(r)
+                else:
+                    # Unknown scope - treat as global
+                    filtered_results.append(r)
+
+                if len(filtered_results) >= limit:
+                    break
+            results = filtered_results
 
         if not results:
             return ToolResult.ok({
                 "message": "No relevant results found",
                 "query": query,
+                "project_id": project_id,
+                "domain_id": domain_id,
                 "results": [],
                 "count": 0,
             })
@@ -91,6 +141,8 @@ async def search_memory(
         return ToolResult.ok({
             "message": f"Found {len(results)} relevant results",
             "query": query,
+            "project_id": project_id,
+            "domain_id": domain_id,
             "results": results,
             "count": len(results),
         })
@@ -107,7 +159,14 @@ async def search_memory(
     name="store_memory",
     description="""Store information in the vector database for future retrieval.
     Use this to save learnings, important findings, or knowledge that should be remembered.
-    The content will be embedded and can be found via semantic search later.""",
+    The content will be embedded and can be found via semantic search later.
+
+    Scope Levels:
+    - GLOBAL (default): Shared across all projects - use for general patterns, best practices
+    - PROJECT: Specific to a project - use for project conventions, architecture decisions
+    - DOMAIN: Specific to a domain/site - use for client preferences, site-specific configs
+
+    IMPORTANT: Use the appropriate scope to prevent context bleeding between projects!""",
     parameters={
         "type": "object",
         "properties": {
@@ -138,6 +197,20 @@ async def search_memory(
                 "description": "Importance level",
                 "default": "medium",
             },
+            "scope": {
+                "type": "string",
+                "enum": ["global", "project", "domain"],
+                "description": "Scope level - global (shared), project (project-specific), domain (site-specific)",
+                "default": "global",
+            },
+            "project_id": {
+                "type": "string",
+                "description": "Project ID (required if scope is 'project')",
+            },
+            "domain_id": {
+                "type": "string",
+                "description": "Domain ID (required if scope is 'domain')",
+            },
         },
         "required": ["content"],
     },
@@ -149,10 +222,19 @@ async def store_memory(
     tags: list[str] | None = None,
     source: str | None = None,
     importance: str = "medium",
+    scope: str = "global",
+    project_id: str | None = None,
+    domain_id: str | None = None,
 ) -> ToolResult:
-    """Store content in vector database."""
+    """Store content in vector database with scope isolation."""
     store = None
     try:
+        # Validate scope requirements
+        if scope == "project" and not project_id:
+            return ToolResult.fail("project_id is required when scope is 'project'")
+        if scope == "domain" and not domain_id:
+            return ToolResult.fail("domain_id is required when scope is 'domain'")
+
         store = await _get_qdrant_store(collection)
 
         metadata = {
@@ -160,9 +242,13 @@ async def store_memory(
             "tags": tags or [],
             "source": source,
             "importance": importance,
+            # Scope fields
+            "scope": scope,
+            "project_id": project_id,
+            "domain_id": domain_id,
         }
-        # Remove None values
-        metadata = {k: v for k, v in metadata.items() if v is not None}
+        # Remove None values (but keep scope)
+        metadata = {k: v for k, v in metadata.items() if v is not None or k == "scope"}
 
         doc_id = await store.upsert(
             id=None,  # Auto-generate ID
@@ -171,10 +257,13 @@ async def store_memory(
         )
 
         return ToolResult.ok({
-            "message": "Successfully stored in memory",
+            "message": f"Successfully stored in memory (scope: {scope})",
             "id": doc_id,
             "collection": collection or DEFAULT_COLLECTION,
             "category": category,
+            "scope": scope,
+            "project_id": project_id,
+            "domain_id": domain_id,
         })
 
     except Exception as e:

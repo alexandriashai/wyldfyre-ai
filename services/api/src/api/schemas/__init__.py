@@ -16,10 +16,26 @@ from .common import (
     PaginatedResponse,
     SuccessResponse,
 )
+from .conversation import (
+    ConversationCreate,
+    ConversationListResponse,
+    ConversationResponse,
+    ConversationUpdate,
+    ConversationWithMessagesResponse,
+    MessageResponse,
+    PlanUpdate,
+)
 from .domain import (
     DomainCreate,
     DomainResponse,
     DomainUpdate,
+)
+from .project import (
+    ProjectCreate,
+    ProjectListResponse,
+    ProjectResponse,
+    ProjectUpdate,
+    ProjectWithStatsResponse,
 )
 from .task import (
     TaskResponse,
@@ -51,10 +67,24 @@ __all__ = [
     "ErrorResponse",
     "PaginatedResponse",
     "SuccessResponse",
+    # Conversation
+    "ConversationCreate",
+    "ConversationListResponse",
+    "ConversationResponse",
+    "ConversationUpdate",
+    "ConversationWithMessagesResponse",
+    "MessageResponse",
+    "PlanUpdate",
     # Domain
     "DomainCreate",
     "DomainResponse",
     "DomainUpdate",
+    # Project
+    "ProjectCreate",
+    "ProjectListResponse",
+    "ProjectResponse",
+    "ProjectUpdate",
+    "ProjectWithStatsResponse",
     # Task
     "TaskResponse",
     "TaskListResponse",

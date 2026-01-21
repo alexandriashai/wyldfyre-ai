@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn, getStatusBgColor } from "@/lib/utils";
 import { useAgentStore } from "@/stores/agent-store";
+import { ProjectSelector } from "@/components/projects/project-selector";
 import {
   MessageSquare,
   Bot,
@@ -13,6 +14,8 @@ import {
   ChevronLeft,
   ChevronRight,
   X,
+  BarChart3,
+  FolderKanban,
 } from "lucide-react";
 import { Button } from "./button";
 import { ScrollArea } from "./scroll-area";
@@ -32,9 +35,11 @@ interface SidebarProps {
 
 const navItems = [
   { href: "/chat", icon: MessageSquare, label: "Chat" },
+  { href: "/projects", icon: FolderKanban, label: "Projects" },
   { href: "/agents", icon: Bot, label: "Agents" },
   { href: "/domains", icon: Globe, label: "Domains" },
   { href: "/memory", icon: Brain, label: "Memory" },
+  { href: "/usage", icon: BarChart3, label: "Usage" },
   { href: "/settings", icon: Settings, label: "Settings" },
 ];
 
@@ -95,6 +100,11 @@ export function Sidebar({ isCollapsed, onToggle, isMobileOpen, onMobileToggle }:
             <X className="h-5 w-5" />
           </Button>
         )}
+      </div>
+
+      {/* Project Selector */}
+      <div className={cn("px-3 py-3 border-b", isCollapsed && !isMobileOpen && "px-2")}>
+        <ProjectSelector collapsed={isCollapsed && !isMobileOpen} />
       </div>
 
       {/* Navigation */}

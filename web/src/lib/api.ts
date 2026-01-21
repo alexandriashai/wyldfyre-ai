@@ -261,20 +261,127 @@ export const tasksApi = {
   },
 };
 
-// Conversations API
-export const conversationsApi = {
-  async list(token: string) {
-    const response = await fetch(`${API_BASE_URL}/api/conversations`, {
+// Projects API
+export interface Project {
+  id: string;
+  name: string;
+  description: string | null;
+  status: 'ACTIVE' | 'ARCHIVED' | 'COMPLETED';
+  color: string | null;
+  icon: string | null;
+  user_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectWithStats extends Project {
+  conversation_count: number;
+  task_count: number;
+  total_cost: number;
+}
+
+export const projectsApi = {
+  async list(token: string, params?: { status?: string; page?: number; page_size?: number }) {
+    const searchParams = new URLSearchParams();
+    if (params?.status) searchParams.set('status', params.status);
+    if (params?.page) searchParams.set('page', params.page.toString());
+    if (params?.page_size) searchParams.set('page_size', params.page_size.toString());
+
+    const url = `${API_BASE_URL}/api/projects${searchParams.toString() ? `?${searchParams}` : ''}`;
+    const response = await fetch(url, {
       method: 'GET',
       headers: getHeaders(token),
     });
-    return handleResponse<Array<{
-      id: string;
-      title: string;
-      created_at: string;
-      updated_at: string;
-      message_count: number;
-    }>>(response);
+    return handleResponse<{
+      projects: Project[];
+      total: number;
+      page: number;
+      page_size: number;
+    }>(response);
+  },
+
+  async get(token: string, id: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${id}`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<ProjectWithStats>(response);
+  },
+
+  async create(token: string, data: { name: string; description?: string; color?: string; icon?: string }) {
+    const response = await fetch(`${API_BASE_URL}/api/projects`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<Project>(response);
+  },
+
+  async update(token: string, id: string, data: { name?: string; description?: string; status?: string; color?: string; icon?: string }) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${id}`, {
+      method: 'PATCH',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<Project>(response);
+  },
+
+  async delete(token: string, id: string, archive: boolean = true) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${id}?archive=${archive}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+};
+
+// Conversation Types
+export interface Conversation {
+  id: string;
+  title: string | null;
+  summary: string | null;
+  status: 'ACTIVE' | 'ARCHIVED' | 'DELETED';
+  message_count: number;
+  last_message_at: string | null;
+  plan_content: string | null;
+  plan_status: 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED' | 'COMPLETED' | null;
+  plan_approved_at: string | null;
+  user_id: string;
+  project_id: string | null;
+  domain_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Conversations API
+export const conversationsApi = {
+  async list(token: string, params?: {
+    project_id?: string;
+    domain_id?: string;
+    status?: string;
+    search?: string;
+    page?: number;
+    page_size?: number;
+  }) {
+    const searchParams = new URLSearchParams();
+    if (params?.project_id) searchParams.set('project_id', params.project_id);
+    if (params?.domain_id) searchParams.set('domain_id', params.domain_id);
+    if (params?.status) searchParams.set('status', params.status);
+    if (params?.search) searchParams.set('search', params.search);
+    if (params?.page) searchParams.set('page', params.page.toString());
+    if (params?.page_size) searchParams.set('page_size', params.page_size.toString());
+
+    const url = `${API_BASE_URL}/api/conversations${searchParams.toString() ? `?${searchParams}` : ''}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{
+      conversations: Conversation[];
+      total: number;
+      page: number;
+      page_size: number;
+    }>(response);
   },
 
   async get(token: string, id: string) {
@@ -283,10 +390,7 @@ export const conversationsApi = {
       headers: getHeaders(token),
     });
     const data = await handleResponse<{
-      conversation: {
-        id: string;
-        title: string;
-      };
+      conversation: Conversation;
       messages: Array<{
         id: string;
         role: 'user' | 'assistant';
@@ -297,8 +401,7 @@ export const conversationsApi = {
     }>(response);
     // Map to expected format
     return {
-      id: data.conversation.id,
-      title: data.conversation.title,
+      ...data.conversation,
       messages: data.messages.map(m => ({
         ...m,
         created_at: m.timestamp,
@@ -306,17 +409,22 @@ export const conversationsApi = {
     };
   },
 
-  async create(token: string, title?: string) {
+  async create(token: string, data: { title?: string; project_id?: string; domain_id?: string }) {
     const response = await fetch(`${API_BASE_URL}/api/conversations`, {
       method: 'POST',
       headers: getHeaders(token),
-      body: JSON.stringify({ title }),
+      body: JSON.stringify(data),
     });
-    return handleResponse<{
-      id: string;
-      title: string;
-      created_at: string;
-    }>(response);
+    return handleResponse<Conversation>(response);
+  },
+
+  async update(token: string, id: string, data: { title?: string; project_id?: string; domain_id?: string; status?: string }) {
+    const response = await fetch(`${API_BASE_URL}/api/conversations/${id}`, {
+      method: 'PATCH',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<Conversation>(response);
   },
 
   async delete(token: string, id: string) {
@@ -325,6 +433,59 @@ export const conversationsApi = {
       headers: getHeaders(token),
     });
     return handleResponse<{ message: string }>(response);
+  },
+
+  // Plan management
+  async getPlan(token: string, id: string) {
+    const response = await fetch(`${API_BASE_URL}/api/conversations/${id}/plan`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{
+      conversation_id: string;
+      plan_content: string | null;
+      plan_status: string | null;
+      plan_approved_at: string | null;
+    }>(response);
+  },
+
+  async updatePlan(token: string, id: string, data: { plan_content: string; plan_status?: string }) {
+    const response = await fetch(`${API_BASE_URL}/api/conversations/${id}/plan`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{
+      conversation_id: string;
+      plan_content: string;
+      plan_status: string;
+      message: string;
+    }>(response);
+  },
+
+  async approvePlan(token: string, id: string) {
+    const response = await fetch(`${API_BASE_URL}/api/conversations/${id}/plan/approve`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{
+      conversation_id: string;
+      plan_status: string;
+      plan_approved_at: string;
+      message: string;
+    }>(response);
+  },
+
+  async rejectPlan(token: string, id: string) {
+    const response = await fetch(`${API_BASE_URL}/api/conversations/${id}/plan/reject`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{
+      conversation_id: string;
+      plan_status: string;
+      message: string;
+    }>(response);
   },
 };
 

@@ -3,9 +3,11 @@
 import { useEffect, useState } from "react";
 import { useAuthStore } from "@/stores/auth-store";
 import { useChatStore } from "@/stores/chat-store";
+import { useProjectStore } from "@/stores/project-store";
 import { MessageList } from "@/components/chat/message-list";
 import { MessageInput } from "@/components/chat/message-input";
 import { AgentStatus } from "@/components/chat/agent-status";
+import { PlanPanel } from "@/components/chat/plan-panel";
 import { Loader2 } from "lucide-react";
 
 export default function ChatPage() {
@@ -15,8 +17,10 @@ export default function ChatPage() {
     fetchConversations,
     selectConversation,
     createConversation,
-    conversations
+    conversations,
+    currentPlan,
   } = useChatStore();
+  const { selectedProject } = useProjectStore();
   const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
@@ -24,8 +28,8 @@ export default function ChatPage() {
       if (!token) return;
 
       try {
-        // Fetch existing conversations
-        await fetchConversations(token);
+        // Fetch existing conversations (optionally filtered by project)
+        await fetchConversations(token, selectedProject?.id);
 
         const state = useChatStore.getState();
 
@@ -34,7 +38,7 @@ export default function ChatPage() {
           await selectConversation(token, state.conversations[0].id);
         } else {
           // Create a new conversation
-          await createConversation(token, "Chat with Wyld");
+          await createConversation(token, "Chat with Wyld", selectedProject?.id);
         }
       } catch (error) {
         console.error("Failed to initialize chat:", error);
@@ -44,7 +48,7 @@ export default function ChatPage() {
     };
 
     initializeChat();
-  }, [token, fetchConversations, selectConversation, createConversation]);
+  }, [token, fetchConversations, selectConversation, createConversation, selectedProject?.id]);
 
   if (isInitializing) {
     return (
@@ -57,6 +61,7 @@ export default function ChatPage() {
   return (
     <div className="flex flex-col h-full w-full min-h-0 overflow-hidden">
       <AgentStatus />
+      {currentPlan && <PlanPanel />}
       <MessageList />
       <MessageInput />
     </div>

@@ -1,7 +1,7 @@
 [project]
 name = "qa-agent"
 version = "0.1.0"
-description = "QA agent for AI Infrastructure - testing, code review, security validation"
+description = "QA agent for AI Infrastructure - testing, code review, security validation, E2E browser automation"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -10,12 +10,19 @@ dependencies = [
     "ai-memory",
     "base-agent",
     "aiofiles>=23.2.0",
+    # Browser automation
+    "playwright>=1.40.0",
+    # Credential encryption
+    "cryptography>=41.0.0",
+    # Image comparison for visual testing
+    "Pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-playwright>=0.4.0",
 ]
 
 [build-system]

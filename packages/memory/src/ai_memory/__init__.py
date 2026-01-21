@@ -14,6 +14,7 @@ from .embeddings import (
 )
 from .pai_memory import (
     Learning,
+    LearningScope,
     MemoryTier,
     PAIMemory,
     PAIPhase,
@@ -35,4 +36,5 @@ __all__ = [
     "MemoryTier",
     "PAIPhase",
     "Learning",
+    "LearningScope",
 ]

@@ -89,7 +89,7 @@ export default function UsagePage() {
   }
 
   return (
-    <div className="p-6 h-full overflow-y-auto">
+    <div className="p-6">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Usage Analytics</h1>
         <p className="text-muted-foreground">

@@ -226,7 +226,8 @@ export default function RootLayout({
               width: 100%;
               max-width: 100vw;
               overflow-x: hidden;
-              overscroll-behavior: none;
+              overscroll-behavior-y: contain;
+              overscroll-behavior-x: none;
             }
             body {
               -webkit-overflow-scrolling: touch;

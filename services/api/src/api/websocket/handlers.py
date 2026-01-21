@@ -402,3 +402,35 @@ class AgentResponseHandler:
                     "agent": data.get("agent"),
                 },
             )
+
+        elif response_type == "plan_update":
+            # Plan content update (Claude CLI style)
+            await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "plan_update",
+                    "conversation_id": data.get("conversation_id"),
+                    "plan_content": data.get("plan_content"),
+                    "plan_status": data.get("plan_status"),
+                    "agent": data.get("agent"),
+                    "timestamp": data.get("timestamp"),
+                },
+            )
+            logger.debug(
+                "Plan update sent to user",
+                user_id=user_id,
+                conversation_id=data.get("conversation_id"),
+                plan_status=data.get("plan_status"),
+            )
+
+        elif response_type == "plan_status":
+            # Plan status change notification
+            await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "plan_status",
+                    "conversation_id": data.get("conversation_id"),
+                    "plan_status": data.get("plan_status"),
+                    "timestamp": data.get("timestamp"),
+                },
+            )

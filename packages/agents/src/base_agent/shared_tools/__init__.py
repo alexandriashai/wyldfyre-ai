@@ -43,6 +43,14 @@ from .system_tools import (
     system_info,
 )
 
+from .browser_shared import (
+    browser_status,
+    screenshot_url,
+    page_content_fetch,
+    visual_diff,
+    get_browser_shared_tools,
+)
+
 __all__ = [
     # Memory tools
     "search_memory",
@@ -64,4 +72,10 @@ __all__ = [
     "service_manage",
     "resource_monitor",
     "system_info",
+    # Browser shared tools
+    "browser_status",
+    "screenshot_url",
+    "page_content_fetch",
+    "visual_diff",
+    "get_browser_shared_tools",
 ]
