@@ -1,0 +1,90 @@
+# Wyld Fyre AI Feature Flags
+# Control feature availability without code changes
+#
+# Usage in Python:
+#   from ai_core import Config
+#   config = Config()
+#   if config.feature_enabled("voice"):
+#       # Voice feature code
+#
+# To override at runtime, set environment variable:
+#   FEATURE_VOICE_ENABLED=false
+
+features:
+  # Core Features
+  voice:
+    enabled: true
+    description: "Voice input/output via Whisper and TTS"
+
+  streaming_responses:
+    enabled: true
+    description: "Stream agent responses in real-time"
+
+  memory_search:
+    enabled: true
+    description: "Vector similarity search for context"
+
+  # Agent Features
+  agent_peer_communication:
+    enabled: true
+    description: "Allow agents to communicate directly"
+
+  agent_learning:
+    enabled: true
+    description: "Extract and store learnings from tasks"
+
+  agent_metrics:
+    enabled: true
+    description: "Collect agent performance metrics"
+
+  # UI Features
+  new_chat_ui:
+    enabled: false
+    description: "New chat interface (experimental)"
+    rollout_percentage: 0
+
+  dark_mode:
+    enabled: true
+    description: "Dark mode theme support"
+
+  # Infrastructure Features
+  auto_ssl:
+    enabled: true
+    description: "Automatic SSL certificate provisioning"
+
+  domain_management:
+    enabled: true
+    description: "Manage domains via Infra Agent"
+
+  # Experimental Features
+  memory_v2:
+    enabled: false
+    description: "New memory architecture (experimental)"
+
+  multi_model:
+    enabled: false
+    description: "Use multiple LLM providers"
+
+# Rollout settings for gradual feature deployment
+rollout:
+  # Percentage of users to enable feature for
+  # 0 = disabled, 100 = all users
+  default_percentage: 100
+
+# Feature flag groups for easy toggling
+groups:
+  production:
+    - voice
+    - streaming_responses
+    - memory_search
+    - agent_peer_communication
+    - agent_learning
+    - agent_metrics
+    - dark_mode
+    - auto_ssl
+    - domain_management
+
+  experimental:
+    - new_chat_ui
+    - memory_v2
+    - multi_model

@@ -1,0 +1,75 @@
+# AI Infrastructure - Agent Runtime
+# Used for running individual agents
+
+# =============================================================================
+# Stage 1: Builder
+# =============================================================================
+FROM python:3.12-slim as builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for fast package installation
+RUN pip install uv
+
+# Copy dependency files
+COPY pyproject.toml ./
+COPY packages/core/pyproject.toml packages/core/
+COPY packages/messaging/pyproject.toml packages/messaging/
+COPY packages/memory/pyproject.toml packages/memory/
+COPY packages/tmux_manager/pyproject.toml packages/tmux_manager/
+COPY services/agents/base/pyproject.toml services/agents/base/
+
+# Create virtual environment and install dependencies
+RUN uv venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install packages
+RUN uv pip install -e packages/core
+RUN uv pip install -e packages/messaging
+RUN uv pip install -e packages/memory
+RUN uv pip install -e packages/tmux_manager
+RUN uv pip install -e services/agents/base
+
+# =============================================================================
+# Stage 2: Runtime
+# =============================================================================
+FROM python:3.12-slim as runtime
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1000 agent
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy application code
+COPY packages/ packages/
+COPY services/agents/ services/agents/
+COPY config/ config/
+COPY pai/ pai/
+
+# Set ownership
+RUN chown -R agent:agent /app
+
+# Switch to non-root user
+USER agent
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Default command (override with specific agent)
+CMD ["python", "-m", "services.agents.base.src.agent_base.main"]

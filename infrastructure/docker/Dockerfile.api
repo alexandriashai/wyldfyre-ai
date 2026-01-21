@@ -1,0 +1,76 @@
+# AI Infrastructure - FastAPI Backend
+# Multi-stage build for production
+
+# =============================================================================
+# Stage 1: Builder
+# =============================================================================
+FROM python:3.12-slim as builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for fast package installation
+RUN pip install uv
+
+# Copy dependency files and source code
+COPY pyproject.toml ./
+COPY packages/ packages/
+COPY database/ database/
+COPY services/api/ services/api/
+
+# Create virtual environment and install dependencies
+RUN uv venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install packages in order
+RUN uv pip install -e packages/core
+RUN uv pip install -e packages/messaging
+RUN uv pip install -e packages/memory
+RUN uv pip install -e database
+RUN uv pip install -e services/api
+
+# =============================================================================
+# Stage 2: Runtime
+# =============================================================================
+FROM python:3.12-slim as runtime
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1000 appuser
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy application code
+COPY packages/ packages/
+COPY database/ database/
+COPY services/api/ services/api/
+COPY config/ config/
+
+# Set ownership
+RUN chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health/live || exit 1
+
+# Run the application
+# Using single worker to avoid duplicate pub/sub handling
+# TODO: Implement proper consumer groups for multi-worker support
+CMD ["uvicorn", "services.api.src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

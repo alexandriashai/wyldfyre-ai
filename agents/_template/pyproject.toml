@@ -1,0 +1,25 @@
+[project]
+name = "template_agent"
+version = "0.1.0"
+description = "Template agent - copy and customize"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ai_core",
+    "ai_messaging",
+    "ai_memory",
+    "ai_agents",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

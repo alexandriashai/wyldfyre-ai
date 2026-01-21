@@ -1,0 +1,197 @@
+# Wyld Fyre AI - Agent Configuration
+# Defines all agents and their capabilities
+#
+# Permission Levels (0-4):
+#   0 - READ_ONLY: View status, query info
+#   1 - READ_WRITE: Create/modify files in workspace
+#   2 - EXECUTE: Run commands, scripts, processes
+#   3 - ADMIN: System configs, packages, services
+#   4 - SUPERUSER: Full system access, elevation grants
+#
+# Capability Categories:
+#   system, file, network, database, docker, git, security, monitoring
+
+agents:
+  - name: wyld
+    type: supervisor
+    permission_level: 4  # SUPERUSER - can grant elevations
+    allowed_elevation_to: 4  # Can elevate any agent up to level 4
+    command: python -m services.supervisor
+    working_dir: /app
+    environment:
+      AGENT_NAME: wyld
+      LOG_LEVEL: INFO
+    description: |
+      Wyld is the primary AI assistant and supervisor for Wyld Fyre AI.
+      It handles task routing, orchestration, and escalation.
+      All incoming requests go through Wyld first.
+      As SUPERUSER, can approve elevation requests from other agents.
+    allowed_capabilities:
+      - system
+      - file
+      - network
+      - database
+      - docker
+      - git
+      - security
+      - monitoring
+    capabilities:
+      - task_routing
+      - agent_coordination
+      - escalation
+      - status_monitoring
+      - user_interaction
+      - elevation_approval
+
+  - name: code-agent
+    type: code
+    permission_level: 2  # EXECUTE
+    allowed_elevation_to: 3  # Can be elevated to ADMIN if needed
+    command: python -m services.agents.code_agent
+    working_dir: /app
+    environment:
+      AGENT_NAME: code-agent
+      LOG_LEVEL: INFO
+    description: |
+      Git operations, file operations, code analysis, and testing.
+      Can execute build scripts, test runners, and development tools.
+    allowed_capabilities:
+      - file
+      - git
+      - system  # Limited to git, npm, pip, etc.
+    capabilities:
+      - git_operations
+      - file_read_write
+      - code_analysis
+      - test_execution
+      - linting
+    tools:
+      - git
+      - file_reader
+      - file_writer
+      - code_analyzer
+      - test_runner
+
+  - name: data-agent
+    type: data
+    permission_level: 2  # EXECUTE
+    allowed_elevation_to: 3  # Can be elevated for schema changes
+    command: python -m services.agents.data_agent
+    working_dir: /app
+    environment:
+      AGENT_NAME: data-agent
+      LOG_LEVEL: INFO
+    description: |
+      SQL queries, data analysis, ETL operations, and backups.
+      Can execute database operations and data transformations.
+    allowed_capabilities:
+      - file
+      - database
+    capabilities:
+      - sql_queries
+      - data_analysis
+      - etl_operations
+      - database_backup
+    tools:
+      - sql_executor
+      - data_analyzer
+      - backup_manager
+
+  - name: infra-agent
+    type: infra
+    permission_level: 3  # ADMIN - upgraded from 2
+    allowed_elevation_to: 4  # Can be elevated to SUPERUSER for ownership changes
+    command: python -m services.agents.infra_agent
+    working_dir: /app
+    environment:
+      AGENT_NAME: infra-agent
+      LOG_LEVEL: INFO
+    description: |
+      Docker management, Nginx configuration, SSL, domain management,
+      and system administration tasks. Has ADMIN level for service management.
+    allowed_capabilities:
+      - system
+      - file
+      - network
+      - docker
+      - security
+    capabilities:
+      - docker_management
+      - nginx_configuration
+      - ssl_management
+      - domain_provisioning
+      - service_management
+      - package_installation
+    tools:
+      - docker_manager
+      - nginx_manager
+      - certbot_manager
+      - cloudflare_api
+      - service_manage
+      - package_install
+
+  - name: research-agent
+    type: research
+    permission_level: 1  # READ_WRITE
+    allowed_elevation_to: 2  # Can be elevated to EXECUTE for scraping
+    command: python -m services.agents.research_agent
+    working_dir: /app
+    environment:
+      AGENT_NAME: research-agent
+      LOG_LEVEL: INFO
+    description: |
+      Web search, documentation lookup, and information synthesis.
+      Read-only network access for research purposes.
+    allowed_capabilities:
+      - file
+      - network  # Read-only network access
+    capabilities:
+      - web_search
+      - documentation_lookup
+      - information_synthesis
+    tools:
+      - web_search
+      - documentation_reader
+
+  - name: qa-agent
+    type: qa
+    permission_level: 2  # EXECUTE - upgraded from 1
+    allowed_elevation_to: 3  # Can be elevated for security scans
+    command: python -m services.agents.qa_agent
+    working_dir: /app
+    environment:
+      AGENT_NAME: qa-agent
+      LOG_LEVEL: INFO
+    description: |
+      Testing, code review, security scanning, and validation.
+      Can execute test runners and security scanning tools.
+    allowed_capabilities:
+      - file
+      - system  # For test runners
+      - security
+    capabilities:
+      - test_execution
+      - code_review
+      - security_scanning
+      - validation
+    tools:
+      - test_runner
+      - code_reviewer
+      - security_scanner
+
+# Default settings
+defaults:
+  auto_restart: true
+  restart_delay: 5
+  max_restarts: 3
+  health_check_interval: 30
+  log_retention_days: 7
+  max_tool_iterations: 50  # Max tool calls per task (increased from 10)
+  max_tokens: 8192  # Max tokens per Claude API call
+
+# Elevation settings
+elevation:
+  max_auto_elevation: 1  # Max levels an agent can auto-elevate
+  max_elevations_per_hour: 10  # Rate limit for auto-elevations
+  elevation_timeout_seconds: 300  # How long elevation grants last
+  require_justification: true  # Require justification for elevations

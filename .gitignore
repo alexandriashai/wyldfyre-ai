@@ -1,0 +1,139 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Node.js
+node_modules/
+.npm
+.yarn
+.pnp.*
+
+# Next.js
+web/.next/
+web/out/
+web/.swc/
+
+# Exception for web src lib (frontend utilities)
+!web/src/lib/
+
+# Build artifacts
+*.log
+*.tmp
+*.temp
+
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Docker
+*.tar
+
+# Secrets (never commit these!)
+*.pem
+*.key
+secrets/
+credentials.json
+service-account.json
+
+# Database
+*.db
+*.sqlite3
+
+# Local configuration
+local_settings.py
+*.local.yaml
+*.local.json
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# User home directory files (if repo is in home directory)
+.bash_logout
+.bashrc
+.profile
+.face
+.face.icon
+
+# Backup files
+*.bak
+*.backup
+
+# PAI Work files (local only)
+pai/MEMORY/Work/active/*
+!pai/MEMORY/Work/active/.gitkeep
+
+# Logs (centralized in /home/wyld-data/logs)
+logs/
+*.log
+/home/wyld-data/
+
+# Redis dump
+dump.rdb
+
+# Qdrant data (local dev)
+qdrant_storage/

@@ -1,0 +1,31 @@
+services:
+  web:
+    ports:
+      - "3010:3000"
+  api:
+    ports:
+      - "8010:8000"
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_PREFER_GRPC=false
+      - QDRANT_HTTPS=false
+  postgres:
+    ports:
+      - "5442:5432"
+  redis:
+    networks:
+      - ai-backend
+      - ai-frontend
+  qdrant:
+    ports:
+      - "0.0.0.0:6333:6333"
+      - "0.0.0.0:6334:6334"
+    networks:
+      - ai-data
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/localhost/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

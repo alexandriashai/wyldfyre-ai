@@ -1,0 +1,102 @@
+version: '3.8'
+
+# Development overrides for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  # =============================================================================
+  # Database Services - Development Configuration
+  # =============================================================================
+
+  postgres:
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: devpassword
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+
+  qdrant:
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_dev_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__API_KEY: ""  # No auth in dev
+
+  redis:
+    command: redis-server --requirepass devpassword --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+
+  # =============================================================================
+  # Monitoring - Development Configuration
+  # =============================================================================
+
+  prometheus:
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_dev_data:/prometheus
+
+  grafana:
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - grafana_dev_data:/var/lib/grafana
+
+  loki:
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_dev_data:/loki
+
+  # =============================================================================
+  # Application Services - Development Configuration
+  # =============================================================================
+
+  # In development, we run api and web locally with hot reload
+  # These services are commented out - use 'make dev-api' and 'make dev-web' instead
+
+  # api:
+  #   build:
+  #     context: .
+  #     dockerfile: infrastructure/docker/Dockerfile.api.dev
+  #   volumes:
+  #     - ./services/api:/app/services/api
+  #     - ./packages:/app/packages
+  #   environment:
+  #     - ENVIRONMENT=development
+  #     - POSTGRES_HOST=localhost
+  #     - POSTGRES_PASSWORD=devpassword
+  #     - REDIS_HOST=localhost
+  #     - REDIS_PASSWORD=devpassword
+  #     - QDRANT_HOST=localhost
+
+  # web:
+  #   build:
+  #     context: .
+  #     dockerfile: infrastructure/docker/Dockerfile.web.dev
+  #   volumes:
+  #     - ./web:/app/web
+  #   environment:
+  #     - NODE_ENV=development
+
+# =============================================================================
+# Development Volumes
+# =============================================================================
+
+volumes:
+  postgres_dev_data:
+  qdrant_dev_data:
+  redis_dev_data:
+  prometheus_dev_data:
+  grafana_dev_data:
+  loki_dev_data:
