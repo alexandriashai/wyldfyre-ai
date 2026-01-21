@@ -1,5 +1,5 @@
 # AI Infrastructure - Agent Runtime
-# Used for running individual agents
+# Used for running individual agents (including QA Agent with browser automation)
 
 # =============================================================================
 # Stage 1: Builder
@@ -18,13 +18,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv for fast package installation
 RUN pip install uv
 
-# Copy dependency files
+# Copy source code
 COPY pyproject.toml ./
-COPY packages/core/pyproject.toml packages/core/
-COPY packages/messaging/pyproject.toml packages/messaging/
-COPY packages/memory/pyproject.toml packages/memory/
-COPY packages/tmux_manager/pyproject.toml packages/tmux_manager/
-COPY services/agents/base/pyproject.toml services/agents/base/
+COPY packages/ packages/
+COPY services/agents/ services/agents/
+COPY database/ database/
 
 # Create virtual environment and install dependencies
 RUN uv venv /opt/venv
@@ -34,8 +32,12 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN uv pip install -e packages/core
 RUN uv pip install -e packages/messaging
 RUN uv pip install -e packages/memory
-RUN uv pip install -e packages/tmux_manager
-RUN uv pip install -e services/agents/base
+RUN uv pip install -e packages/agents
+RUN uv pip install -e database
+
+# Install QA Agent with browser automation dependencies
+RUN uv pip install -e services/agents/qa_agent
+RUN uv pip install playwright cryptography Pillow aiofiles
 
 # =============================================================================
 # Stage 2: Runtime
@@ -44,10 +46,27 @@ FROM python:3.12-slim as runtime
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies including Playwright browser dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
+    # Playwright Chromium dependencies
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libatspi2.0-0 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 agent
 
@@ -55,11 +74,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Install Playwright browsers (as root before switching user)
+RUN playwright install chromium
+
 # Copy application code
 COPY packages/ packages/
 COPY services/agents/ services/agents/
 COPY config/ config/
 COPY pai/ pai/
+COPY database/ database/
 
 # Set ownership
 RUN chown -R agent:agent /app
@@ -72,4 +95,4 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 # Default command (override with specific agent)
-CMD ["python", "-m", "services.agents.base.src.agent_base.main"]
+CMD ["python", "-m", "services.agents.qa_agent.src.qa_agent.agent"]
