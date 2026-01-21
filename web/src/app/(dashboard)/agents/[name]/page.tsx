@@ -6,10 +6,12 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useAgentStore } from "@/stores/agent-store";
 import { cn, getStatusColor, getStatusBgColor, getAgentColor, getAgentBgColor, type AgentType, type AgentStatus } from "@/lib/utils";
 import { AgentLogs } from "@/components/agents/agent-logs";
+import { ToolList } from "@/components/agents/tool-list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, Bot, RefreshCw } from "lucide-react";
+import { ArrowLeft, Bot, RefreshCw, Wrench } from "lucide-react";
+import { agentsApi, AgentToolsResponse } from "@/lib/api";
 
 export default function AgentDetailPage() {
   const params = useParams();
@@ -19,13 +21,29 @@ export default function AgentDetailPage() {
   const { token } = useAuthStore();
   const { selectedAgent, agentLogs, fetchAgent, fetchAgentLogs, restartAgent, isLoading } = useAgentStore();
   const [isRestarting, setIsRestarting] = useState(false);
+  const [agentTools, setAgentTools] = useState<AgentToolsResponse | null>(null);
+  const [isLoadingTools, setIsLoadingTools] = useState(false);
 
   useEffect(() => {
     if (token && agentName) {
       fetchAgent(token, agentName);
       fetchAgentLogs(token, agentName);
+      fetchAgentTools();
     }
   }, [token, agentName, fetchAgent, fetchAgentLogs]);
+
+  const fetchAgentTools = async () => {
+    if (!token) return;
+    setIsLoadingTools(true);
+    try {
+      const tools = await agentsApi.getTools(token, agentName);
+      setAgentTools(tools);
+    } catch (error) {
+      console.error("Failed to fetch agent tools:", error);
+    } finally {
+      setIsLoadingTools(false);
+    }
+  };
 
   const handleRestart = async () => {
     if (!token) return;
@@ -141,9 +159,13 @@ export default function AgentDetailPage() {
         </Card>
       )}
 
-      <Tabs defaultValue="logs">
+      <Tabs defaultValue="tools">
         <div className="flex items-center justify-between mb-4">
           <TabsList>
+            <TabsTrigger value="tools">
+              <Wrench className="h-4 w-4 mr-2" />
+              Tools
+            </TabsTrigger>
             <TabsTrigger value="logs">Logs</TabsTrigger>
             <TabsTrigger value="tasks">Recent Tasks</TabsTrigger>
           </TabsList>
@@ -152,6 +174,10 @@ export default function AgentDetailPage() {
             Refresh
           </Button>
         </div>
+
+        <TabsContent value="tools">
+          <ToolList tools={agentTools?.tools || []} isLoading={isLoadingTools} />
+        </TabsContent>
 
         <TabsContent value="logs">
           <AgentLogs logs={agentLogs} isLoading={isLoading} />

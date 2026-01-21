@@ -33,6 +33,7 @@ async def list_domains(
     current_user: CurrentUserDep,
     domain_service: DomainService = Depends(get_domain_service),
     status_filter: DomainStatus | None = Query(None, alias="status"),
+    project_id: str | None = Query(None, description="Filter by project ID"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> list[DomainResponse]:
@@ -41,10 +42,18 @@ async def list_domains(
     """
     domains = await domain_service.list_domains(
         status=status_filter,
+        project_id=project_id,
         limit=limit,
         offset=offset,
     )
-    return [DomainResponse.model_validate(d) for d in domains]
+    # Build response with project_name
+    result = []
+    for d in domains:
+        response = DomainResponse.model_validate(d)
+        if d.project:
+            response.project_name = d.project.name
+        result.append(response)
+    return result
 
 
 @router.post("", response_model=DomainResponse, status_code=status.HTTP_201_CREATED)
@@ -65,8 +74,12 @@ async def create_domain(
             proxy_target=request.proxy_target,
             ssl_enabled=request.ssl_enabled,
             dns_provider=request.dns_provider,
+            project_id=request.project_id,
         )
-        return DomainResponse.model_validate(domain)
+        response = DomainResponse.model_validate(domain)
+        if domain.project:
+            response.project_name = domain.project.name
+        return response
 
     except ValueError as e:
         raise HTTPException(

@@ -36,6 +36,7 @@ import {
   Pencil,
   FolderKanban,
   Loader2,
+  Globe,
 } from "lucide-react";
 import { projectsApi, ProjectWithStats } from "@/lib/api";
 
@@ -290,6 +291,10 @@ export default function ProjectsPage() {
                     <div className="flex items-center gap-1">
                       <ClipboardList className="h-4 w-4" />
                       <span>{stats?.task_count || 0}</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <Globe className="h-4 w-4" />
+                      <span>{stats?.domain_count || 0}</span>
                     </div>
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">

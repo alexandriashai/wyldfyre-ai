@@ -9,7 +9,7 @@ import { useAuthStore } from "@/stores/auth-store";
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "wss://api.wyldfyre.ai";
 
 interface ChatMessage {
-  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack";
+  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved";
   conversation_id?: string;
   message_id?: string;
   content?: string;
@@ -23,6 +23,9 @@ interface ChatMessage {
   username?: string;
   timestamp?: string;
   error?: string;
+  command?: string;
+  tags?: string[];
+  memory_tags?: string[];
 }
 
 export function useChat() {
@@ -130,6 +133,37 @@ export function useChat() {
           console.error("Server error:", data.error);
           clearStreamingMessage();
           setIsSending(false);
+          break;
+
+        case "command_result":
+          // Command executed successfully - add result as system message
+          if (data.content) {
+            addMessage({
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: data.content,
+              agent: "system",
+              created_at: data.timestamp || new Date().toISOString(),
+            });
+          }
+          break;
+
+        case "command_error":
+          // Command failed - add error as system message
+          if (data.error) {
+            addMessage({
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: `Command error: ${data.error}`,
+              agent: "system",
+              created_at: data.timestamp || new Date().toISOString(),
+            });
+          }
+          break;
+
+        case "memory_saved":
+          // Memory was saved with tags - log for debugging
+          console.log("Memory saved with tags:", data.tags);
           break;
 
         default:

@@ -7,7 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_core import get_logger
-from ai_db import Conversation, Project, ProjectStatus, Task
+from ai_db import Task
+from database.models import Conversation, Domain, Project, ProjectStatus
 
 from ..database import get_db_session
 from ..dependencies import CurrentUserDep
@@ -133,6 +134,12 @@ async def get_project(
     )
     task_count = task_count_result.scalar() or 0
 
+    # Get domain count
+    domain_count_result = await db.execute(
+        select(func.count(Domain.id)).where(Domain.project_id == project_id)
+    )
+    domain_count = domain_count_result.scalar() or 0
+
     return ProjectWithStatsResponse(
         id=project.id,
         name=project.name,
@@ -145,6 +152,7 @@ async def get_project(
         updated_at=project.updated_at,
         conversation_count=conversation_count,
         task_count=task_count,
+        domain_count=domain_count,
         total_cost=0.0,  # TODO: Calculate from API usage
     )
 

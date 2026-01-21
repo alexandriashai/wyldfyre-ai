@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from ai_db import ProjectStatus
+from database.models import ProjectStatus
 
 
 class ProjectCreate(BaseModel):
@@ -52,6 +52,7 @@ class ProjectWithStatsResponse(ProjectResponse):
 
     conversation_count: int = 0
     task_count: int = 0
+    domain_count: int = 0
     total_cost: float = 0.0
 
 

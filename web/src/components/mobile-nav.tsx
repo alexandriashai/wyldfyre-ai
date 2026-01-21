@@ -11,18 +11,23 @@ import {
   Settings,
   Menu,
   X,
+  FolderKanban,
+  BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/brand/logo";
 import { ThemeToggleSimple } from "@/components/ui/theme-toggle";
 
+// First 5 appear in bottom bar, all appear in hamburger menu
 const navItems = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
+  { href: "/projects", label: "Projects", icon: FolderKanban },
   { href: "/agents", label: "Agents", icon: Bot },
-  { href: "/domains", label: "Domains", icon: Globe },
   { href: "/memory", label: "Memory", icon: Brain },
   { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/domains", label: "Domains", icon: Globe },
+  { href: "/usage", label: "Usage", icon: BarChart3 },
 ];
 
 export function MobileNav() {

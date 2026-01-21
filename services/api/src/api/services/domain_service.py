@@ -27,6 +27,7 @@ class DomainService:
     async def list_domains(
         self,
         status: DomainStatus | None = None,
+        project_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[Any]:
@@ -35,6 +36,7 @@ class DomainService:
 
         Args:
             status: Optional status filter
+            project_id: Optional project filter
             limit: Max results to return
             offset: Pagination offset
 
@@ -42,11 +44,15 @@ class DomainService:
             List of Domain objects
         """
         from ai_db import Domain
+        from sqlalchemy.orm import selectinload
 
-        query = select(Domain).order_by(Domain.domain_name)
+        query = select(Domain).options(selectinload(Domain.project)).order_by(Domain.domain_name)
 
         if status:
             query = query.where(Domain.status == status)
+
+        if project_id:
+            query = query.where(Domain.project_id == project_id)
 
         query = query.limit(limit).offset(offset)
         result = await self.db.execute(query)
@@ -76,6 +82,7 @@ class DomainService:
         proxy_target: str | None = None,
         ssl_enabled: bool = True,
         dns_provider: str = "cloudflare",
+        project_id: str | None = None,
     ) -> Any:
         """
         Create a new domain record.
@@ -85,6 +92,7 @@ class DomainService:
             proxy_target: Optional proxy target (e.g., localhost:3000)
             ssl_enabled: Whether to enable SSL
             dns_provider: DNS provider name
+            project_id: Optional project to associate with
 
         Returns:
             Created Domain object
@@ -93,6 +101,7 @@ class DomainService:
             ValueError: If domain already exists
         """
         from ai_db import Domain
+        from sqlalchemy.orm import selectinload
 
         # Check for existing domain
         existing = await self.get_domain(domain_name)
@@ -109,14 +118,20 @@ class DomainService:
             proxy_target=proxy_target,
             ssl_enabled=ssl_enabled,
             dns_provider=dns_provider,
+            project_id=project_id,
             status=DomainStatus.PENDING,
         )
 
         self.db.add(domain)
         await self.db.flush()
-        await self.db.refresh(domain)
 
-        logger.info("Domain created", domain=domain_name, id=domain.id)
+        # Refresh with project relationship loaded
+        result = await self.db.execute(
+            select(Domain).options(selectinload(Domain.project)).where(Domain.id == domain.id)
+        )
+        domain = result.scalar_one()
+
+        logger.info("Domain created", domain=domain_name, id=domain.id, project_id=project_id)
         return domain
 
     async def update_domain(
@@ -149,6 +164,7 @@ class DomainService:
             "notes",
             "status",
             "error_message",
+            "project_id",
         }
 
         for field, value in updates.items():

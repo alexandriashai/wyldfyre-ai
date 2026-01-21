@@ -207,7 +207,7 @@ services:
         - NEXT_PUBLIC_VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
     container_name: ai-web
     restart: unless-stopped
-    user: "1016:2000"  # wyld-web:wyld
+    # Uses nextjs user (uid 1001) from Dockerfile
     ports:
       - "${WEB_PORT:-3000}:3000"
     environment:

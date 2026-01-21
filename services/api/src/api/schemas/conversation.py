@@ -6,7 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from ai_db import ConversationStatus, PlanStatus
+from database.models import ConversationStatus, PlanStatus
 
 
 class ConversationCreate(BaseModel):

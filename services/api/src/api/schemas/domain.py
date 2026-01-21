@@ -24,6 +24,10 @@ class DomainCreate(BaseModel):
     )
     ssl_enabled: bool = Field(default=True, description="Enable SSL/TLS")
     dns_provider: str = Field(default="cloudflare", description="DNS provider")
+    project_id: str | None = Field(
+        default=None,
+        description="Optional project to associate this domain with",
+    )
 
 
 class DomainUpdate(BaseModel):
@@ -33,6 +37,7 @@ class DomainUpdate(BaseModel):
     ssl_enabled: bool | None = None
     ssl_auto_renew: bool | None = None
     notes: str | None = None
+    project_id: str | None = None
 
 
 class DomainResponse(BaseModel):
@@ -58,6 +63,10 @@ class DomainResponse(BaseModel):
     # Nginx
     nginx_config_path: str | None
     proxy_target: str | None
+
+    # Project association
+    project_id: str | None = None
+    project_name: str | None = None
 
     # Metadata
     notes: str | None

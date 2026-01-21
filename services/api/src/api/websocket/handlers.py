@@ -10,6 +10,7 @@ from uuid import uuid4
 from ai_core import get_logger
 from ai_messaging import PubSubManager, RedisClient
 
+from ..commands import CommandHandler, extract_hashtags
 from .manager import Connection, ConnectionManager
 
 logger = get_logger(__name__)
@@ -28,6 +29,7 @@ class MessageHandler:
         self.manager = manager
         self.redis = redis
         self.pubsub = PubSubManager(redis)
+        self.command_handler = CommandHandler(redis)
 
     async def handle_message(
         self,
@@ -75,9 +77,11 @@ class MessageHandler:
         Handle chat message from user.
 
         Routes the message to the supervisor agent via Redis.
+        Handles slash commands and memory tagging.
         """
         content = data.get("content", "").strip()
         conversation_id = data.get("conversation_id")
+        project_id = data.get("project_id")
 
         logger.debug(
             "Chat message received",
@@ -100,23 +104,39 @@ class MessageHandler:
             await self._send_error(connection, "Conversation ID is required")
             return
 
+        # Check for slash commands
+        if self.command_handler.is_command(content):
+            await self._handle_command(connection, content, conversation_id, project_id)
+            return
+
+        # Extract hashtags for memory tagging
+        hashtags = extract_hashtags(content)
+        memory_tags = None
+        if hashtags:
+            memory_tags = hashtags
+            logger.debug(
+                "Extracted memory tags",
+                tags=hashtags,
+                user_id=connection.user_id,
+            )
+
         # Generate message ID
         message_id = str(uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
 
         # Store message in Redis
         msg_key = f"message:{message_id}"
-        await self.redis.hset(
-            msg_key,
-            mapping={
-                "id": message_id,
-                "conversation_id": conversation_id,
-                "user_id": connection.user_id,
-                "role": "user",
-                "content": content,
-                "timestamp": timestamp,
-            },
-        )
+        msg_data = {
+            "id": message_id,
+            "conversation_id": conversation_id,
+            "user_id": connection.user_id,
+            "role": "user",
+            "content": content,
+            "timestamp": timestamp,
+        }
+        if memory_tags:
+            msg_data["memory_tags"] = json.dumps(memory_tags)
+        await self.redis.hset(msg_key, mapping=msg_data)
 
         # Add to conversation message list
         conv_msgs_key = f"conversation:{conversation_id}:messages"
@@ -127,6 +147,39 @@ class MessageHandler:
         await self.redis.hset(conv_key, "updated_at", timestamp)
         await self.redis.hincrby(conv_key, "message_count", 1)
 
+        # If hashtags found, save to memory
+        if memory_tags:
+            for tag in memory_tags:
+                memory_id = str(uuid4())
+                memory_key = f"memory:{memory_id}"
+                await self.redis.hset(
+                    memory_key,
+                    mapping={
+                        "id": memory_id,
+                        "content": content,
+                        "tag": tag,
+                        "user_id": connection.user_id,
+                        "project_id": project_id or "",
+                        "conversation_id": conversation_id,
+                        "source": "hashtag",
+                        "created_at": timestamp,
+                    },
+                )
+                # Add to tag index
+                tag_key = f"memory:tag:{tag}"
+                await self.redis.lpush(tag_key, memory_id)
+
+            # Send memory saved notification
+            await self.manager.send_personal(
+                connection.user_id,
+                {
+                    "type": "memory_saved",
+                    "conversation_id": conversation_id,
+                    "tags": memory_tags,
+                    "timestamp": timestamp,
+                },
+            )
+
         # Send acknowledgment to user
         await self.manager.send_personal(
             connection.user_id,
@@ -134,6 +187,7 @@ class MessageHandler:
                 "type": "message_ack",
                 "message_id": message_id,
                 "conversation_id": conversation_id,
+                "memory_tags": memory_tags,
                 "timestamp": timestamp,
             },
         )
@@ -152,9 +206,11 @@ class MessageHandler:
                     "conversation_id": conversation_id,
                     "message_id": message_id,
                     "content": content,
+                    "memory_tags": memory_tags,
                 },
                 "metadata": {
                     "timestamp": timestamp,
+                    "project_id": project_id,
                 },
             },
         )
@@ -164,6 +220,41 @@ class MessageHandler:
             message_id=message_id,
             correlation_id=correlation_id,
             user_id=connection.user_id,
+            has_memory_tags=bool(memory_tags),
+        )
+
+    async def _handle_command(
+        self,
+        connection: Connection,
+        content: str,
+        conversation_id: str,
+        project_id: str | None,
+    ) -> None:
+        """Handle slash command from user."""
+        command, args = self.command_handler.parse_command(content)
+
+        logger.info(
+            "Processing command",
+            command=command,
+            user_id=connection.user_id,
+            conversation_id=conversation_id,
+        )
+
+        context = {
+            "user_id": connection.user_id,
+            "conversation_id": conversation_id,
+            "project_id": project_id,
+        }
+
+        result = await self.command_handler.handle(command, args, context)
+
+        # Send command result to user
+        await self.manager.send_personal(
+            connection.user_id,
+            {
+                **result,
+                "conversation_id": conversation_id,
+            },
         )
 
     async def _handle_ping(

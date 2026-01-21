@@ -137,6 +137,24 @@ export const authApi = {
   },
 };
 
+// Agent Tool Types
+export interface ToolInfo {
+  name: string;
+  description: string;
+  category: string;
+  permission_level: number;
+}
+
+export interface AgentToolsResponse {
+  agent_name: string;
+  agent_type: string;
+  description: string;
+  permission_level: number;
+  tools: ToolInfo[];
+  capabilities: string[];
+  allowed_capabilities: string[];
+}
+
 // Agents API
 export const agentsApi = {
   async list(token: string) {
@@ -168,6 +186,14 @@ export const agentsApi = {
       current_task_id: string | null;
       tools: string[];
     }>(response);
+  },
+
+  async getTools(token: string, name: string) {
+    const response = await fetch(`${API_BASE_URL}/api/agents/${name}/tools`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<AgentToolsResponse>(response);
   },
 
   async logs(token: string, name: string, limit: number = 100) {
@@ -277,6 +303,7 @@ export interface Project {
 export interface ProjectWithStats extends Project {
   conversation_count: number;
   task_count: number;
+  domain_count: number;
   total_cost: number;
 }
 
@@ -545,38 +572,45 @@ export const memoryApi = {
   },
 };
 
+// Domain Types
+export interface Domain {
+  id: string;
+  domain_name: string;
+  status: string;
+  ssl_enabled: boolean;
+  ssl_expires_at: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  created_at: string;
+}
+
 // Domains API
 export const domainsApi = {
-  async list(token: string) {
-    const response = await fetch(`${API_BASE_URL}/api/domains`, {
+  async list(token: string, params?: { project_id?: string; status?: string }) {
+    const searchParams = new URLSearchParams();
+    if (params?.project_id) searchParams.set('project_id', params.project_id);
+    if (params?.status) searchParams.set('status', params.status);
+
+    const url = `${API_BASE_URL}/api/domains${searchParams.toString() ? `?${searchParams}` : ''}`;
+    const response = await fetch(url, {
       method: 'GET',
       headers: getHeaders(token),
     });
-    return handleResponse<Array<{
-      id: string;
-      domain_name: string;
-      status: string;
-      ssl_enabled: boolean;
-      ssl_expires_at: string | null;
-      created_at: string;
-    }>>(response);
+    return handleResponse<Domain[]>(response);
   },
 
   async create(token: string, data: {
     domain_name: string;
     proxy_target?: string;
     ssl_enabled?: boolean;
+    project_id?: string;
   }) {
     const response = await fetch(`${API_BASE_URL}/api/domains`, {
       method: 'POST',
       headers: getHeaders(token),
       body: JSON.stringify(data),
     });
-    return handleResponse<{
-      id: string;
-      domain_name: string;
-      status: string;
-    }>(response);
+    return handleResponse<Domain>(response);
   },
 
   async deploy(token: string, domainName: string) {

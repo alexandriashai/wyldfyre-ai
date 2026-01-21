@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useAuthStore } from "@/stores/auth-store";
-import { domainsApi, ApiError } from "@/lib/api";
+import { useProjectStore } from "@/stores/project-store";
+import { domainsApi, projectsApi, ApiError, Domain } from "@/lib/api";
 import { DomainTable } from "@/components/domains/domain-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,36 +17,44 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Plus, Loader2 } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Plus, Loader2, Filter } from "lucide-react";
 import { toast } from "@/hooks/useToast";
-
-interface Domain {
-  id: string;
-  domain_name: string;
-  status: string;
-  ssl_enabled: boolean;
-  ssl_expires_at: string | null;
-  created_at: string;
-}
 
 export default function DomainsPage() {
   const { token } = useAuthStore();
+  const { projects, fetchProjects } = useProjectStore();
   const [domains, setDomains] = useState<Domain[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [newDomain, setNewDomain] = useState("");
+  const [newDomainProjectId, setNewDomainProjectId] = useState<string>("");
+  const [projectFilter, setProjectFilter] = useState<string>("all");
   const [isAdding, setIsAdding] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   useEffect(() => {
+    if (token) {
+      fetchProjects(token);
+    }
+  }, [token, fetchProjects]);
+
+  useEffect(() => {
     fetchDomains();
-  }, [token]);
+  }, [token, projectFilter]);
 
   const fetchDomains = async () => {
     if (!token) return;
     setIsLoading(true);
     try {
-      const response = await domainsApi.list(token);
+      const params = projectFilter !== "all" ? { project_id: projectFilter } : undefined;
+      const response = await domainsApi.list(token, params);
       setDomains(response);
     } catch (error) {
       console.error("Failed to fetch domains:", error);
@@ -64,12 +73,16 @@ export default function DomainsPage() {
     if (!token || !newDomain.trim()) return;
     setIsAdding(true);
     try {
-      await domainsApi.create(token, { domain_name: newDomain.trim() });
+      await domainsApi.create(token, {
+        domain_name: newDomain.trim(),
+        project_id: newDomainProjectId && newDomainProjectId !== "none" ? newDomainProjectId : undefined,
+      });
       toast({
         title: "Domain added",
         description: `${newDomain.trim()} has been added successfully.`,
       });
       setNewDomain("");
+      setNewDomainProjectId("");
       setIsAddDialogOpen(false);
       fetchDomains();
     } catch (error) {
@@ -136,49 +149,97 @@ export default function DomainsPage() {
           </p>
         </div>
 
-        <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Domain
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Add New Domain</DialogTitle>
-              <DialogDescription>
-                Add a new domain to your infrastructure. SSL certificates will
-                be automatically provisioned.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label htmlFor="domain">Domain Name</Label>
-                <Input
-                  id="domain"
-                  placeholder="example.com"
-                  value={newDomain}
-                  onChange={(e) => setNewDomain(e.target.value)}
-                />
+        <div className="flex items-center gap-3">
+          {/* Project Filter */}
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-muted-foreground" />
+            <Select value={projectFilter} onValueChange={setProjectFilter}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="Filter by project" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Projects</SelectItem>
+                {projects.map((project) => (
+                  <SelectItem key={project.id} value={project.id}>
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="h-2 w-2 rounded-full"
+                        style={{ backgroundColor: project.color || "#6B7280" }}
+                      />
+                      {project.name}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+            <DialogTrigger asChild>
+              <Button>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Domain
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Add New Domain</DialogTitle>
+                <DialogDescription>
+                  Add a new domain to your infrastructure. SSL certificates will
+                  be automatically provisioned.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="domain">Domain Name</Label>
+                  <Input
+                    id="domain"
+                    placeholder="example.com"
+                    value={newDomain}
+                    onChange={(e) => setNewDomain(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="project">Project (optional)</Label>
+                  <Select value={newDomainProjectId} onValueChange={setNewDomainProjectId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a project" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No project</SelectItem>
+                      {projects.map((project) => (
+                        <SelectItem key={project.id} value={project.id}>
+                          <div className="flex items-center gap-2">
+                            <div
+                              className="h-2 w-2 rounded-full"
+                              style={{ backgroundColor: project.color || "#6B7280" }}
+                            />
+                            {project.name}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button onClick={handleAddDomain} disabled={isAdding || !newDomain.trim()}>
-                {isAdding ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Adding...
-                  </>
-                ) : (
-                  "Add Domain"
-                )}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleAddDomain} disabled={isAdding || !newDomain.trim()}>
+                  {isAdding ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Adding...
+                    </>
+                  ) : (
+                    "Add Domain"
+                  )}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
       {isLoading ? (

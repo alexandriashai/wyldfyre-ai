@@ -12,6 +12,7 @@ from .base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from .conversation import Conversation
+    from .domain import Domain
     from .task import Task
     from .user import User
 
@@ -66,6 +67,10 @@ class Project(Base, UUIDMixin, TimestampMixin):
     )
     tasks: Mapped[list["Task"]] = relationship(
         "Task",
+        back_populates="project",
+    )
+    domains: Mapped[list["Domain"]] = relationship(
+        "Domain",
         back_populates="project",
     )
 

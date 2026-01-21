@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_core import get_logger
-from ai_db import Conversation, ConversationStatus, PlanStatus
+from database.models import Conversation, ConversationStatus, PlanStatus
 from ai_messaging import RedisClient
 
 from ..database import get_db_session

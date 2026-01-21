@@ -1,15 +1,19 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useChatStore } from "@/stores/chat-store";
 import { useChat } from "@/hooks/useChat";
 import { useVoice } from "@/hooks/useVoice";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Send, Paperclip, Mic, Square, Loader2 } from "lucide-react";
+import { Send, Paperclip, Mic, Square, Loader2, Hash } from "lucide-react";
+import { CommandSuggestions, getFilteredCommands, Command } from "./command-suggestions";
 
 export function MessageInput() {
   const [message, setMessage] = useState("");
+  const [showCommands, setShowCommands] = useState(false);
+  const [commandFilter, setCommandFilter] = useState("");
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { isSending, currentConversation } = useChatStore();
@@ -31,12 +35,51 @@ export function MessageInput() {
     }
   }, [message]);
 
+  // Handle message changes for command detection
+  const handleMessageChange = useCallback((value: string) => {
+    setMessage(value);
+
+    // Check for slash command at start
+    if (value.startsWith("/")) {
+      const filter = value.slice(1).split(" ")[0];
+      setCommandFilter(filter);
+      setShowCommands(true);
+      setSelectedCommandIndex(0);
+    } else {
+      setShowCommands(false);
+      setCommandFilter("");
+    }
+  }, []);
+
+  // Handle command selection
+  const handleCommandSelect = useCallback((command: Command) => {
+    setMessage(`/${command.name} `);
+    setShowCommands(false);
+    textareaRef.current?.focus();
+  }, []);
+
+  // Extract hashtags from message for display
+  const extractHashtags = useCallback((text: string): string[] => {
+    const pattern = /(?:^|\s)#([a-zA-Z][a-zA-Z0-9_-]{0,49})(?=\s|$|[.,!?])/g;
+    const matches: string[] = [];
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (!matches.includes(match[1])) {
+        matches.push(match[1]);
+      }
+    }
+    return matches;
+  }, []);
+
+  const hashtags = extractHashtags(message);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!message.trim() || isSending || !currentConversation) return;
 
     sendMessage(message.trim());
     setMessage("");
+    setShowCommands(false);
 
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -44,6 +87,43 @@ export function MessageInput() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Handle command navigation when suggestions are shown
+    if (showCommands) {
+      const filteredCommands = getFilteredCommands(commandFilter);
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedCommandIndex((prev) =>
+          prev < filteredCommands.length - 1 ? prev + 1 : 0
+        );
+        return;
+      }
+
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedCommandIndex((prev) =>
+          prev > 0 ? prev - 1 : filteredCommands.length - 1
+        );
+        return;
+      }
+
+      if (e.key === "Tab" || (e.key === "Enter" && filteredCommands.length > 0)) {
+        e.preventDefault();
+        const selectedCommand = filteredCommands[selectedCommandIndex];
+        if (selectedCommand) {
+          handleCommandSelect(selectedCommand);
+        }
+        return;
+      }
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setShowCommands(false);
+        return;
+      }
+    }
+
+    // Regular enter to submit
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
@@ -62,6 +142,19 @@ export function MessageInput() {
 
   return (
     <div className="border-t bg-card p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shrink-0">
+      {/* Hashtag indicators */}
+      {hashtags.length > 0 && (
+        <div className="flex items-center gap-2 mb-2 text-xs">
+          <Hash className="h-3 w-3 text-primary" />
+          <span className="text-muted-foreground">Will save to memory with tags:</span>
+          {hashtags.map((tag) => (
+            <span key={tag} className="bg-primary/10 text-primary px-2 py-0.5 rounded-full">
+              #{tag}
+            </span>
+          ))}
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} className="flex items-end gap-2 max-w-full">
         <Button
           type="button"
@@ -74,15 +167,25 @@ export function MessageInput() {
         </Button>
 
         <div className="relative flex-1">
+          {/* Command suggestions dropdown */}
+          {showCommands && (
+            <CommandSuggestions
+              filter={commandFilter}
+              onSelect={handleCommandSelect}
+              onClose={() => setShowCommands(false)}
+              selectedIndex={selectedCommandIndex}
+            />
+          )}
+
           <textarea
             ref={textareaRef}
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={(e) => handleMessageChange(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={
               isDisabled
                 ? "Select a conversation to start"
-                : "Type your message..."
+                : "Type / for commands or # to tag memory..."
             }
             disabled={isDisabled || isSending}
             rows={1}

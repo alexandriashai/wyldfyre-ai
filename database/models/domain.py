@@ -3,13 +3,17 @@ Domain model for managed domains and SSL certificates.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ai_core import DomainStatus
 
 from .base import Base, TimestampMixin, UUIDMixin
+
+if TYPE_CHECKING:
+    from .project import Project
 
 
 class Domain(Base, UUIDMixin, TimestampMixin):
@@ -47,6 +51,14 @@ class Domain(Base, UUIDMixin, TimestampMixin):
     # Metadata
     notes: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
+
+    # Project association
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        index=True,
+    )
+    project: Mapped["Project | None"] = relationship("Project", back_populates="domains")
 
     def __repr__(self) -> str:
         return f"<Domain {self.domain_name} {self.status.value}>"

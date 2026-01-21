@@ -11,16 +11,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Globe, Lock, Upload, Trash2, ExternalLink } from "lucide-react";
-
-interface Domain {
-  id: string;
-  domain_name: string;
-  status: string;
-  ssl_enabled: boolean;
-  ssl_expires_at: string | null;
-  created_at: string;
-}
+import { Globe, Lock, Upload, Trash2, ExternalLink, FolderKanban } from "lucide-react";
+import { Domain } from "@/lib/api";
 
 interface DomainTableProps {
   domains: Domain[];
@@ -51,6 +43,7 @@ export function DomainTable({ domains, onDeploy, onDelete }: DomainTableProps) {
       <TableHeader>
         <TableRow>
           <TableHead>Domain</TableHead>
+          <TableHead>Project</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>SSL</TableHead>
           <TableHead>Created</TableHead>
@@ -73,6 +66,16 @@ export function DomainTable({ domains, onDeploy, onDelete }: DomainTableProps) {
                   <ExternalLink className="h-3 w-3" />
                 </a>
               </div>
+            </TableCell>
+            <TableCell>
+              {domain.project_name ? (
+                <div className="flex items-center gap-2">
+                  <FolderKanban className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm">{domain.project_name}</span>
+                </div>
+              ) : (
+                <span className="text-sm text-muted-foreground">-</span>
+              )}
             </TableCell>
             <TableCell>
               <Badge variant="outline" className={cn(statusColors[domain.status])}>
