@@ -90,9 +90,10 @@ All source code lives in `/home/wyld-core/` as a single git repository.
 │
 ├── services/
 │   ├── api/                        # FastAPI backend
-│   ├── web/                        # Next.js frontend (symlinked from wyld-web)
 │   ├── voice/                      # Voice service
 │   └── supervisor/                 # Wyld supervisor agent
+│
+├── web/                            # Next.js frontend (at root, not in services/)
 │
 ├── agents/                         # Agent plugins (extensible)
 │   ├── code/
@@ -132,7 +133,7 @@ All source code lives in `/home/wyld-core/` as a single git repository.
 └── logs -> /home/wyld-data/logs/api
 
 /home/wyld-web/                     # Web deployment
-├── current -> /home/wyld-core/services/web
+├── current -> /home/wyld-core/web  # Symlink to web directory
 ├── static/                         # Existing sites
 └── logs -> /home/wyld-data/logs/web
 

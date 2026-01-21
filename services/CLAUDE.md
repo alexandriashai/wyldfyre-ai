@@ -4,12 +4,14 @@ This directory contains the main application services that make up the Wyld Fyre
 
 ## Service Overview
 
-| Service | Port | Purpose | Technology |
-|---------|------|---------|------------|
-| api/ | 8000 | REST API, WebSocket, authentication | FastAPI |
-| web/ | 3000 | User interface, dashboards | Next.js |
-| supervisor/ | - | Task routing, agent orchestration | Python |
-| voice/ | 8001 | Speech-to-text, text-to-speech | FastAPI |
+| Service | Location | Port | Purpose | Technology |
+|---------|----------|------|---------|------------|
+| api | services/api/ | 8000 | REST API, WebSocket, authentication | FastAPI |
+| web | web/ (root) | 3000 | User interface, dashboards | Next.js |
+| supervisor | services/supervisor/ | - | Task routing, agent orchestration | Python |
+| voice | services/voice/ | 8001 | Speech-to-text, text-to-speech | FastAPI |
+
+Note: The web service is at the project root (`/home/wyld-core/web/`), not under services/.
 
 ## Service Architecture
 
@@ -82,7 +84,8 @@ The Next.js frontend provides:
 - Settings management
 
 ```bash
-cd services/web
+# Web is at project root, not in services/
+cd web
 npm run dev
 ```
 
@@ -143,14 +146,18 @@ Services run in Docker containers:
 # docker-compose.yml (simplified)
 services:
   ai-api:
-    build: ./services/api
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api
     ports: ["8000:8000"]
     environment:
       - REDIS_HOST=ai-redis
       - POSTGRES_HOST=ai-db
 
   ai-web:
-    build: ./services/web
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.web
     ports: ["3000:3000"]
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
