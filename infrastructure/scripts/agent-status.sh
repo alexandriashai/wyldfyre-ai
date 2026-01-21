@@ -2,7 +2,7 @@
 # Wyld Fyre AI - Agent Status Script
 # Shows the status of all AI agents
 
-SESSION_NAME="wyld-fyre-ai"
+SESSION_NAME="wyldfyre-ai"
 API_URL="${API_URL:-http://localhost:8000}"
 
 # Colors

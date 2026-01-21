@@ -75,8 +75,14 @@ log_info "Using Anthropic API key: ${ANTHROPIC_API_KEY:0:20}..."
 cd "$PROJECT_ROOT"
 tmux new-session -d -s "$SESSION_NAME" -n "wyld"
 
+# Extract key API keys from .env for tmux sessions
+ANTHROPIC_KEY=$(grep '^ANTHROPIC_API_KEY=' "$PROJECT_ROOT/.env" | cut -d= -f2)
+OPENAI_KEY=$(grep '^OPENAI_API_KEY=' "$PROJECT_ROOT/.env" | cut -d= -f2)
+REDIS_PASS=$(grep '^REDIS_PASSWORD=' "$PROJECT_ROOT/.env" | cut -d= -f2)
+QDRANT_KEY=$(grep '^QDRANT_API_KEY=' "$PROJECT_ROOT/.env" | cut -d= -f2)
+
 # Common environment setup command for all agents
-ENV_SETUP="set -a && source .env && set +a && source .venv/bin/activate && export REDIS_HOST=localhost REDIS_PORT=6379 QDRANT_HOST=localhost QDRANT_PORT=6333 QDRANT_PREFER_GRPC=false QDRANT_HTTPS=false"
+ENV_SETUP="cd $PROJECT_ROOT && source $PROJECT_ROOT/.venv/bin/activate && export ANTHROPIC_API_KEY=$ANTHROPIC_KEY OPENAI_API_KEY=$OPENAI_KEY REDIS_HOST=localhost REDIS_PORT=6379 REDIS_PASSWORD=$REDIS_PASS QDRANT_HOST=localhost QDRANT_PORT=6333 QDRANT_API_KEY=$QDRANT_KEY QDRANT_PREFER_GRPC=false QDRANT_HTTPS=false"
 
 # Wyld (Supervisor) - Window 0
 tmux send-keys -t "$SESSION_NAME:wyld" "cd $PROJECT_ROOT && $ENV_SETUP" C-m

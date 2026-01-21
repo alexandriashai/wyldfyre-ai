@@ -1,0 +1,174 @@
+# Wyld Fyre AI Security Configuration
+# Protects the AI infrastructure from self-modification
+# while allowing agents to work freely in approved directories.
+
+# ============================================================================
+# PROTECTED PATHS
+# Modifications (write, delete, chmod) to these paths are BLOCKED
+# Read operations are allowed with a warning
+# ============================================================================
+protected_paths:
+  # Wyld Fyre AI Infrastructure
+  - /home/wyld-core
+  - /home/wyld-web
+  - /home/wyld-data/config
+  - /home/wyld-data/backups
+  
+  # System directories
+  - /etc
+  - /var/lib
+  - /root
+  - /usr/local/bin
+  - /opt
+
+# ============================================================================
+# ALLOWED PATHS
+# Operations in these paths are ALWAYS allowed (takes precedence over protected)
+# Use this for agent work directories
+# ============================================================================
+allowed_paths:
+  # Temporary files
+  - /tmp
+  
+  # Agent workspace directories
+  - /home/wyld-data/workspaces
+  - /home/wyld-data/uploads
+  - /home/wyld-data/projects
+  
+  # Logs (agents can write logs)
+  - /home/wyld-data/logs
+
+# ============================================================================
+# DANGEROUS COMMAND PATTERNS
+# Shell commands matching these patterns are BLOCKED
+# Patterns are case-insensitive regex
+# ============================================================================
+dangerous_patterns:
+  # Catastrophic deletions
+  - pattern: "rm\\s+(-[rf]+\\s+)*(/|/home|/etc|/var|/root|/usr)"
+    level: critical
+    message: "Catastrophic recursive deletion detected"
+  
+  # Disk operations
+  - pattern: ">\\s*/dev/sd[a-z]"
+    level: critical
+    message: "Direct disk write detected"
+  
+  - pattern: "mkfs\\."
+    level: critical
+    message: "Filesystem format command detected"
+  
+  - pattern: "dd\\s+.*of=/dev/"
+    level: critical
+    message: "Direct disk overwrite detected"
+  
+  # Permission dangers
+  - pattern: "chmod\\s+777"
+    level: high
+    message: "World-writable permission change detected"
+  
+  - pattern: "chmod\\s+-R\\s+777"
+    level: critical
+    message: "Recursive world-writable permission change detected"
+  
+  # Fork bomb
+  - pattern: ":\\(\\)\\{.*\\|.*&\\s*\\};:"
+    level: critical
+    message: "Fork bomb detected"
+  
+  # Dangerous network operations
+  - pattern: "curl.*\\|.*sh"
+    level: high
+    message: "Piping remote content to shell detected"
+  
+  - pattern: "wget.*\\|.*sh"
+    level: high
+    message: "Piping remote content to shell detected"
+  
+  # Credential exposure
+  - pattern: "cat.*\\.env"
+    level: medium
+    message: "Potential credential exposure"
+  
+  # Infrastructure modification
+  - pattern: "docker-compose\\s+down\\s+-v"
+    level: critical
+    message: "Docker compose down with volume removal"
+  
+  - pattern: "docker\\s+system\\s+prune\\s+-a"
+    level: critical
+    message: "Docker system prune all"
+
+# ============================================================================
+# PROTECTED CONTAINERS
+# Docker operations (stop, rm, kill) on these containers are BLOCKED
+# ============================================================================
+protected_containers:
+  - ai-api
+  - ai-web
+  - ai-postgres
+  - ai-redis
+  - ai-qdrant
+  - ai-grafana
+  - ai-prometheus
+  - ai-loki
+  - ai-voice
+
+# ============================================================================
+# PROTECTED FILES
+# Files with these names cannot be modified (regardless of path)
+# ============================================================================
+protected_files:
+  # Environment and secrets
+  - .env
+  - .env.local
+  - .env.production
+  - credentials.json
+  - secrets.yaml
+  
+  # Docker configuration
+  - docker-compose.yml
+  - docker-compose.override.yml
+  - Dockerfile
+  
+  # AI Infrastructure configuration
+  - agents.yaml
+  - security.yaml
+  - features.yaml
+  
+  # SSH and security
+  - authorized_keys
+  - id_rsa
+  - id_ed25519
+
+# ============================================================================
+# BYPASS TOOLS
+# Tools in this list skip security validation entirely
+# Use sparingly - only for trusted tools that need full access
+# ============================================================================
+bypass_tools: []
+
+# ============================================================================
+# AGENT OVERRIDES
+# Per-agent security configuration overrides
+# ============================================================================
+agent_overrides:
+  # Supervisor has elevated trust
+  wyld:
+    additional_allowed_paths:
+      - /home/wyld-core/config  # Can modify non-critical configs
+    bypass_tools:
+      - status_check
+      - agent_health
+
+  # Infra agent needs Docker access
+  infra-agent:
+    additional_allowed_paths:
+      - /home/wyld-core/infrastructure
+    # Still cannot touch protected containers
+
+  # Code agent needs git access
+  code-agent:
+    additional_allowed_paths:
+      - /home/wyld-core/packages  # Development work
+      - /home/wyld-core/agents

@@ -8,7 +8,7 @@ dependencies = [
     "ai-core",
     "ai-messaging",
     "ai-memory",
-    "base-agent",
+    "ai-base-agent",
     "httpx>=0.27.0",
     "beautifulsoup4>=4.12.0",
     "aiofiles>=23.2.0",

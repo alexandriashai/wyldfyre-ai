@@ -467,7 +467,7 @@ export const settingsApi = {
   },
 
   async updatePassword(token: string, data: { current_password: string; new_password: string }) {
-    const response = await fetch(`${API_BASE_URL}/api/settings/password`, {
+    const response = await fetch(`${API_BASE_URL}/api/auth/password`, {
       method: 'PUT',
       headers: getHeaders(token),
       body: JSON.stringify(data),
@@ -529,6 +529,33 @@ export const settingsApi = {
     const response = await fetch(`${API_BASE_URL}/api/settings/api-keys/${id}`, {
       method: 'DELETE',
       headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+};
+
+// Push Notifications API
+export const notificationsApi = {
+  async subscribe(token: string, subscription: {
+    endpoint: string;
+    keys: {
+      p256dh: string;
+      auth: string;
+    };
+  }) {
+    const response = await fetch(`${API_BASE_URL}/api/notifications/subscribe`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(subscription),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async unsubscribe(token: string, endpoint: string) {
+    const response = await fetch(`${API_BASE_URL}/api/notifications/unsubscribe`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ endpoint }),
     });
     return handleResponse<{ message: string }>(response);
   },

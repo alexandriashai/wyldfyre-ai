@@ -8,7 +8,7 @@ dependencies = [
     "ai-core",
     "ai-messaging",
     "ai-memory",
-    "base-agent",
+    "ai-base-agent",
     "asyncpg>=0.29.0",
     "aiofiles>=23.2.0",
 ]

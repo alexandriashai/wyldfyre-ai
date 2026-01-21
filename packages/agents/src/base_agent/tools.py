@@ -20,6 +20,7 @@ from ai_core import (
     PermissionLevel,
     get_elevation_manager,
     get_logger,
+    get_security_validator,
 )
 
 logger = get_logger(__name__)
@@ -298,6 +299,22 @@ class ToolRegistry:
                 tool=name,
                 elevation_grant_id=info,
             )
+
+        # Security validation - check for dangerous operations
+        agent_name = context.get("agent_name") if context else None
+        security_validator = get_security_validator()
+        security_result = security_validator.validate_tool_input(name, arguments, agent_name)
+
+        if security_result.blocked:
+            logger.warning(
+                "Security blocked tool execution",
+                tool=name,
+                rule=security_result.rule_name,
+                message=security_result.message,
+                threat_level=security_result.threat_level.value,
+                agent=agent_name,
+            )
+            return ToolResult.fail(f"Security blocked: {security_result.message}")
 
         try:
             logger.info(

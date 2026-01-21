@@ -17,8 +17,8 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/memory", tags=["Memory"])
 
-# Collection name used by PAI memory system
-LEARNINGS_COLLECTION = "pai_learnings"
+# Collection name used by agents for storing learnings
+LEARNINGS_COLLECTION = "agent_learnings"
 
 
 async def get_qdrant_store() -> QdrantStore:

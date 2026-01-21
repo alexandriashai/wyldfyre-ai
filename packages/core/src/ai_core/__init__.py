@@ -82,6 +82,15 @@ from .permissions import (
     PermissionContext,
     get_elevation_manager,
 )
+from .security import (
+    SecurityAction,
+    SecurityConfig,
+    SecurityValidator,
+    SecurityViolation,
+    ThreatLevel,
+    get_security_validator,
+    validate_tool,
+)
 from .metrics import (
     agent_active_tasks,
     agent_errors_total,
@@ -187,6 +196,14 @@ __all__ = [
     "ElevationRecord",
     "ElevationManager",
     "get_elevation_manager",
+    # Security
+    "SecurityAction",
+    "SecurityConfig",
+    "SecurityValidator",
+    "SecurityViolation",
+    "ThreatLevel",
+    "get_security_validator",
+    "validate_tool",
     # Metrics
     "app_info",
     "http_requests_total",

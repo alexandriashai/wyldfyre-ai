@@ -2,7 +2,7 @@
 # Wyld Fyre AI - Stop Agents Script
 # Stops all AI agents by killing the tmux session
 
-SESSION_NAME="wyld-fyre-ai"
+SESSION_NAME="wyldfyre-ai"
 
 # Colors
 GREEN='\033[0;32m'

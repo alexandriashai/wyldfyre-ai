@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { useAuthStore } from "@/stores/auth-store";
-import { authApi, settingsApi } from "@/lib/api";
+import { settingsApi, notificationsApi } from "@/lib/api";
+import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
-import { User, Key, Bell, Shield, Loader2, CheckCircle, AlertCircle } from "lucide-react";
+import { User, Key, Bell, Shield, Loader2, CheckCircle, AlertCircle, BellRing, BellOff } from "lucide-react";
 
 interface NotificationSettings {
   task_completions: boolean;
@@ -40,6 +41,18 @@ export default function SettingsPage() {
     system_updates: false,
   });
   const [isSavingNotifications, setIsSavingNotifications] = useState(false);
+
+  // Push notifications
+  const {
+    permission,
+    isSupported,
+    isSubscribed,
+    isLoading: isPushLoading,
+    error: pushError,
+    subscribe: subscribePush,
+    unsubscribe: unsubscribePush,
+  } = usePushNotifications();
+  const [pushMessage, setPushMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Update display name when user changes
   useEffect(() => {
@@ -121,6 +134,49 @@ export default function SettingsPage() {
       setNotifications(notifications);
     } finally {
       setIsSavingNotifications(false);
+    }
+  };
+
+  const handlePushSubscribe = async () => {
+    if (!token) return;
+    setPushMessage(null);
+
+    try {
+      const subscriptionData = await subscribePush();
+      if (subscriptionData) {
+        // Send subscription to backend
+        await notificationsApi.subscribe(token, subscriptionData);
+        setPushMessage({ type: "success", text: "Push notifications enabled" });
+      }
+    } catch (error) {
+      setPushMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Failed to enable push notifications"
+      });
+    }
+  };
+
+  const handlePushUnsubscribe = async () => {
+    if (!token) return;
+    setPushMessage(null);
+
+    try {
+      // Get current subscription endpoint before unsubscribing
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+
+      if (subscription) {
+        // Notify backend
+        await notificationsApi.unsubscribe(token, subscription.endpoint);
+      }
+
+      await unsubscribePush();
+      setPushMessage({ type: "success", text: "Push notifications disabled" });
+    } catch (error) {
+      setPushMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Failed to disable push notifications"
+      });
     }
   };
 
@@ -291,12 +347,101 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="notifications">
+        <TabsContent value="notifications" className="space-y-6">
+          {/* Push Notifications Card */}
           <Card>
             <CardHeader>
-              <CardTitle>Notification Preferences</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <BellRing className="h-5 w-5" />
+                Push Notifications
+              </CardTitle>
               <CardDescription>
-                Configure how you receive notifications
+                Receive notifications even when the browser is closed
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {pushMessage && (
+                <div className={`flex items-center gap-2 rounded-md p-3 text-sm ${
+                  pushMessage.type === "success" ? "bg-green-500/15 text-green-500" : "bg-destructive/15 text-destructive"
+                }`}>
+                  {pushMessage.type === "success" ? (
+                    <CheckCircle className="h-4 w-4" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4" />
+                  )}
+                  {pushMessage.text}
+                </div>
+              )}
+
+              {pushError && (
+                <div className="flex items-center gap-2 rounded-md p-3 text-sm bg-destructive/15 text-destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  {pushError.message}
+                </div>
+              )}
+
+              {!isSupported ? (
+                <div className="rounded-lg border p-4 bg-muted/50">
+                  <p className="text-sm text-muted-foreground">
+                    Push notifications are not supported in this browser.
+                    Try using Chrome, Edge, or Firefox on desktop.
+                  </p>
+                </div>
+              ) : permission === "denied" ? (
+                <div className="rounded-lg border p-4 bg-destructive/10">
+                  <p className="text-sm text-destructive">
+                    Push notifications have been blocked. To enable them, click the lock icon in your browser's address bar and allow notifications.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className="flex items-center gap-2">
+                      {isSubscribed ? (
+                        <>
+                          <BellRing className="h-4 w-4 text-green-500" />
+                          Push notifications enabled
+                        </>
+                      ) : (
+                        <>
+                          <BellOff className="h-4 w-4 text-muted-foreground" />
+                          Push notifications disabled
+                        </>
+                      )}
+                    </Label>
+                    <p className="text-sm text-muted-foreground">
+                      {isSubscribed
+                        ? "You'll receive push notifications for important events"
+                        : "Enable to receive notifications when agents complete tasks or encounter errors"}
+                    </p>
+                  </div>
+                  <Button
+                    variant={isSubscribed ? "outline" : "default"}
+                    onClick={isSubscribed ? handlePushUnsubscribe : handlePushSubscribe}
+                    disabled={isPushLoading}
+                  >
+                    {isPushLoading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Loading...
+                      </>
+                    ) : isSubscribed ? (
+                      "Disable"
+                    ) : (
+                      "Enable"
+                    )}
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Notification Preferences Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Notification Types</CardTitle>
+              <CardDescription>
+                Choose which events you want to be notified about
               </CardDescription>
             </CardHeader>
             <CardContent>

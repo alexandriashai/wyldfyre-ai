@@ -27,6 +27,7 @@ from .routes import (
     grafana_router,
     health_router,
     memory_router,
+    notifications_router,
     settings_router,
     tasks_router,
 )
@@ -136,6 +137,7 @@ def create_app() -> FastAPI:
     app.include_router(files_router, prefix="/api")
     app.include_router(memory_router, prefix="/api")
     app.include_router(settings_router, prefix="/api")
+    app.include_router(notifications_router, prefix="/api")
     app.include_router(grafana_router, prefix="/api")  # Grafana SSO proxy
     app.include_router(chat_router)  # WebSocket at root level
 

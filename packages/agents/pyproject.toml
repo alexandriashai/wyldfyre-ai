@@ -1,5 +1,5 @@
 [project]
-name = "base-agent"
+name = "ai-base-agent"
 version = "0.1.0"
 description = "Base agent class for AI Infrastructure"
 readme = "README.md"
