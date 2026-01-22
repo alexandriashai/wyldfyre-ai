@@ -6,11 +6,13 @@ Provides Claude CLI-style slash commands for enhanced chat functionality.
 
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from ai_core import get_logger
 from ai_messaging import RedisClient
+
+from .plan_mode import Plan, PlanManager, PlanStatus, format_plan_for_display
 
 logger = get_logger(__name__)
 
@@ -69,6 +71,7 @@ class CommandHandler:
 
     def __init__(self, redis: RedisClient):
         self.redis = redis
+        self.plan_manager = PlanManager(redis)
 
     def is_command(self, content: str) -> bool:
         """Check if message starts with a command."""
@@ -181,16 +184,123 @@ class CommandHandler:
         }
 
     async def _cmd_plan(self, args: str, context: dict[str, Any]) -> dict[str, Any]:
-        """Enter planning mode."""
+        """Enter planning mode or manage existing plan."""
         conversation_id = context.get("conversation_id")
+        user_id = context.get("user_id")
 
+        # Check for existing plan
+        existing_plan = await self.plan_manager.get_active_plan(conversation_id)
+
+        # Handle plan subcommands
+        if args:
+            args_lower = args.lower().strip()
+
+            # Approve existing plan
+            if args_lower == "approve" and existing_plan:
+                await self.plan_manager.approve_plan(existing_plan.id)
+                return {
+                    "type": "command_result",
+                    "command": "plan",
+                    "content": f"✅ Plan approved! Starting execution...\n\n{format_plan_for_display(existing_plan)}",
+                    "action": "plan_approved",
+                    "plan_id": existing_plan.id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+
+            # Reject existing plan
+            if args_lower in ("reject", "cancel") and existing_plan:
+                await self.plan_manager.reject_plan(existing_plan.id)
+                return {
+                    "type": "command_result",
+                    "command": "plan",
+                    "content": "❌ Plan cancelled. What would you like to do instead?",
+                    "action": "plan_rejected",
+                    "plan_id": existing_plan.id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+
+            # Show current plan status
+            if args_lower == "status" and existing_plan:
+                return {
+                    "type": "command_result",
+                    "command": "plan",
+                    "content": format_plan_for_display(existing_plan),
+                    "action": "plan_status",
+                    "plan": existing_plan.to_dict(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+
+            # Pause execution
+            if args_lower == "pause" and existing_plan:
+                await self.plan_manager.pause_execution(existing_plan.id)
+                return {
+                    "type": "command_result",
+                    "command": "plan",
+                    "content": "⏸️ Plan execution paused. Use `/plan resume` to continue.",
+                    "action": "plan_paused",
+                    "plan_id": existing_plan.id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+
+            # Resume execution
+            if args_lower == "resume" and existing_plan:
+                await self.plan_manager.resume_execution(existing_plan.id)
+                return {
+                    "type": "command_result",
+                    "command": "plan",
+                    "content": "▶️ Plan execution resumed.",
+                    "action": "plan_resumed",
+                    "plan_id": existing_plan.id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+
+        # If there's an existing pending plan, show it
+        if existing_plan and existing_plan.status == PlanStatus.PENDING:
+            return {
+                "type": "command_result",
+                "command": "plan",
+                "content": f"You have an existing plan awaiting approval:\n\n{format_plan_for_display(existing_plan)}",
+                "action": "show_existing_plan",
+                "plan": existing_plan.to_dict(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        # Create new plan
+        if args:
+            plan = await self.plan_manager.create_plan(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                title=args[:100],
+                description=args,
+            )
+
+            return {
+                "type": "command_result",
+                "command": "plan",
+                "content": f"📋 **Entering Planning Mode**\n\nI'll analyze your request and create a structured plan:\n\n> {args}\n\nPlease wait while I break this down into steps...",
+                "action": "enter_plan_mode",
+                "plan_id": plan.id,
+                "plan_description": args,
+                "conversation_id": conversation_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        # No args provided - show help
         return {
             "type": "command_result",
             "command": "plan",
-            "content": "Entering planning mode. I'll break down your task into structured steps.",
-            "action": "enter_plan_mode",
-            "plan_description": args if args else None,
-            "conversation_id": conversation_id,
+            "content": """**Plan Mode Commands:**
+
+- `/plan [task description]` - Create a new plan for a task
+- `/plan status` - Show current plan status
+- `/plan approve` - Approve the current plan
+- `/plan reject` - Cancel the current plan
+- `/plan pause` - Pause plan execution
+- `/plan resume` - Resume paused execution
+
+**Example:**
+`/plan Add user authentication with JWT tokens`""",
+            "action": "plan_help",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 

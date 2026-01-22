@@ -181,31 +181,31 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div className="p-4 sm:p-6 max-w-4xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold">Settings</h1>
-        <p className="text-muted-foreground">
+        <h1 className="text-xl sm:text-2xl font-bold">Settings</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">
           Manage your account and preferences
         </p>
       </div>
 
       <Tabs defaultValue="profile" className="space-y-6">
-        <TabsList>
-          <TabsTrigger value="profile" className="gap-2">
-            <User className="h-4 w-4" />
+        <TabsList className="w-full sm:w-auto flex-wrap h-auto gap-1 p-1">
+          <TabsTrigger value="profile" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+            <User className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             Profile
           </TabsTrigger>
-          <TabsTrigger value="security" className="gap-2">
-            <Shield className="h-4 w-4" />
+          <TabsTrigger value="security" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+            <Shield className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             Security
           </TabsTrigger>
-          <TabsTrigger value="notifications" className="gap-2">
-            <Bell className="h-4 w-4" />
-            Notifications
+          <TabsTrigger value="notifications" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+            <Bell className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            Alerts
           </TabsTrigger>
-          <TabsTrigger value="api" className="gap-2">
-            <Key className="h-4 w-4" />
-            API Keys
+          <TabsTrigger value="api" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+            <Key className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            API
           </TabsTrigger>
         </TabsList>
 

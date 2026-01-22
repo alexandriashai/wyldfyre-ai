@@ -170,6 +170,10 @@ class RedisClient:
         """Get list length."""
         return await self.client.llen(name)
 
+    async def ltrim(self, name: str, start: int, end: int) -> bool:
+        """Trim list to specified range."""
+        return await self.client.ltrim(name, start, end)
+
     # Stream Operations
     async def xadd(
         self,

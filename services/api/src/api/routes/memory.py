@@ -219,7 +219,7 @@ async def list_learnings(
                     "scope": r.get("metadata", {}).get("scope", "global"),
                     "project_id": r.get("metadata", {}).get("project_id"),
                     "domain_id": r.get("metadata", {}).get("domain_id"),
-                    "created_at": r.get("metadata", {}).get("created_at"),
+                    "created_at": r.get("metadata", {}).get("created_at") or r.get("metadata", {}).get("timestamp"),
                     "utility_score": r.get("metadata", {}).get("utility_score", 0),
                 }
                 for r in results[:limit]

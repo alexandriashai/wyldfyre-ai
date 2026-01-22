@@ -1,0 +1,82 @@
+name: commit-commands
+version: 1.0.0
+description: Git commit automation with conventional commits support
+author: Wyld Fyre AI
+
+agents:
+  - code-agent
+  - "*"
+
+requires:
+  - ai_core >= 0.1.0
+
+permissions:
+  - git:read
+  - git:write
+
+config:
+  conventional_commits:
+    type: boolean
+    default: true
+  auto_stage:
+    type: boolean
+    default: false
+
+tools:
+  - name: generate_commit_message
+    description: Generate a commit message based on staged changes
+    handler: tools:generate_commit_message
+    parameters:
+      type: object
+      properties:
+        diff:
+          type: string
+          description: Git diff of staged changes
+        type:
+          type: string
+          enum: ["feat", "fix", "docs", "style", "refactor", "test", "chore"]
+          description: Conventional commit type
+        scope:
+          type: string
+          description: Commit scope (optional)
+      required:
+        - diff
+
+  - name: commit_changes
+    description: Stage and commit changes with generated message
+    handler: tools:commit_changes
+    parameters:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Commit message
+        files:
+          type: array
+          items:
+            type: string
+          description: Files to stage (optional, defaults to all)
+        amend:
+          type: boolean
+          default: false
+          description: Amend previous commit
+      required:
+        - message
+
+  - name: analyze_changes
+    description: Analyze changes to suggest commit type and scope
+    handler: tools:analyze_changes
+    parameters:
+      type: object
+      properties:
+        diff:
+          type: string
+          description: Git diff to analyze
+      required:
+        - diff
+
+hooks:
+  - event: task_complete
+    handler: hooks:suggest_commit
+    priority: 20
+    description: Suggest commit after code changes

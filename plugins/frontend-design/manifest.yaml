@@ -1,0 +1,117 @@
+name: frontend-design
+version: 1.0.0
+description: Frontend design assistance with component patterns and UI/UX guidance
+author: Wyld Fyre AI
+
+agents:
+  - code-agent
+  - "*"
+
+requires:
+  - ai_core >= 0.1.0
+
+permissions:
+  - files:read
+  - files:write
+
+config:
+  framework:
+    type: string
+    enum: ["react", "vue", "svelte", "angular", "nextjs"]
+    default: "react"
+  styling:
+    type: string
+    enum: ["tailwind", "css-modules", "styled-components", "sass"]
+    default: "tailwind"
+
+tools:
+  - name: analyze_component
+    description: Analyze a component for best practices and improvements
+    handler: tools:analyze_component
+    parameters:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Component source code
+        framework:
+          type: string
+          description: Frontend framework
+      required:
+        - code
+
+  - name: suggest_component_structure
+    description: Suggest component structure and organization
+    handler: tools:suggest_component_structure
+    parameters:
+      type: object
+      properties:
+        description:
+          type: string
+          description: Component description and requirements
+        framework:
+          type: string
+          description: Frontend framework
+        has_state:
+          type: boolean
+          default: true
+        has_props:
+          type: boolean
+          default: true
+      required:
+        - description
+
+  - name: generate_accessibility_fixes
+    description: Generate accessibility improvements for a component
+    handler: tools:generate_accessibility_fixes
+    parameters:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Component source code
+      required:
+        - code
+
+  - name: review_responsive_design
+    description: Review responsive design implementation
+    handler: tools:review_responsive_design
+    parameters:
+      type: object
+      properties:
+        css:
+          type: string
+          description: CSS/styles to review
+        breakpoints:
+          type: array
+          items:
+            type: string
+          description: Target breakpoints
+      required:
+        - css
+
+  - name: suggest_animations
+    description: Suggest micro-interactions and animations
+    handler: tools:suggest_animations
+    parameters:
+      type: object
+      properties:
+        component_type:
+          type: string
+          description: Type of component (button, modal, card, etc.)
+        interaction:
+          type: string
+          description: Type of interaction (hover, click, enter, exit)
+      required:
+        - component_type
+
+hooks:
+  - event: task_start
+    handler: hooks:detect_frontend_task
+    priority: 30
+    description: Detect frontend-related tasks
+
+  - event: post_tool_use
+    handler: hooks:suggest_ui_improvements
+    priority: 40
+    description: Suggest UI improvements after file creation

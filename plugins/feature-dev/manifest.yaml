@@ -1,0 +1,108 @@
+name: feature-dev
+version: 1.0.0
+description: Comprehensive feature development workflow with codebase exploration, architecture design, and quality review
+author: Wyld Fyre AI
+
+agents:
+  - code-agent
+  - "*"
+
+requires:
+  - ai_core >= 0.1.0
+
+permissions:
+  - file:read
+  - file:write
+  - git:read
+  - git:write
+
+config:
+  enable_planning:
+    type: boolean
+    default: true
+  enable_review:
+    type: boolean
+    default: true
+  architecture_depth:
+    type: string
+    default: "standard"
+    description: "minimal, standard, or comprehensive"
+
+tools:
+  - name: explore_codebase
+    description: Analyze codebase structure and patterns for feature development
+    handler: tools:explore_codebase
+    parameters:
+      type: object
+      properties:
+        query:
+          type: string
+          description: What to explore (e.g., "authentication flow", "API endpoints")
+        depth:
+          type: string
+          enum: ["shallow", "standard", "deep"]
+          default: "standard"
+      required:
+        - query
+
+  - name: design_architecture
+    description: Design architecture for a new feature based on existing patterns
+    handler: tools:design_architecture
+    parameters:
+      type: object
+      properties:
+        feature:
+          type: string
+          description: Feature to design
+        requirements:
+          type: array
+          items:
+            type: string
+          description: List of requirements
+        constraints:
+          type: array
+          items:
+            type: string
+          description: Technical constraints
+      required:
+        - feature
+
+  - name: generate_implementation_plan
+    description: Generate step-by-step implementation plan for a feature
+    handler: tools:generate_implementation_plan
+    parameters:
+      type: object
+      properties:
+        feature:
+          type: string
+          description: Feature to implement
+        architecture:
+          type: object
+          description: Architecture design from design_architecture
+      required:
+        - feature
+
+  - name: validate_implementation
+    description: Validate implementation against requirements and best practices
+    handler: tools:validate_implementation
+    parameters:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            type: string
+          description: Files to validate
+        requirements:
+          type: array
+          items:
+            type: string
+          description: Original requirements to check against
+      required:
+        - files
+
+hooks:
+  - event: task_start
+    handler: hooks:on_feature_task_start
+    priority: 60
+    description: Initialize feature development context

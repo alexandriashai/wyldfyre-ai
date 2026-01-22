@@ -199,15 +199,15 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="container py-6 max-w-6xl">
-      <div className="flex items-center justify-between mb-6">
+    <div className="container py-4 sm:py-6 px-4 sm:px-6 max-w-6xl">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Projects</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-xl sm:text-2xl font-bold">Projects</h1>
+          <p className="text-sm sm:text-base text-muted-foreground">
             Organize your conversations and tasks by project
           </p>
         </div>
-        <Button onClick={() => setShowNewProject(true)}>
+        <Button onClick={() => setShowNewProject(true)} className="w-full sm:w-auto">
           <Plus className="h-4 w-4 mr-2" />
           New Project
         </Button>

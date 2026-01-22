@@ -108,16 +108,16 @@ export default function MemoryPage() {
   };
 
   return (
-    <div className="p-6 h-full overflow-y-auto">
+    <div className="p-4 sm:p-6 h-full overflow-y-auto">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold">Memory</h1>
-        <p className="text-muted-foreground">
+        <h1 className="text-xl sm:text-2xl font-bold">Memory</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">
           Browse and search the AI memory system
         </p>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-4 mb-6">
+      <div className="grid gap-4 grid-cols-2 md:grid-cols-4 mb-6">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -280,7 +280,7 @@ export default function MemoryPage() {
                     <CardContent>
                       <p className="text-sm">{learning.content}</p>
                       <p className="text-xs text-muted-foreground mt-2">
-                        {new Date(learning.created_at).toLocaleString()}
+                        {learning.created_at ? new Date(learning.created_at).toLocaleString() : "Date unknown"}
                       </p>
                     </CardContent>
                   </Card>

@@ -51,6 +51,8 @@ class MessageHandler:
             "typing": self._handle_typing,
             "subscribe": self._handle_subscribe,
             "unsubscribe": self._handle_unsubscribe,
+            "task_control": self._handle_task_control,
+            "add_message": self._handle_add_message,
         }
 
         handler = handlers.get(message_type)
@@ -303,6 +305,100 @@ class MessageHandler:
         await connection.websocket.send_json({
             "type": "unsubscribed",
             "channels": channels,
+        })
+
+    async def _handle_task_control(
+        self,
+        connection: Connection,
+        data: dict[str, Any],
+    ) -> None:
+        """
+        Handle task control commands (pause, resume, cancel).
+
+        Allows users to control running agent tasks like Claude CLI.
+        """
+        action = data.get("action")  # pause, resume, cancel
+        conversation_id = data.get("conversation_id")
+
+        if action not in ("pause", "resume", "cancel"):
+            await self._send_error(connection, f"Invalid task control action: {action}")
+            return
+
+        if not conversation_id:
+            await self._send_error(connection, "conversation_id is required for task control")
+            return
+
+        logger.info(
+            "Task control command",
+            action=action,
+            user_id=connection.user_id,
+            conversation_id=conversation_id,
+        )
+
+        # Publish task control command to agents via Redis
+        await self.pubsub.publish(
+            "agent:task_control",
+            {
+                "action": action,
+                "user_id": connection.user_id,
+                "conversation_id": conversation_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        # Send acknowledgment
+        await connection.websocket.send_json({
+            "type": "task_control_ack",
+            "action": action,
+            "conversation_id": conversation_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+    async def _handle_add_message(
+        self,
+        connection: Connection,
+        data: dict[str, Any],
+    ) -> None:
+        """
+        Handle adding a message while agent is working.
+
+        Allows users to add context or instructions without waiting for completion.
+        """
+        content = data.get("content", "").strip()
+        conversation_id = data.get("conversation_id")
+
+        if not content:
+            await self._send_error(connection, "Message content is required")
+            return
+
+        if not conversation_id:
+            await self._send_error(connection, "conversation_id is required")
+            return
+
+        logger.info(
+            "Add message while busy",
+            user_id=connection.user_id,
+            conversation_id=conversation_id,
+            content_length=len(content),
+        )
+
+        # Publish the pending message to agents
+        await self.pubsub.publish(
+            "agent:pending_messages",
+            {
+                "content": content,
+                "user_id": connection.user_id,
+                "conversation_id": conversation_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        # Send acknowledgment
+        await connection.websocket.send_json({
+            "type": "message_queued",
+            "content": content[:50] + "..." if len(content) > 50 else content,
+            "conversation_id": conversation_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
     async def _send_error(

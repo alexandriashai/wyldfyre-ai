@@ -1,0 +1,63 @@
+name: security-guidance
+version: 1.0.0
+description: Security monitoring and guidance with pattern detection for safe AI operations
+author: Wyld Fyre AI
+
+agents:
+  - "*"
+
+requires:
+  - ai_core >= 0.1.0
+
+permissions:
+  - security:monitor
+
+config:
+  block_dangerous:
+    type: boolean
+    default: true
+    description: Block execution of dangerous patterns
+  warning_threshold:
+    type: integer
+    default: 3
+    description: Number of warnings before blocking
+
+tools:
+  - name: security_scan
+    description: Scan code or commands for security issues
+    handler: tools:security_scan
+    parameters:
+      type: object
+      properties:
+        content:
+          type: string
+          description: Code or command to scan
+        type:
+          type: string
+          enum: ["code", "command", "config"]
+          default: "code"
+      required:
+        - content
+
+  - name: get_security_recommendations
+    description: Get security recommendations for a given context
+    handler: tools:get_security_recommendations
+    parameters:
+      type: object
+      properties:
+        context:
+          type: string
+          description: Context or task description
+        language:
+          type: string
+          description: Programming language if applicable
+
+hooks:
+  - event: pre_tool_use
+    handler: hooks:security_monitor
+    priority: 100
+    description: Monitor all tool usage for security patterns
+
+  - event: session_start
+    handler: hooks:init_security_context
+    priority: 90

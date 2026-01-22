@@ -1,0 +1,113 @@
+name: plugin-dev
+version: 1.0.0
+description: Plugin development toolkit for creating and testing plugins
+author: Wyld Fyre AI
+
+agents:
+  - code-agent
+  - "*"
+
+requires:
+  - ai_core >= 0.1.0
+
+permissions:
+  - files:read
+  - files:write
+  - plugins:manage
+
+config:
+  plugins_directory:
+    type: string
+    default: "plugins"
+  auto_validate:
+    type: boolean
+    default: true
+
+tools:
+  - name: create_plugin_scaffold
+    description: Create a new plugin with standard structure
+    handler: tools:create_plugin_scaffold
+    parameters:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Plugin name (kebab-case)
+        description:
+          type: string
+          description: Plugin description
+        tools:
+          type: array
+          items:
+            type: string
+          description: List of tool names to include
+        hooks:
+          type: array
+          items:
+            type: string
+          description: List of hook events to handle
+      required:
+        - name
+
+  - name: validate_manifest
+    description: Validate a plugin manifest file
+    handler: tools:validate_manifest
+    parameters:
+      type: object
+      properties:
+        manifest_path:
+          type: string
+          description: Path to manifest.yaml
+        strict:
+          type: boolean
+          default: true
+      required:
+        - manifest_path
+
+  - name: test_plugin_tool
+    description: Test a plugin tool with sample inputs
+    handler: tools:test_plugin_tool
+    parameters:
+      type: object
+      properties:
+        plugin_name:
+          type: string
+          description: Plugin name
+        tool_name:
+          type: string
+          description: Tool name to test
+        test_input:
+          type: object
+          description: Test input parameters
+      required:
+        - plugin_name
+        - tool_name
+
+  - name: generate_plugin_docs
+    description: Generate documentation for a plugin
+    handler: tools:generate_plugin_docs
+    parameters:
+      type: object
+      properties:
+        plugin_name:
+          type: string
+          description: Plugin name
+        format:
+          type: string
+          enum: ["markdown", "json", "yaml"]
+          default: "markdown"
+      required:
+        - plugin_name
+
+  - name: list_plugin_events
+    description: List all available plugin events and hooks
+    handler: tools:list_plugin_events
+    parameters:
+      type: object
+      properties: {}
+
+hooks:
+  - event: plugin_loaded
+    handler: hooks:validate_on_load
+    priority: 5
+    description: Validate plugin when loaded

@@ -1,0 +1,99 @@
+name: code-review
+version: 1.0.0
+description: Automated code review using multiple specialized agents with confidence-based scoring
+author: Wyld Fyre AI
+
+# Which agents can use this plugin
+agents:
+  - qa-agent
+  - code-agent
+  - "*"  # Available to all if needed
+
+# Required packages
+requires:
+  - ai_core >= 0.1.0
+
+# Plugin permissions
+permissions:
+  - file:read
+  - git:read
+  - git:diff
+
+# Configuration options
+config:
+  confidence_threshold:
+    type: number
+    default: 0.7
+    description: Minimum confidence score to report issues
+  max_issues_per_file:
+    type: integer
+    default: 10
+    description: Maximum issues to report per file
+  severity_levels:
+    type: array
+    default: ["critical", "high", "medium", "low"]
+    description: Severity levels to include in review
+
+# Tools provided by this plugin
+tools:
+  - name: review_code
+    description: Review code changes for bugs, security issues, and best practices
+    handler: tools:review_code
+    parameters:
+      type: object
+      properties:
+        diff:
+          type: string
+          description: Git diff or code changes to review
+        context:
+          type: string
+          description: Additional context about the changes
+        focus_areas:
+          type: array
+          items:
+            type: string
+          description: Specific areas to focus on (security, performance, style, etc.)
+      required:
+        - diff
+
+  - name: suggest_improvements
+    description: Suggest code improvements and refactoring opportunities
+    handler: tools:suggest_improvements
+    parameters:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Code to analyze for improvements
+        language:
+          type: string
+          description: Programming language
+      required:
+        - code
+
+  - name: check_security
+    description: Check code for security vulnerabilities
+    handler: tools:check_security
+    parameters:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Code to analyze for security issues
+        language:
+          type: string
+          description: Programming language
+      required:
+        - code
+
+# Hooks for event handling
+hooks:
+  - event: pre_tool_use
+    handler: hooks:on_pre_tool_use
+    priority: 50
+    description: Monitor file operations for security patterns
+
+  - event: task_complete
+    handler: hooks:on_task_complete
+    priority: 30
+    description: Generate review summary after code tasks

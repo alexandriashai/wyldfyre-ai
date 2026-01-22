@@ -203,4 +203,4 @@ class BudgetAlert(Base, UUIDMixin, TimestampMixin):
         """Calculate percentage of budget used."""
         if self.threshold_amount == 0:
             return 0.0
-        return float(self.current_spend / self.threshold_amount * 100)
+        return float(self.current_spend) / float(self.threshold_amount) * 100

@@ -9,7 +9,7 @@ import { useAuthStore } from "@/stores/auth-store";
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "wss://api.wyldfyre.ai";
 
 interface ChatMessage {
-  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved";
+  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "task_control_ack" | "message_queued";
   conversation_id?: string;
   message_id?: string;
   content?: string;
@@ -26,6 +26,8 @@ interface ChatMessage {
   command?: string;
   tags?: string[];
   memory_tags?: string[];
+  plan_content?: string;
+  plan_status?: string;
 }
 
 export function useChat() {
@@ -46,6 +48,7 @@ export function useChat() {
     finalizeStreamingMessage,
     clearStreamingMessage,
     setIsSending,
+    updatePlan,
   } = useChatStore();
   const { updateAgentStatus, addAgentAction, clearAgentActions } = useAgentStore();
 
@@ -166,13 +169,33 @@ export function useChat() {
           console.log("Memory saved with tags:", data.tags);
           break;
 
+        case "plan_update":
+          // Plan content or status updated
+          if (data.plan_content !== undefined) {
+            updatePlan(
+              data.plan_content,
+              data.plan_status as "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null
+            );
+          }
+          break;
+
+        case "task_control_ack":
+          // Task control command acknowledged
+          console.log(`Task ${data.action} acknowledged`);
+          break;
+
+        case "message_queued":
+          // Message was queued while agent is busy
+          console.log("Message queued:", data.content);
+          break;
+
         default:
           console.log("Unknown message type:", data.type);
       }
     } catch (e) {
       console.error("Failed to parse WebSocket message:", e);
     }
-  }, [addMessage, updateStreamingMessage, clearStreamingMessage, setIsSending, updateAgentStatus, addAgentAction, clearAgentActions]);
+  }, [addMessage, updateStreamingMessage, clearStreamingMessage, setIsSending, updateAgentStatus, addAgentAction, clearAgentActions, updatePlan]);
 
   const connect = useCallback(() => {
     const wsUrl = getWsUrl();
@@ -312,6 +335,51 @@ export function useChat() {
     }
   }, [currentConversation, isConnected, subscribeToConversation]);
 
+  // Task control methods (Claude CLI style)
+  const pauseTask = useCallback(() => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN || !currentConversation) {
+      return;
+    }
+    socketRef.current.send(JSON.stringify({
+      type: "task_control",
+      action: "pause",
+      conversation_id: currentConversation.id,
+    }));
+  }, [currentConversation]);
+
+  const resumeTask = useCallback(() => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN || !currentConversation) {
+      return;
+    }
+    socketRef.current.send(JSON.stringify({
+      type: "task_control",
+      action: "resume",
+      conversation_id: currentConversation.id,
+    }));
+  }, [currentConversation]);
+
+  const cancelTask = useCallback(() => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN || !currentConversation) {
+      return;
+    }
+    socketRef.current.send(JSON.stringify({
+      type: "task_control",
+      action: "cancel",
+      conversation_id: currentConversation.id,
+    }));
+  }, [currentConversation]);
+
+  const addMessageWhileBusy = useCallback((content: string) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN || !currentConversation) {
+      return;
+    }
+    socketRef.current.send(JSON.stringify({
+      type: "add_message",
+      content,
+      conversation_id: currentConversation.id,
+    }));
+  }, [currentConversation]);
+
   return {
     isConnected,
     isConnecting,
@@ -320,5 +388,10 @@ export function useChat() {
     sendMessage,
     subscribeToConversation,
     unsubscribeFromConversation,
+    // Task control
+    pauseTask,
+    resumeTask,
+    cancelTask,
+    addMessageWhileBusy,
   };
 }

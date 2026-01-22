@@ -1,0 +1,130 @@
+name: agent-sdk-dev
+version: 1.0.0
+description: Agent SDK development toolkit for building custom agents
+author: Wyld Fyre AI
+
+agents:
+  - code-agent
+  - "*"
+
+requires:
+  - ai_core >= 0.1.0
+
+permissions:
+  - files:read
+  - files:write
+  - agents:manage
+
+config:
+  agents_directory:
+    type: string
+    default: "agents"
+  templates_directory:
+    type: string
+    default: "templates/agents"
+
+tools:
+  - name: create_agent_scaffold
+    description: Create a new agent with standard structure
+    handler: tools:create_agent_scaffold
+    parameters:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Agent name (kebab-case)
+        description:
+          type: string
+          description: Agent description
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: Agent capabilities/tools
+        model:
+          type: string
+          enum: ["claude-sonnet", "claude-opus", "claude-haiku"]
+          default: "claude-sonnet"
+      required:
+        - name
+
+  - name: define_agent_tools
+    description: Define tools available to an agent
+    handler: tools:define_agent_tools
+    parameters:
+      type: object
+      properties:
+        agent_name:
+          type: string
+          description: Agent name
+        tools:
+          type: array
+          items:
+            type: object
+          description: Tool definitions
+      required:
+        - agent_name
+        - tools
+
+  - name: generate_system_prompt
+    description: Generate a system prompt for an agent
+    handler: tools:generate_system_prompt
+    parameters:
+      type: object
+      properties:
+        agent_name:
+          type: string
+          description: Agent name
+        role:
+          type: string
+          description: Agent role description
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: List of capabilities
+        guidelines:
+          type: array
+          items:
+            type: string
+          description: Behavior guidelines
+      required:
+        - agent_name
+        - role
+
+  - name: test_agent_response
+    description: Test agent response to a sample input
+    handler: tools:test_agent_response
+    parameters:
+      type: object
+      properties:
+        agent_name:
+          type: string
+          description: Agent name
+        test_input:
+          type: string
+          description: Test message to send
+        expected_behavior:
+          type: string
+          description: Expected behavior description
+      required:
+        - agent_name
+        - test_input
+
+  - name: analyze_agent_config
+    description: Analyze agent configuration for issues
+    handler: tools:analyze_agent_config
+    parameters:
+      type: object
+      properties:
+        config_path:
+          type: string
+          description: Path to agent config
+      required:
+        - config_path
+
+hooks:
+  - event: task_start
+    handler: hooks:detect_agent_dev_task
+    priority: 25
+    description: Detect agent development tasks

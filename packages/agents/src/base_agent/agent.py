@@ -14,6 +14,7 @@ import time
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from ai_core import (
     AgentStatus,
     AgentType,
     CapabilityCategory,
+    HookEvent,
     PermissionContext,
     PermissionLevel,
     agent_active_tasks,
@@ -50,7 +52,9 @@ from ai_core import (
     claude_api_tokens_total,
     get_cost_tracker,
     get_logger,
+    get_plugin_integration,
     get_settings,
+    init_agent_plugins,
 )
 from ai_memory import PAIMemory, PAIPhase
 from ai_messaging import (
@@ -114,6 +118,14 @@ class ConversationMessage:
     content: Any
 
 
+class TaskControlState(Enum):
+    """Task control states."""
+    RUNNING = "running"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+
+
 @dataclass
 class AgentState:
     """Runtime state of an agent."""
@@ -126,6 +138,16 @@ class AgentState:
     # Context for action publishing
     current_user_id: str | None = None
     current_conversation_id: str | None = None
+    # Task control
+    task_control: TaskControlState = TaskControlState.RUNNING
+    # Pending messages queue (for interrupts while agent is working)
+    pending_messages: list[dict] = field(default_factory=list)
+    # Pause event for suspending execution
+    pause_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self):
+        # Ensure pause event starts in "not paused" state (set = not paused)
+        self.pause_event.set()
 
 
 class BaseAgent(ABC):
@@ -180,6 +202,14 @@ class BaseAgent(ABC):
 
         # Register agent-specific tools
         self.register_tools()
+
+        # Initialize plugin system
+        self._plugin_integration = init_agent_plugins(config.name)
+        logger.debug(
+            "Plugin integration initialized",
+            agent=self.config.name,
+            plugins_loaded=len(self._plugin_integration.get_active_plugins()),
+        )
 
     def _register_shared_tools(self) -> None:
         """
@@ -305,6 +335,18 @@ class BaseAgent(ABC):
             self._handle_task_message,
         )
 
+        # Subscribe to task control commands (pause/resume/cancel)
+        await self._pubsub.subscribe(
+            "agent:task_control",
+            self._handle_task_control_message,
+        )
+
+        # Subscribe to pending messages (user adds messages while agent is busy)
+        await self._pubsub.subscribe(
+            "agent:pending_messages",
+            self._handle_pending_message,
+        )
+
         # Start heartbeat
         self._running = True
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -313,6 +355,7 @@ class BaseAgent(ABC):
         await self._publish_status(AgentStatus.IDLE)
 
         logger.info("Agent started", agent=self.name)
+        await self.log_to_redis("info", f"Agent {self.name} started and ready")
 
     async def stop(self, graceful_timeout: float = 30.0) -> None:
         """
@@ -379,6 +422,127 @@ class BaseAgent(ABC):
         await self._publish_status(AgentStatus.OFFLINE)
         logger.info("Agent stopped gracefully", agent=self.name)
 
+    # === Task Control Methods ===
+
+    async def pause_task(self) -> bool:
+        """
+        Pause the current running task.
+
+        Returns:
+            True if task was paused, False if no task running
+        """
+        if not self._state.current_task_id:
+            return False
+
+        if self._state.task_control == TaskControlState.RUNNING:
+            self._state.task_control = TaskControlState.PAUSED
+            self._state.pause_event.clear()  # Block execution
+            await self.publish_action("paused", "Task paused by user")
+            logger.info(
+                "Task paused",
+                task_id=self._state.current_task_id,
+                agent=self.name,
+            )
+            return True
+        return False
+
+    async def resume_task(self) -> bool:
+        """
+        Resume a paused task.
+
+        Returns:
+            True if task was resumed, False if not paused
+        """
+        if self._state.task_control == TaskControlState.PAUSED:
+            self._state.task_control = TaskControlState.RUNNING
+            self._state.pause_event.set()  # Unblock execution
+            await self.publish_action("resumed", "Task resumed")
+            logger.info(
+                "Task resumed",
+                task_id=self._state.current_task_id,
+                agent=self.name,
+            )
+            return True
+        return False
+
+    async def cancel_task(self) -> bool:
+        """
+        Cancel the current running task.
+
+        Returns:
+            True if task was cancelled, False if no task running
+        """
+        if not self._state.current_task_id:
+            return False
+
+        self._state.task_control = TaskControlState.CANCELLED
+        self._state.pause_event.set()  # Unblock if paused
+        await self.publish_action("cancelled", "Task cancelled by user")
+        logger.info(
+            "Task cancelled",
+            task_id=self._state.current_task_id,
+            agent=self.name,
+        )
+        return True
+
+    def add_pending_message(self, message: dict) -> None:
+        """
+        Add a message to be processed after current operation.
+
+        This allows users to send additional context while the agent is working.
+
+        Args:
+            message: Message dict with 'content' and optional metadata
+        """
+        self._state.pending_messages.append({
+            "content": message.get("content", ""),
+            "timestamp": time.time(),
+            "type": message.get("type", "user_interrupt"),
+        })
+        logger.debug(
+            "Pending message added",
+            agent=self.name,
+            queue_size=len(self._state.pending_messages),
+        )
+
+    def get_pending_messages(self) -> list[dict]:
+        """
+        Get and clear pending messages.
+
+        Returns:
+            List of pending messages
+        """
+        messages = self._state.pending_messages.copy()
+        self._state.pending_messages.clear()
+        return messages
+
+    async def _check_task_control(self) -> bool:
+        """
+        Check task control state and handle pause/cancel.
+
+        Call this periodically during long operations.
+
+        Returns:
+            True if should continue, False if cancelled
+        """
+        # Wait if paused
+        if self._state.task_control == TaskControlState.PAUSED:
+            await self._state.pause_event.wait()
+
+        # Check if cancelled
+        if self._state.task_control == TaskControlState.CANCELLED:
+            return False
+
+        return True
+
+    def is_task_cancelled(self) -> bool:
+        """Check if current task is cancelled."""
+        return self._state.task_control == TaskControlState.CANCELLED
+
+    def is_task_paused(self) -> bool:
+        """Check if current task is paused."""
+        return self._state.task_control == TaskControlState.PAUSED
+
     async def process_task(self, request: TaskRequest) -> TaskResponse:
         """
         Process a task request.
@@ -398,10 +562,13 @@ class BaseAgent(ABC):
             task_type=request.task_type,
             agent=self.name,
         )
+        await self.log_to_redis("info", f"Processing task {task_id[:8]}... ({request.task_type})")
 
         # Update state
         self._state.status = AgentStatus.BUSY
         self._state.current_task_id = task_id
+        self._state.task_control = TaskControlState.RUNNING
+        self._state.pause_event.set()  # Ensure not paused
         agent_active_tasks.labels(agent_type=self.agent_type.value).inc()
 
         # Set context for action publishing
@@ -548,6 +715,7 @@ class BaseAgent(ABC):
 
             # Publish task completion action
             await self.publish_action(ACTION_COMPLETE, "Task completed successfully")
+            await self.log_to_redis("info", f"Task {task_id[:8]}... completed in {duration_ms:.0f}ms")
 
             return TaskResponse(
                 task_id=task_id,
@@ -560,6 +728,7 @@ class BaseAgent(ABC):
 
         except Exception as e:
             logger.error("Task failed", task_id=task_id, error=str(e))
+            await self.log_to_redis("error", f"Task {task_id[:8]}... failed: {str(e)[:100]}")
 
             agent_tasks_total.labels(
                 agent_type=self.agent_type.value,
@@ -759,6 +928,31 @@ class BaseAgent(ABC):
         while iterations < iteration_limit:
             iterations += 1
 
+            # === Task Control Check ===
+            if not await self._check_task_control():
+                # Task was cancelled
+                return {
+                    "response": "Task was cancelled by user.",
+                    "iterations": iterations,
+                    "cancelled": True,
+                }
+
+            # === Process Pending Messages ===
+            pending = self.get_pending_messages()
+            if pending:
+                # Add pending messages as additional context
+                for msg in pending:
+                    await self.publish_action(
+                        "user_message",
+                        f"User added: {msg['content'][:50]}..."
+                    )
+                    self._state.conversation_history.append(
+                        ConversationMessage(
+                            role="user",
+                            content=f"[Additional context from user]: {msg['content']}"
+                        )
+                    )
+
             # Build messages for API
             messages = self._build_api_messages()
 
@@ -873,18 +1067,41 @@ class BaseAgent(ABC):
                                 ).model_dump_json(),
                             )
 
-                        # Execute tool with context (memory, agent type, task id)
-                        result = await self._tool_registry.execute(
-                            tool_name,
-                            tool_input,
-                            context={
-                                "task_id": task_id,
-                                "_memory": self._memory,
-                                "_agent_type": self.agent_type.value,
-                                "_task_id": task_id,
-                                "_agent": self,  # Pass agent for action publishing
-                            },
+                        # === Plugin pre-tool hook ===
+                        pre_hook_result = await self._trigger_pre_tool_hook(
+                            tool_name, tool_input, task_id
                         )
+
+                        # Check if plugin blocked the tool
+                        if pre_hook_result.get("security_blocked"):
+                            logger.warning(
+                                "Tool blocked by security plugin",
+                                tool=tool_name,
+                                reason=pre_hook_result.get("block_reason"),
+                            )
+                            result = ToolResult(
+                                success=False,
+                                error=f"Blocked by security: {pre_hook_result.get('block_reason', 'Security violation')}",
+                                output=None,
+                            )
+                        else:
+                            # Execute tool with context (memory, agent type, task id)
+                            result = await self._tool_registry.execute(
+                                tool_name,
+                                tool_input,
+                                context={
+                                    "task_id": task_id,
+                                    "_memory": self._memory,
+                                    "_agent_type": self.agent_type.value,
+                                    "_task_id": task_id,
+                                    "_agent": self,  # Pass agent for action publishing
+                                },
+                            )
+
+                            # === Plugin post-tool hook ===
+                            await self._trigger_post_tool_hook(
+                                tool_name, tool_input, result, task_id
+                            )
 
                         # Track success/failure for EXECUTE phase
                         if result.success:
@@ -1141,6 +1358,75 @@ class BaseAgent(ABC):
         except Exception as e:
             logger.error("Failed to handle task message", error=str(e))
 
+    async def _handle_task_control_message(self, message: str) -> None:
+        """
+        Handle task control command (pause/resume/cancel).
+
+        Args:
+            message: JSON message with action, user_id, conversation_id
+        """
+        try:
+            import json
+            data = json.loads(message)
+            action = data.get("action")
+            user_id = data.get("user_id")
+            conversation_id = data.get("conversation_id")
+
+            # Only handle if this is the agent working on the conversation
+            if self._state.current_conversation_id != conversation_id:
+                return
+
+            if action == "pause":
+                await self.pause_task()
+            elif action == "resume":
+                await self.resume_task()
+            elif action == "cancel":
+                await self.cancel_task()
+
+            logger.info(
+                "Task control handled",
+                action=action,
+                task_id=self._state.current_task_id,
+                agent=self.name,
+            )
+
+        except Exception as e:
+            logger.error("Failed to handle task control message", error=str(e))
+
+    async def _handle_pending_message(self, message: str) -> None:
+        """
+        Handle pending message from user while agent is busy.
+
+        Args:
+            message: JSON message with content, user_id, conversation_id
+        """
+        try:
+            import json
+            data = json.loads(message)
+            content = data.get("content")
+            user_id = data.get("user_id")
+            conversation_id = data.get("conversation_id")
+
+            # Only handle if this is the agent working on the conversation
+            if self._state.current_conversation_id != conversation_id:
+                return
+
+            # Add to pending messages queue
+            self.add_pending_message({
+                "content": content,
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+            })
+
+            logger.info(
+                "Pending message queued",
+                agent=self.name,
+                content_length=len(content) if content else 0,
+            )
+
+        except Exception as e:
+            logger.error("Failed to handle pending message", error=str(e))
+
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeat messages."""
         while self._running:
@@ -1190,6 +1476,28 @@ class BaseAgent(ABC):
 
         # Store with 60 second TTL (agents send every 30 seconds)
         await self._redis.set(heartbeat_key, heartbeat_data, ex=60)
+
+    async def log_to_redis(self, level: str, message: str) -> None:
+        """
+        Write a log entry to Redis for display in the UI.
+
+        Args:
+            level: Log level (debug, info, warning, error)
+            message: Log message text
+        """
+        from datetime import datetime, timezone
+        import json
+
+        log_key = f"agent:logs:{self.config.name}"
+        log_entry = json.dumps({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "message": message,
+        })
+
+        # Push to Redis list (newest first), keep last 500 entries
+        await self._redis.lpush(log_key, log_entry)
+        await self._redis.ltrim(log_key, 0, 499)
 
     async def _publish_status(self, status: AgentStatus) -> None:
         """Publish agent status update."""
@@ -1279,14 +1587,94 @@ class BaseAgent(ABC):
     # Hooks for subclasses
     async def on_task_start(self, request: TaskRequest) -> None:
         """Called when a task starts. Override in subclasses."""
-        pass
+        # Trigger plugin hooks
+        if self._plugin_integration:
+            await self._plugin_integration.trigger_hook(
+                HookEvent.TASK_START,
+                {
+                    "task_id": request.id,
+                    "task_type": request.task_type,
+                    "agent_type": self.agent_type.value,
+                    "agent_name": self.config.name,
+                    "payload": request.payload,
+                },
+            )
 
     async def on_task_complete(
         self, request: TaskRequest, result: dict[str, Any]
     ) -> None:
         """Called when a task completes. Override in subclasses."""
-        pass
+        # Trigger plugin hooks
+        if self._plugin_integration:
+            await self._plugin_integration.trigger_hook(
+                HookEvent.TASK_COMPLETE,
+                {
+                    "task_id": request.id,
+                    "task_type": request.task_type,
+                    "agent_type": self.agent_type.value,
+                    "agent_name": self.config.name,
+                    "result": result,
+                    "changes": result.get("changes", []),
+                },
+            )
 
     async def on_task_error(self, request: TaskRequest, error: Exception) -> None:
         """Called when a task fails. Override in subclasses."""
-        pass
+        # Trigger plugin hooks
+        if self._plugin_integration:
+            await self._plugin_integration.trigger_hook(
+                HookEvent.TASK_ERROR,
+                {
+                    "task_id": request.id,
+                    "task_type": request.task_type,
+                    "agent_type": self.agent_type.value,
+                    "agent_name": self.config.name,
+                    "error": str(error),
+                    "error_type": type(error).__name__,
+                },
+            )
+
+    async def _trigger_pre_tool_hook(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        task_id: str,
+    ) -> dict[str, Any]:
+        """Trigger pre-tool-use plugin hooks."""
+        if not self._plugin_integration:
+            return {"blocked": False}
+
+        context = await self._plugin_integration.trigger_hook(
+            HookEvent.PRE_TOOL_USE,
+            {
+                "tool_name": tool_name,
+                "tool_args": tool_input,
+                "task_id": task_id,
+                "agent_type": self.agent_type.value,
+                "agent_name": self.config.name,
+            },
+        )
+        return context
+
+    async def _trigger_post_tool_hook(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        result: Any,
+        task_id: str,
+    ) -> None:
+        """Trigger post-tool-use plugin hooks."""
+        if not self._plugin_integration:
+            return
+
+        await self._plugin_integration.trigger_hook(
+            HookEvent.POST_TOOL_USE,
+            {
+                "tool_name": tool_name,
+                "tool_args": tool_input,
+                "result": result,
+                "task_id": task_id,
+                "agent_type": self.agent_type.value,
+                "agent_name": self.config.name,
+            },
+        )

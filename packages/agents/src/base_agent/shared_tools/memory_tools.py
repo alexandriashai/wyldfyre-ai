@@ -182,6 +182,12 @@ async def search_memory(
                 "type": "string",
                 "description": "Category for organization (e.g., 'ssl', 'docker', 'nginx')",
             },
+            "phase": {
+                "type": "string",
+                "enum": ["observe", "think", "plan", "build", "execute", "verify", "learn"],
+                "description": "PAI phase this learning came from (default: learn)",
+                "default": "learn",
+            },
             "tags": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -211,6 +217,10 @@ async def search_memory(
                 "type": "string",
                 "description": "Domain ID (required if scope is 'domain')",
             },
+            "agent": {
+                "type": "string",
+                "description": "Agent that created this memory (auto-detected if not provided)",
+            },
         },
         "required": ["content"],
     },
@@ -219,14 +229,18 @@ async def store_memory(
     content: str,
     collection: str | None = None,
     category: str | None = None,
+    phase: str = "learn",
     tags: list[str] | None = None,
     source: str | None = None,
     importance: str = "medium",
     scope: str = "global",
     project_id: str | None = None,
     domain_id: str | None = None,
+    agent: str | None = None,
 ) -> ToolResult:
     """Store content in vector database with scope isolation."""
+    from datetime import datetime, timezone
+
     store = None
     try:
         # Validate scope requirements
@@ -239,16 +253,20 @@ async def store_memory(
 
         metadata = {
             "category": category,
+            "phase": phase,
+            "outcome": "success",
             "tags": tags or [],
             "source": source,
             "importance": importance,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "agent": agent,
             # Scope fields
             "scope": scope,
             "project_id": project_id,
             "domain_id": domain_id,
         }
-        # Remove None values (but keep scope)
-        metadata = {k: v for k, v in metadata.items() if v is not None or k == "scope"}
+        # Remove None values (but keep scope and phase)
+        metadata = {k: v for k, v in metadata.items() if v is not None or k in ("scope", "phase")}
 
         doc_id = await store.upsert(
             id=None,  # Auto-generate ID
@@ -261,6 +279,7 @@ async def store_memory(
             "id": doc_id,
             "collection": collection or DEFAULT_COLLECTION,
             "category": category,
+            "phase": phase,
             "scope": scope,
             "project_id": project_id,
             "domain_id": domain_id,

@@ -256,8 +256,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  updateStreamingMessage: (content: string) => {
-    set({ streamingMessage: content });
+  updateStreamingMessage: (token: string) => {
+    set((state) => ({ streamingMessage: state.streamingMessage + token }));
   },
 
   finalizeStreamingMessage: (message: Message) => {

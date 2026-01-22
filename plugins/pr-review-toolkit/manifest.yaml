@@ -1,0 +1,97 @@
+name: pr-review-toolkit
+version: 1.0.0
+description: Pull request review automation with comprehensive analysis
+author: Wyld Fyre AI
+
+agents:
+  - code-agent
+  - "*"
+
+requires:
+  - ai_core >= 0.1.0
+
+permissions:
+  - git:read
+  - github:read
+  - github:write
+
+config:
+  auto_review:
+    type: boolean
+    default: true
+  review_depth:
+    type: string
+    enum: ["quick", "standard", "thorough"]
+    default: "standard"
+
+tools:
+  - name: review_pr
+    description: Comprehensive PR review with code analysis
+    handler: tools:review_pr
+    parameters:
+      type: object
+      properties:
+        pr_number:
+          type: integer
+          description: Pull request number
+        repo:
+          type: string
+          description: Repository in format owner/repo
+        review_type:
+          type: string
+          enum: ["full", "security", "performance", "style"]
+          default: "full"
+      required:
+        - pr_number
+
+  - name: suggest_pr_improvements
+    description: Generate improvement suggestions for PR
+    handler: tools:suggest_pr_improvements
+    parameters:
+      type: object
+      properties:
+        diff:
+          type: string
+          description: PR diff content
+        context:
+          type: string
+          description: Additional context about the changes
+
+  - name: generate_pr_summary
+    description: Generate a summary of PR changes
+    handler: tools:generate_pr_summary
+    parameters:
+      type: object
+      properties:
+        diff:
+          type: string
+          description: PR diff content
+        commits:
+          type: array
+          items:
+            type: string
+          description: Commit messages
+
+  - name: check_pr_conflicts
+    description: Check for potential merge conflicts or issues
+    handler: tools:check_pr_conflicts
+    parameters:
+      type: object
+      properties:
+        base_branch:
+          type: string
+          description: Base branch name
+        head_branch:
+          type: string
+          description: Head branch name
+
+hooks:
+  - event: pr_opened
+    handler: hooks:auto_review_pr
+    priority: 10
+    description: Automatically review new PRs
+
+  - event: pr_updated
+    handler: hooks:review_pr_changes
+    priority: 15
+    description: Review PR when changes are pushed

@@ -89,21 +89,21 @@ export default function UsagePage() {
   }
 
   return (
-    <div className="p-6">
+    <div className="p-4 sm:p-6">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold">Usage Analytics</h1>
-        <p className="text-muted-foreground">
+        <h1 className="text-xl sm:text-2xl font-bold">Usage Analytics</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">
           Monitor API token usage and costs
         </p>
       </div>
 
       {/* Budget Status Alert */}
       {budgetStatus && budgetStatus.daily_percentage > 80 && (
-        <div className="mb-6 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex items-center gap-3">
-          <AlertTriangle className="h-5 w-5 text-yellow-500" />
+        <div className="mb-6 p-3 sm:p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-lg flex items-center gap-3">
+          <AlertTriangle className="h-5 w-5 text-yellow-500 shrink-0" />
           <div>
-            <p className="font-medium text-yellow-500">Budget Warning</p>
-            <p className="text-sm text-muted-foreground">
+            <p className="font-medium text-yellow-500 text-sm sm:text-base">Budget Warning</p>
+            <p className="text-xs sm:text-sm text-muted-foreground">
               You&apos;ve used {budgetStatus.daily_percentage.toFixed(1)}% of your daily budget
             </p>
           </div>
@@ -111,7 +111,7 @@ export default function UsagePage() {
       )}
 
       {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-4 mb-6">
+      <div className="grid gap-4 grid-cols-2 md:grid-cols-4 mb-6">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">

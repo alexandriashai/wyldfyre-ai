@@ -1,0 +1,97 @@
+name: output-styles
+version: 1.0.0
+description: Output style modifiers for different response formats and tones
+author: Wyld Fyre AI
+
+agents:
+  - "*"
+
+requires:
+  - ai_core >= 0.1.0
+
+permissions:
+  - response:modify
+
+config:
+  default_style:
+    type: string
+    enum: ["standard", "explanatory", "learning", "concise", "detailed"]
+    default: "standard"
+  apply_to_all:
+    type: boolean
+    default: false
+
+tools:
+  - name: set_output_style
+    description: Set the output style for responses
+    handler: tools:set_output_style
+    parameters:
+      type: object
+      properties:
+        style:
+          type: string
+          enum: ["standard", "explanatory", "learning", "concise", "detailed", "technical", "beginner-friendly"]
+          description: Output style to use
+        options:
+          type: object
+          description: Style-specific options
+      required:
+        - style
+
+  - name: get_style_info
+    description: Get information about available output styles
+    handler: tools:get_style_info
+    parameters:
+      type: object
+      properties:
+        style:
+          type: string
+          description: Specific style to get info about
+
+  - name: format_response
+    description: Format a response according to a style
+    handler: tools:format_response
+    parameters:
+      type: object
+      properties:
+        content:
+          type: string
+          description: Content to format
+        style:
+          type: string
+          description: Style to apply
+      required:
+        - content
+        - style
+
+  - name: create_custom_style
+    description: Create a custom output style
+    handler: tools:create_custom_style
+    parameters:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Style name
+        template:
+          type: string
+          description: Response template with placeholders
+        rules:
+          type: array
+          items:
+            type: string
+          description: Formatting rules
+      required:
+        - name
+        - template
+
+hooks:
+  - event: response_generated
+    handler: hooks:apply_output_style
+    priority: 80
+    description: Apply output style to generated responses
+
+  - event: session_start
+    handler: hooks:load_user_style_preference
+    priority: 10
+    description: Load user's preferred output style

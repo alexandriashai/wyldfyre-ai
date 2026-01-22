@@ -204,21 +204,21 @@ export default function DomainsPage() {
   };
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 sm:p-6">
+      <div className="flex flex-col gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Domains</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-xl sm:text-2xl font-bold">Domains</h1>
+          <p className="text-sm sm:text-base text-muted-foreground">
             Manage your web domains and SSL certificates
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
           {/* Project Filter */}
-          <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-muted-foreground" />
+          <div className="flex items-center gap-2 flex-1 sm:flex-initial">
+            <Filter className="h-4 w-4 text-muted-foreground shrink-0" />
             <Select value={projectFilter} onValueChange={setProjectFilter}>
-              <SelectTrigger className="w-[180px]">
+              <SelectTrigger className="w-full sm:w-[180px]">
                 <SelectValue placeholder="Filter by project" />
               </SelectTrigger>
               <SelectContent>
@@ -240,7 +240,7 @@ export default function DomainsPage() {
 
           <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
-              <Button>
+              <Button className="w-full sm:w-auto">
                 <Plus className="h-4 w-4 mr-2" />
                 Add Domain
               </Button>

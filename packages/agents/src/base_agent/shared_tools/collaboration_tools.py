@@ -92,7 +92,7 @@ async def notify_user(
         return ToolResult.fail(f"Notify user failed: {e}")
     finally:
         if redis:
-            await redis.close()
+            await redis.disconnect()
 
 
 @tool(
@@ -170,7 +170,7 @@ async def request_agent_help(
         return ToolResult.fail(f"Request agent help failed: {e}")
     finally:
         if redis:
-            await redis.close()
+            await redis.disconnect()
 
 
 @tool(
@@ -249,4 +249,4 @@ async def broadcast_status(
         return ToolResult.fail(f"Broadcast status failed: {e}")
     finally:
         if redis:
-            await redis.close()
+            await redis.disconnect()

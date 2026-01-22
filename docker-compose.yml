@@ -173,6 +173,7 @@ services:
       - .env
     volumes:
       - /home/wyld-data/logs/api:/app/logs
+      - /etc/nginx/sites-available:/etc/nginx/sites-available:ro
     depends_on:
       postgres:
         condition: service_healthy

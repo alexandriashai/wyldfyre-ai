@@ -19,7 +19,10 @@ from ..schemas.agent import AgentToolsResponse, ToolInfo
 logger = get_logger(__name__)
 
 # Load agents configuration from YAML
-AGENTS_CONFIG_PATH = Path("/home/wyld-core/config/agents.yaml")
+# Use /app/config in Docker container, fallback to /home/wyld-core/config for local dev
+AGENTS_CONFIG_PATH = Path("/app/config/agents.yaml")
+if not AGENTS_CONFIG_PATH.exists():
+    AGENTS_CONFIG_PATH = Path("/home/wyld-core/config/agents.yaml")
 
 
 def load_agents_config() -> dict[str, Any]:

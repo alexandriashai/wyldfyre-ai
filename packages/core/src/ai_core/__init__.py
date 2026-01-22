@@ -108,6 +108,28 @@ from .security import (
     get_security_validator,
     validate_tool,
 )
+from .plugins import (
+    HookEvent,
+    Plugin,
+    PluginHook,
+    PluginRegistry,
+    PluginStatus,
+    PluginTool,
+    MCPServerConfig,
+    get_plugin_registry,
+    init_plugins,
+)
+from .mcp_client import (
+    MCPClient,
+    MCPToolResult,
+    get_mcp_client,
+    init_mcp_servers,
+)
+from .plugin_integration import (
+    PluginIntegration,
+    get_plugin_integration,
+    init_agent_plugins,
+)
 from .metrics import (
     agent_active_tasks,
     agent_errors_total,
@@ -266,4 +288,23 @@ __all__ = [
     "pai_phase_duration_seconds",
     "pai_learnings_extracted_total",
     "system_uptime_seconds",
+    # Plugins
+    "Plugin",
+    "PluginTool",
+    "PluginHook",
+    "PluginStatus",
+    "PluginRegistry",
+    "HookEvent",
+    "MCPServerConfig",
+    "get_plugin_registry",
+    "init_plugins",
+    # MCP Client
+    "MCPClient",
+    "MCPToolResult",
+    "get_mcp_client",
+    "init_mcp_servers",
+    # Plugin Integration
+    "PluginIntegration",
+    "get_plugin_integration",
+    "init_agent_plugins",
 ]

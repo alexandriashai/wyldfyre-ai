@@ -7,6 +7,7 @@ import { useProjectStore } from "@/stores/project-store";
 import { MessageList } from "@/components/chat/message-list";
 import { MessageInput } from "@/components/chat/message-input";
 import { AgentStatus } from "@/components/chat/agent-status";
+import { TaskControls } from "@/components/chat/task-controls";
 import { PlanPanel } from "@/components/chat/plan-panel";
 import { Loader2 } from "lucide-react";
 
@@ -61,6 +62,7 @@ export default function ChatPage() {
   return (
     <div className="flex flex-col h-full w-full min-h-0 overflow-hidden">
       <AgentStatus />
+      <TaskControls />
       {currentPlan && <PlanPanel />}
       <MessageList />
       <MessageInput />

@@ -335,47 +335,77 @@ class DomainService:
         """
         Sync domain configuration from nginx config file.
 
-        Asks the Infra Agent to read the nginx config and update
-        the domain record with web_root and other values.
+        Reads the nginx config directly and updates the domain record
+        with web_root and nginx_config_path.
 
         Args:
             domain_name: The domain to sync
 
         Returns:
-            Task submission result with task_id for tracking
+            Result with updated values
         """
-        from uuid import uuid4
+        import os
+        import re
 
         domain = await self.get_domain(domain_name)
         if not domain:
             raise ValueError(f"Domain {domain_name} not found")
 
-        task_id = str(uuid4())
+        # Try to find and read the nginx config
+        nginx_dir = "/etc/nginx/sites-available"
+        possible_configs = [
+            f"{nginx_dir}/{domain_name}.conf",
+            f"{nginx_dir}/{domain_name}",
+        ]
 
-        # Publish sync task to infra agent
-        await self.pubsub.publish(
-            channel="infra-agent:tasks",
-            message={
-                "task_id": task_id,
-                "action": "sync_nginx_config",
-                "payload": {
-                    "domain": domain_name,
-                    "nginx_config_path": domain.nginx_config_path,
-                },
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
-        )
+        config_content = None
+        config_path = None
+
+        for path in possible_configs:
+            if os.path.exists(path):
+                try:
+                    with open(path, "r") as f:
+                        config_content = f.read()
+                    config_path = path
+                    break
+                except Exception as e:
+                    logger.warning(f"Could not read {path}: {e}")
+
+        if not config_content:
+            return {
+                "success": False,
+                "message": f"No nginx config found for {domain_name}",
+            }
+
+        # Extract root directive from nginx config
+        root_match = re.search(r'^\s*root\s+([^;]+);', config_content, re.MULTILINE)
+        web_root = root_match.group(1).strip() if root_match else None
+
+        # Update domain record
+        updates = {}
+        if web_root:
+            updates["web_root"] = web_root
+        if config_path:
+            updates["nginx_config_path"] = config_path
+
+        if updates:
+            for field, value in updates.items():
+                setattr(domain, field, value)
+            await self.db.flush()
+            await self.db.refresh(domain)
 
         logger.info(
-            "Domain config sync requested",
+            "Domain config synced",
             domain=domain_name,
-            task_id=task_id,
+            web_root=web_root,
+            nginx_config_path=config_path,
         )
 
         return {
             "success": True,
-            "task_id": task_id,
-            "message": f"Config sync started for {domain_name}",
+            "message": f"Config synced for {domain_name}",
+            "web_root": web_root,
+            "nginx_config_path": config_path,
         }
 
     def _validate_domain_name(self, domain_name: str) -> bool:

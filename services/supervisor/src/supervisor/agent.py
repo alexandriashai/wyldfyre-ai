@@ -146,7 +146,7 @@ class SupervisorAgent(BaseAgent):
         from base_agent.agent import AgentConfig
 
         config = AgentConfig(
-            name="supervisor",
+            name="wyld",
             agent_type=AgentType.SUPERVISOR,
             permission_level=4,  # SUPERUSER - can grant elevations to other agents
             system_prompt=SUPERVISOR_SYSTEM_PROMPT,
@@ -848,11 +848,26 @@ class SupervisorAgent(BaseAgent):
 
 async def main() -> None:
     """Main entry point for the Supervisor agent."""
-    from ai_core import get_settings
+    from ai_core import configure_cost_tracker, get_settings
     from ai_messaging import RedisClient
     from ai_memory import PAIMemory, QdrantStore
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     settings = get_settings()
+
+    # Initialize database for cost tracking
+    db_engine = create_async_engine(
+        settings.database.url_with_password,
+        pool_size=5,
+        max_overflow=10,
+    )
+    session_factory = async_sessionmaker(
+        db_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    configure_cost_tracker(session_factory)
+    logger.info("Cost tracker configured for database persistence")
 
     # Initialize Redis client
     redis_client = RedisClient(settings.redis)
@@ -894,6 +909,7 @@ async def main() -> None:
     finally:
         await agent.stop()
         await redis_client.close()
+        await db_engine.dispose()
 
 
 if __name__ == "__main__":

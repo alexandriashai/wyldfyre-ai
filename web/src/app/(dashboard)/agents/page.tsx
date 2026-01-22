@@ -21,10 +21,10 @@ export default function AgentsPage() {
   };
 
   return (
-    <div className="p-6">
+    <div className="p-4 sm:p-6">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold">Agents</h1>
-        <p className="text-muted-foreground">
+        <h1 className="text-xl sm:text-2xl font-bold">Agents</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">
           Monitor and manage your AI agents
         </p>
       </div>

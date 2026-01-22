@@ -1,0 +1,119 @@
+name: hookify
+version: 1.0.0
+description: Custom hook creation and management for extending agent behavior
+author: Wyld Fyre AI
+
+agents:
+  - "*"
+
+requires:
+  - ai_core >= 0.1.0
+
+permissions:
+  - hooks:read
+  - hooks:write
+  - files:read
+
+config:
+  hooks_directory:
+    type: string
+    default: ".wyld/hooks"
+  auto_reload:
+    type: boolean
+    default: true
+
+tools:
+  - name: create_hook
+    description: Create a new custom hook
+    handler: tools:create_hook
+    parameters:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Hook name
+        event:
+          type: string
+          enum: ["pre_tool_use", "post_tool_use", "task_start", "task_complete", "message_received", "response_generated"]
+          description: Event that triggers the hook
+        handler_code:
+          type: string
+          description: Python code for the hook handler
+        priority:
+          type: integer
+          default: 50
+          description: Hook priority (lower runs first)
+        description:
+          type: string
+          description: Hook description
+      required:
+        - name
+        - event
+        - handler_code
+
+  - name: list_hooks
+    description: List all registered hooks
+    handler: tools:list_hooks
+    parameters:
+      type: object
+      properties:
+        event:
+          type: string
+          description: Filter by event type
+        active_only:
+          type: boolean
+          default: true
+
+  - name: toggle_hook
+    description: Enable or disable a hook
+    handler: tools:toggle_hook
+    parameters:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Hook name
+        enabled:
+          type: boolean
+          description: Enable or disable
+      required:
+        - name
+        - enabled
+
+  - name: delete_hook
+    description: Delete a custom hook
+    handler: tools:delete_hook
+    parameters:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Hook name to delete
+      required:
+        - name
+
+  - name: test_hook
+    description: Test a hook with sample context
+    handler: tools:test_hook
+    parameters:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Hook name to test
+        test_context:
+          type: object
+          description: Test context data
+      required:
+        - name
+
+hooks:
+  - event: session_start
+    handler: hooks:load_custom_hooks
+    priority: 5
+    description: Load custom hooks at session start
+
+  - event: hook_error
+    handler: hooks:handle_hook_error
+    priority: 100
+    description: Handle errors in custom hooks
