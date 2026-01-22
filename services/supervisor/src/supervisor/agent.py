@@ -656,6 +656,209 @@ class SupervisorAgent(BaseAgent):
         finally:
             self._pending_responses.pop(task_id, None)
 
+    async def process_task(self, request: TaskRequest) -> TaskResponse:
+        """
+        Process a task request.
+
+        Override to handle special task types like create_plan.
+        """
+        # Handle plan creation specially
+        if request.task_type == "create_plan":
+            return await self._handle_create_plan(request)
+
+        # Otherwise use default processing
+        return await super().process_task(request)
+
+    async def _handle_create_plan(self, request: TaskRequest) -> TaskResponse:
+        """
+        Handle plan creation by generating steps with Claude.
+
+        This generates a structured plan and updates it in Redis.
+        """
+        import json
+        from datetime import datetime, timezone
+
+        plan_id = request.payload.get("plan_id")
+        description = request.payload.get("description", "")
+        conversation_id = request.payload.get("conversation_id")
+        user_id = request.user_id or request.payload.get("user_id")
+
+        logger.info(
+            "Creating plan",
+            plan_id=plan_id,
+            description=description[:50],
+        )
+
+        # Publish thinking action
+        await self.publish_action("thinking", "Analyzing task and creating plan...")
+
+        try:
+            # Generate plan steps with Claude
+            plan_prompt = f"""Analyze the following task and create a structured implementation plan.
+
+Task: {description}
+
+Create a plan with 3-7 clear, actionable steps. For each step, provide:
+1. A concise title (5-10 words)
+2. A description of what needs to be done
+3. Which agent should handle it (code, data, infra, research, or qa)
+
+Respond with a JSON array of steps in this exact format:
+```json
+[
+  {{"title": "Step title", "description": "What to do", "agent": "agent_name"}},
+  ...
+]
+```
+
+Only output the JSON array, no other text."""
+
+            # Call Claude to generate plan
+            response = await self._claude.messages.create(
+                model=self.config.model,
+                max_tokens=2000,
+                messages=[{"role": "user", "content": plan_prompt}],
+            )
+
+            # Parse the response
+            response_text = response.content[0].text if response.content else ""
+
+            # Extract JSON from response (handle markdown code blocks)
+            json_match = response_text
+            if "```json" in response_text:
+                start = response_text.find("```json") + 7
+                end = response_text.find("```", start)
+                json_match = response_text[start:end].strip()
+            elif "```" in response_text:
+                start = response_text.find("```") + 3
+                end = response_text.find("```", start)
+                json_match = response_text[start:end].strip()
+
+            steps = json.loads(json_match)
+
+            # Update plan in Redis with steps
+            plan_key = f"plan:{plan_id}"
+            plan_data = await self._redis.get(plan_key)
+
+            if plan_data:
+                plan = json.loads(plan_data)
+
+                # Add step IDs and order
+                from uuid import uuid4
+                plan["steps"] = [
+                    {
+                        "id": str(uuid4()),
+                        "order": i + 1,
+                        "title": s.get("title", f"Step {i + 1}"),
+                        "description": s.get("description", ""),
+                        "agent": s.get("agent"),
+                        "status": "pending",
+                        "dependencies": [],
+                        "output": None,
+                        "error": None,
+                        "started_at": None,
+                        "completed_at": None,
+                    }
+                    for i, s in enumerate(steps)
+                ]
+                plan["status"] = "pending"
+
+                await self._redis.set(plan_key, json.dumps(plan))
+
+                # Send plan update to user via WebSocket
+                if self._pubsub and user_id:
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "plan_update",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "plan_id": plan_id,
+                            "plan_content": self._format_plan_for_display(plan),
+                            "plan_status": "pending",
+                            "plan": plan,
+                            "agent": "wyld",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+
+                logger.info("Plan created successfully", plan_id=plan_id, steps=len(steps))
+                await self.publish_action("complete", f"Plan created with {len(steps)} steps")
+
+                return TaskResponse(
+                    task_id=request.id,
+                    status=TaskStatus.COMPLETED,
+                    result={
+                        "plan_id": plan_id,
+                        "steps_count": len(steps),
+                        "status": "pending",
+                    },
+                    agent_type=self.agent_type,
+                )
+
+            else:
+                logger.error("Plan not found", plan_id=plan_id)
+                return TaskResponse(
+                    task_id=request.id,
+                    status=TaskStatus.FAILED,
+                    error=f"Plan {plan_id} not found",
+                    agent_type=self.agent_type,
+                )
+
+        except json.JSONDecodeError as e:
+            logger.error("Failed to parse plan steps", error=str(e))
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error=f"Failed to generate plan: {str(e)}",
+                agent_type=self.agent_type,
+            )
+        except Exception as e:
+            logger.error("Plan creation failed", error=str(e))
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error=str(e),
+                agent_type=self.agent_type,
+            )
+
+    def _format_plan_for_display(self, plan: dict) -> str:
+        """Format a plan dict for display in chat."""
+        lines = [
+            f"## 📋 Plan: {plan.get('title', 'Untitled Plan')}",
+            "",
+            f"**Status:** {plan.get('status', 'unknown').replace('_', ' ').title()}",
+            "",
+            "### Steps:",
+            "",
+        ]
+
+        status_icons = {
+            "pending": "⬜",
+            "in_progress": "🔄",
+            "completed": "✅",
+            "skipped": "⏭️",
+            "failed": "❌",
+        }
+
+        for step in plan.get("steps", []):
+            icon = status_icons.get(step.get("status", "pending"), "⬜")
+            agent_info = f" ({step.get('agent')})" if step.get("agent") else ""
+            lines.append(f"{step.get('order', '?')}. {icon} **{step.get('title', 'Untitled')}**{agent_info}")
+            if step.get("description"):
+                lines.append(f"   {step.get('description')}")
+            lines.append("")
+
+        if plan.get("status") == "pending":
+            lines.extend([
+                "---",
+                "Reply with:",
+                "- `/plan approve` to start execution",
+                "- `/plan reject` to cancel this plan",
+            ])
+
+        return "\n".join(lines)
+
     async def route_and_execute(self, request: TaskRequest) -> TaskResponse:
         """
         Route a task request and execute it.

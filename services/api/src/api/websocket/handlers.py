@@ -259,6 +259,41 @@ class MessageHandler:
             },
         )
 
+        # If entering plan mode, route to supervisor to generate plan steps
+        if result.get("action") == "enter_plan_mode":
+            plan_id = result.get("plan_id")
+            plan_description = result.get("plan_description")
+
+            if plan_id and plan_description:
+                correlation_id = str(uuid4())
+                timestamp = datetime.now(timezone.utc).isoformat()
+
+                await self.pubsub.publish(
+                    channel="agent:supervisor:tasks",
+                    message={
+                        "type": "task_request",
+                        "task_type": "create_plan",
+                        "correlation_id": correlation_id,
+                        "user_id": connection.user_id,
+                        "payload": {
+                            "conversation_id": conversation_id,
+                            "plan_id": plan_id,
+                            "description": plan_description,
+                        },
+                        "metadata": {
+                            "timestamp": timestamp,
+                            "project_id": project_id,
+                        },
+                    },
+                )
+
+                logger.info(
+                    "Plan creation routed to supervisor",
+                    plan_id=plan_id,
+                    correlation_id=correlation_id,
+                    user_id=connection.user_id,
+                )
+
     async def _handle_ping(
         self,
         connection: Connection,
