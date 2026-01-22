@@ -53,6 +53,23 @@ export default function ChatPage() {
     initializeChat();
   }, [token, fetchConversations, selectConversation, createConversation, selectedProject?.id]);
 
+  // Handle when current conversation is deleted - select another or create new
+  useEffect(() => {
+    const handleMissingConversation = async () => {
+      if (!token || isInitializing) return;
+      if (currentConversation) return; // We have a conversation, nothing to do
+
+      // No current conversation - try to select first available or create new
+      if (conversations.length > 0) {
+        await selectConversation(token, conversations[0].id);
+      } else {
+        await createConversation(token, "Chat with Wyld", selectedProject?.id);
+      }
+    };
+
+    handleMissingConversation();
+  }, [token, currentConversation, conversations, isInitializing, selectConversation, createConversation, selectedProject?.id]);
+
   if (isInitializing) {
     return (
       <div className="flex h-full items-center justify-center">

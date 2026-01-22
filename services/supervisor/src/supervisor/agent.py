@@ -683,6 +683,10 @@ class SupervisorAgent(BaseAgent):
         conversation_id = request.payload.get("conversation_id")
         user_id = request.user_id or request.payload.get("user_id")
 
+        # Set state context for publish_action to work
+        self._state.current_user_id = user_id
+        self._state.current_conversation_id = conversation_id
+
         logger.info(
             "Creating plan",
             plan_id=plan_id,
@@ -821,6 +825,10 @@ Only output the JSON array, no other text."""
                 error=str(e),
                 agent_type=self.agent_type,
             )
+        finally:
+            # Clear state context
+            self._state.current_user_id = None
+            self._state.current_conversation_id = None
 
     def _format_plan_for_display(self, plan: dict) -> str:
         """Format a plan dict for display in chat."""
