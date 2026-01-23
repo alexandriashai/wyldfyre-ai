@@ -958,8 +958,9 @@ class BaseAgent(ABC):
             await self.publish_action(ACTION_API_CALL, "Calling LLM API...")
 
             # Call LLM (handles provider fallback automatically)
+            # model="auto" selects tier based on tools/max_tokens/system prompt
             response = await self._llm.create_message(
-                model=self.config.model,
+                model="auto",
                 max_tokens=self.config.max_tokens,
                 system=self.get_system_prompt(),
                 messages=messages,

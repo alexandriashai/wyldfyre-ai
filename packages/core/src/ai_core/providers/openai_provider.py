@@ -39,9 +39,14 @@ class OpenAIProvider(BaseLLMProvider):
     def __init__(self, api_key: str):
         self._client = AsyncOpenAI(api_key=api_key)
 
-    def _map_model(self, anthropic_model: str) -> str:
-        """Map Anthropic model name to OpenAI equivalent."""
-        return MODEL_MAP.get(anthropic_model, "gpt-4o")
+    # Native OpenAI models that should pass through without mapping
+    _NATIVE_MODELS = {"gpt-4o", "gpt-4o-mini", "o3", "o3-mini", "o1", "o1-mini"}
+
+    def _map_model(self, model: str) -> str:
+        """Map model name to OpenAI equivalent. Native OpenAI names pass through."""
+        if model in self._NATIVE_MODELS:
+            return model
+        return MODEL_MAP.get(model, "gpt-4o")
 
     async def create_message(
         self,

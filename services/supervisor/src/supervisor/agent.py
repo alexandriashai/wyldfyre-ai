@@ -17,6 +17,7 @@ from ai_core import (
     AgentStatus,
     AgentType,
     ElevationReason,
+    ModelTier,
     PermissionLevel,
     get_elevation_manager,
     get_logger,
@@ -1073,8 +1074,8 @@ class SupervisorAgent(BaseAgent):
 
             # Generate title using LLM (fast, small call)
             response = await self._llm.create_message(
-                model="claude-haiku-4-20250514",
                 max_tokens=30,
+                tier=ModelTier.FAST,
                 messages=[{
                     "role": "user",
                     "content": f"Generate a short title (3-6 words, no quotes) for a conversation that starts with this message:\n\n{user_message[:200]}"
@@ -1720,7 +1721,7 @@ Execute this step now. Make real file changes, not just descriptions."""
                 return f"Step cancelled after {iteration} iterations. Actions: {'; '.join(actions_taken)}"
 
             response = await self._llm.create_message(
-                model=self.config.model,
+                model="auto",
                 max_tokens=4096,
                 messages=messages,
                 tools=self.STEP_TOOLS,
@@ -2216,8 +2217,8 @@ JSON response:"""
 
         try:
             response = await self._llm.create_message(
-                model=self.config.model,
                 max_tokens=500,
+                tier=ModelTier.FAST,
                 messages=[{"role": "user", "content": prompt}],
             )
 
@@ -2263,8 +2264,8 @@ Only output the JSON object, no other text."""
 
         try:
             response = await self._llm.create_message(
-                model=self.config.model,
                 max_tokens=500,
+                tier=ModelTier.FAST,
                 messages=[{"role": "user", "content": strategy_prompt}],
             )
 
@@ -2409,8 +2410,8 @@ Rules:
 
         try:
             response = await self._llm.create_message(
-                model=self.config.model,
                 max_tokens=1500,
+                tier=ModelTier.BALANCED,
                 messages=[{"role": "user", "content": prompt}],
             )
 

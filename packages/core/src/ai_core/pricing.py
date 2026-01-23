@@ -59,6 +59,12 @@ MODEL_PRICING: dict[str, ModelPricing] = {
         cached_input_cost=Decimal("0.30"),
         provider=Provider.ANTHROPIC,
     ),
+    "claude-haiku-4-20250514": ModelPricing(
+        input_cost=Decimal("0.80"),
+        output_cost=Decimal("4.00"),
+        cached_input_cost=Decimal("0.08"),  # 90% discount
+        provider=Provider.ANTHROPIC,
+    ),
     "claude-3-5-haiku-20241022": ModelPricing(
         input_cost=Decimal("0.80"),
         output_cost=Decimal("4.00"),
@@ -93,6 +99,11 @@ MODEL_PRICING: dict[str, ModelPricing] = {
     "gpt-4o-mini": ModelPricing(
         input_cost=Decimal("0.15"),
         output_cost=Decimal("0.60"),
+        provider=Provider.OPENAI,
+    ),
+    "o3": ModelPricing(
+        input_cost=Decimal("10.00"),
+        output_cost=Decimal("40.00"),
         provider=Provider.OPENAI,
     ),
     # OpenAI Embedding Models

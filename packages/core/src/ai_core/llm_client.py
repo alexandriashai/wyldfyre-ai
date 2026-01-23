@@ -17,6 +17,7 @@ from .llm_provider import (
     LLMToolCall,
     LLMToolResult,
 )
+from .model_selector import ModelTier, select_model
 
 logger = get_logger(__name__)
 
@@ -96,21 +97,25 @@ class LLMClient:
 
     async def create_message(
         self,
-        model: str,
-        max_tokens: int,
+        model: str = "auto",
+        max_tokens: int = 4096,
         system: str = "",
         messages: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tier: ModelTier | None = None,
     ) -> LLMResponse:
         """
         Create a message with automatic fallback.
 
         Args:
-            model: Model identifier (Anthropic format, auto-mapped for OpenAI)
+            model: Model identifier. Use "auto" for automatic tier-based selection,
+                   or a specific model name (e.g., "claude-opus-4-5-20251101") to bypass.
             max_tokens: Maximum tokens in response
             system: System prompt
             messages: Conversation messages (in Anthropic format)
             tools: Tool definitions (in Anthropic schema format)
+            tier: Explicit model tier override (FAST/BALANCED/POWERFUL).
+                  Only used when model="auto".
 
         Returns:
             Normalized LLMResponse
@@ -120,6 +125,16 @@ class LLMClient:
         """
         if messages is None:
             messages = []
+
+        # Resolve model when set to "auto"
+        if model == "auto":
+            model = select_model(
+                provider=self.active_provider,
+                tier=tier,
+                max_tokens=max_tokens,
+                tools_count=len(tools) if tools else 0,
+                system_prompt_length=len(system),
+            )
 
         # If already using fallback, go directly to fallback provider
         if self._using_fallback and self._fallback:

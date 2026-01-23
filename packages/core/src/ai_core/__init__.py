@@ -126,6 +126,7 @@ from .llm_provider import (
     LLMToolResult,
 )
 from .llm_client import LLMClient
+from .model_selector import ModelTier, select_model
 from .mcp_client import (
     MCPClient,
     MCPToolResult,
@@ -311,6 +312,9 @@ __all__ = [
     "LLMResponse",
     "LLMToolCall",
     "LLMToolResult",
+    # Model Selection
+    "ModelTier",
+    "select_model",
     # MCP Client
     "MCPClient",
     "MCPToolResult",
