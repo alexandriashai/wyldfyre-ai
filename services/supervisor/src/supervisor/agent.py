@@ -56,26 +56,40 @@ async def _glob_files(pattern: str, base_path: str = "/home/wyld-core", max_resu
     base = Path(base_path)
     results: list[dict[str, str]] = []
     try:
-        # Handle both "**/*.py" and "*.py" patterns
-        search_pattern = pattern.lstrip("**/")
+        # Strip leading **/ prefix properly (not char-by-char)
+        search_pattern = pattern
+        if search_pattern.startswith("**/"):
+            search_pattern = search_pattern[3:]
+
         for path in base.rglob(search_pattern):
             if len(results) >= max_results:
                 break
             # Skip hidden directories and common excludes
             if path.is_file() and not any(p.startswith(".") for p in path.parts):
-                if not any(excl in str(path) for excl in ["node_modules", "__pycache__", ".git", "venv"]):
+                if not any(excl in str(path) for excl in ["node_modules", "__pycache__", ".git", "venv", ".venv"]):
+                    try:
+                        size = path.stat().st_size
+                    except Exception:
+                        size = 0
                     results.append({
                         "path": str(path),
                         "name": path.name,
-                        "relative": str(path.relative_to(base))
+                        "relative": str(path.relative_to(base)),
+                        "size": size,
                     })
     except Exception as e:
         logger.debug("Glob search error", pattern=pattern, error=str(e))
     return results
 
 
-async def _grep_content(pattern: str, path: str = "/home/wyld-core", max_results: int = 30) -> list[dict[str, Any]]:
-    """Search for pattern in files."""
+async def _grep_content(
+    pattern: str,
+    path: str = "/home/wyld-core",
+    max_results: int = 30,
+    file_type: str | None = None,
+    context_lines: int = 1,
+) -> list[dict[str, Any]]:
+    """Search for pattern in files with context lines."""
     base = Path(path)
     results: list[dict[str, Any]] = []
     try:
@@ -84,7 +98,42 @@ async def _grep_content(pattern: str, path: str = "/home/wyld-core", max_results
         # If pattern is invalid regex, treat it as literal search
         regex = re.compile(re.escape(pattern), re.IGNORECASE)
 
-    extensions = [".py", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml", ".json", ".md"]
+    all_extensions = [
+        ".py", ".ts", ".tsx", ".js", ".jsx",
+        ".yaml", ".yml", ".json", ".toml",
+        ".md", ".txt", ".rst",
+        ".php", ".html", ".twig",
+        ".css", ".scss", ".less",
+        ".sh", ".bash",
+        ".sql",
+        ".cfg", ".ini", ".conf",
+        ".env.example", ".dockerfile",
+    ]
+
+    # Filter to specific file type if requested
+    if file_type:
+        type_map = {
+            "python": [".py"],
+            "py": [".py"],
+            "typescript": [".ts", ".tsx"],
+            "ts": [".ts", ".tsx"],
+            "javascript": [".js", ".jsx"],
+            "js": [".js", ".jsx"],
+            "php": [".php"],
+            "yaml": [".yaml", ".yml"],
+            "json": [".json"],
+            "css": [".css", ".scss", ".less"],
+            "html": [".html", ".twig"],
+            "shell": [".sh", ".bash"],
+            "sql": [".sql"],
+            "config": [".cfg", ".ini", ".conf", ".toml"],
+            "markdown": [".md"],
+        }
+        extensions = type_map.get(file_type.lower(), [f".{file_type}"])
+    else:
+        extensions = all_extensions
+
+    excludes = ["node_modules", "__pycache__", ".git", "venv", ".venv", "dist", "build"]
 
     for ext in extensions:
         if len(results) >= max_results:
@@ -92,18 +141,27 @@ async def _grep_content(pattern: str, path: str = "/home/wyld-core", max_results
         for file_path in base.rglob(f"*{ext}"):
             if len(results) >= max_results:
                 break
-            # Skip common excludes
-            if any(excl in str(file_path) for excl in ["node_modules", "__pycache__", ".git", "venv"]):
+            if any(excl in str(file_path) for excl in excludes):
                 continue
             try:
                 async with aiofiles.open(file_path, "r", errors="ignore") as f:
                     content = await f.read()
-                    for i, line in enumerate(content.split("\n"), 1):
+                    lines = content.split("\n")
+                    for i, line in enumerate(lines):
                         if regex.search(line):
+                            # Gather context lines
+                            start = max(0, i - context_lines)
+                            end = min(len(lines), i + context_lines + 1)
+                            context = "\n".join(
+                                f"{'>' if j == i else ' '} {j+1}: {lines[j][:150]}"
+                                for j in range(start, end)
+                            )
                             results.append({
                                 "file": str(file_path),
-                                "line": i,
-                                "content": line.strip()[:200]
+                                "relative": str(file_path.relative_to(base)) if str(file_path).startswith(str(base)) else str(file_path),
+                                "line": i + 1,
+                                "content": line.strip()[:200],
+                                "context": context,
                             })
                             if len(results) >= max_results:
                                 break
@@ -1191,6 +1249,8 @@ class SupervisorAgent(BaseAgent):
                         "description": s.get("description", ""),
                         "agent": s.get("agent"),
                         "files": s.get("files", []),
+                        "todos": s.get("todos", []),
+                        "changes": s.get("changes", []),
                         "status": "pending",
                         "dependencies": [],
                         "output": None,
@@ -1569,7 +1629,7 @@ class SupervisorAgent(BaseAgent):
     STEP_TOOLS = [
         {
             "name": "read_file",
-            "description": "Read the contents of a file. Use this to understand existing code before making changes.",
+            "description": "Read a file's contents. Only use this for files NOT already shown in the pre-loaded context above. Returns file content with line numbers.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -1581,24 +1641,24 @@ class SupervisorAgent(BaseAgent):
         },
         {
             "name": "write_file",
-            "description": "Write content to a file. Creates parent directories if needed. Use for new files or full rewrites.",
+            "description": "Create a new file or completely overwrite an existing file. Creates parent directories automatically. Use this for NEW files. For modifying existing files, prefer edit_file instead.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Absolute file path to write"},
-                    "content": {"type": "string", "description": "Full file content to write"},
+                    "content": {"type": "string", "description": "Complete file content to write"},
                 },
                 "required": ["path", "content"],
             },
         },
         {
             "name": "edit_file",
-            "description": "Replace specific text in a file. Safer than write_file for targeted changes.",
+            "description": "Find and replace specific text in an existing file. The old_text must match EXACTLY (including whitespace/indentation). Use this for targeted modifications to existing files.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Absolute file path to edit"},
-                    "old_text": {"type": "string", "description": "Exact text to find and replace"},
+                    "old_text": {"type": "string", "description": "Exact text to find (must match file content precisely, including indentation)"},
                     "new_text": {"type": "string", "description": "Replacement text"},
                 },
                 "required": ["path", "old_text", "new_text"],
@@ -1606,31 +1666,32 @@ class SupervisorAgent(BaseAgent):
         },
         {
             "name": "glob_files",
-            "description": "Find files matching a glob pattern within the project.",
+            "description": "Find files by name pattern. Returns file paths with sizes. Use patterns like '*.py' (all Python files), 'routes/*.ts' (TypeScript in routes/), 'auth*' (files starting with auth).",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "Glob pattern (e.g. '*.py', 'docs/*.md')"},
-                    "base_path": {"type": "string", "description": "Base directory (default /home/wyld-core)", "default": "/home/wyld-core"},
+                    "pattern": {"type": "string", "description": "Glob pattern (e.g. '*.py', 'routes/*.ts', 'auth*')"},
+                    "base_path": {"type": "string", "description": "Base directory to search from (default: project root)"},
                 },
                 "required": ["pattern"],
             },
         },
         {
             "name": "grep_files",
-            "description": "Search for a text pattern across project files.",
+            "description": "Search for text/regex pattern in file contents. Returns matching lines with surrounding context. Searches Python, TypeScript, PHP, YAML, JSON, HTML, CSS, SQL, shell, and config files. Use file_type to narrow search.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "Search pattern (regex supported)"},
-                    "path": {"type": "string", "description": "Directory to search (default /home/wyld-core)", "default": "/home/wyld-core"},
+                    "pattern": {"type": "string", "description": "Search pattern (regex supported, case-insensitive). Examples: 'class Auth', 'def handle_', 'import.*redis'"},
+                    "path": {"type": "string", "description": "Directory to search in (default: project root)"},
+                    "file_type": {"type": "string", "description": "Limit search to file type: python, typescript, javascript, php, yaml, json, css, html, shell, sql, config, markdown"},
                 },
                 "required": ["pattern"],
             },
         },
         {
             "name": "run_command",
-            "description": "Execute a shell command. Use for git operations, builds, tests, package management, and other CLI tasks. Commands run from the project root directory.",
+            "description": "Execute a shell command. Use for: git operations, running tests, builds, package management, linting, type checking. Commands run from the project root. Timeout: 120s.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -1642,11 +1703,11 @@ class SupervisorAgent(BaseAgent):
         },
         {
             "name": "list_directory",
-            "description": "List files and directories at a given path.",
+            "description": "List files and subdirectories at a path. Shows directories (📁) and files (📄) sorted with dirs first. Use to understand project structure.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory path to list"},
+                    "path": {"type": "string", "description": "Absolute directory path to list"},
                 },
                 "required": ["path"],
             },
@@ -1662,7 +1723,8 @@ class SupervisorAgent(BaseAgent):
         2. Make actual file changes (write, edit)
         3. Verify its work
 
-        TELOS values are injected into context to guide decisions.
+        Includes nudge mechanism to prevent endless searching without writing.
+        Pre-loads file contents when files are specified in the step.
         """
         import json as json_mod
 
@@ -1679,10 +1741,44 @@ class SupervisorAgent(BaseAgent):
         # Load TELOS context
         telos = _load_telos_context()
 
+        # Pre-load file contents for files specified in the step
+        preloaded_context = ""
+        if files:
+            preloaded_parts = []
+            for file_path in files[:5]:  # Max 5 files pre-loaded
+                try:
+                    if Path(file_path).exists():
+                        content = await _read_file(file_path, max_lines=200)
+                        if content:
+                            preloaded_parts.append(f"### {Path(file_path).name}\n**Path:** `{file_path}`\n```\n{content[:3000]}\n```")
+                            await self.publish_action("file_read", f"Pre-loading: {Path(file_path).name}")
+                except Exception:
+                    pass
+            if preloaded_parts:
+                preloaded_context = "\n\n## Current File Contents (already loaded for you):\n\n" + "\n\n".join(preloaded_parts)
+
         # Build the execution prompt
-        file_context = f"\nRelevant files: {', '.join(files)}" if files else ""
+        file_context = f"\nTarget files: {', '.join(files)}" if files else ""
         project_info = f"\n**Project:** {project_name}" if project_name else ""
         custom_context = f"\n\n## Project Instructions\n{agent_context}" if agent_context else ""
+
+        # Include todos as specific sub-tasks
+        todos = step.get("todos", [])
+        todos_context = ""
+        if todos:
+            todos_list = "\n".join([f"  {i+1}. {t}" for i, t in enumerate(todos)])
+            todos_context = f"\n\n## Specific Tasks (complete ALL of these):\n{todos_list}"
+
+        # Include changes as file action instructions
+        changes = step.get("changes", [])
+        changes_context = ""
+        if changes:
+            changes_list = "\n".join([
+                f"  - {'CREATE' if c.get('action') == 'create' else 'MODIFY'}: {c.get('file', '')} — {c.get('summary', '')}"
+                for c in changes
+            ])
+            changes_context = f"\n\n## File Changes Required:\n{changes_list}"
+
         prompt = f"""{telos}
 
 ---
@@ -1694,35 +1790,40 @@ You are executing a plan step.{project_info}
 **Plan:** {plan.get('title', '')} - {plan.get('description', '')}
 **Step:** {step_title}
 **Description:** {step_description}
-**Agent Role:** {step_agent}{file_context}{custom_context}
+**Agent Role:** {step_agent}{file_context}{todos_context}{changes_context}{preloaded_context}{custom_context}
 
 ## Instructions
 
-1. Use the tools to explore relevant files first (read_file, glob_files, grep_files)
-2. Make the actual changes using write_file or edit_file
+1. The target file contents are pre-loaded above — use them directly, do NOT re-read files already shown
+2. Make the specific changes using write_file (for new files) or edit_file (for modifications)
 3. Verify your changes by reading back the modified files
 4. All file paths are under {root_path}
-
-## Values Alignment
-- Verify before acting: Read existing files before modifying
-- Transparency: Explain what you're changing and why
-- Security first: Never write credentials or sensitive data
-- Continuous improvement: Store learnings from this step
+5. Do NOT just describe or recommend changes — actually write them to files
+6. If a file needs to be CREATED, use write_file with the full content
+7. If a file needs to be MODIFIED, use edit_file with old_text and new_text
+8. You MUST use write_file or edit_file at least once — searching alone is not acceptable
 
 Execute this step now. Make real file changes, not just descriptions."""
 
         messages = [{"role": "user", "content": prompt}]
         actions_taken = []
-        max_iterations = 12  # Prevent infinite loops
+        files_modified = []
+        max_iterations = 15
+        nudge_sent = False
 
         for iteration in range(max_iterations):
             # Check for task cancellation between iterations
             if self.is_task_cancelled():
                 return f"Step cancelled after {iteration} iterations. Actions: {'; '.join(actions_taken)}"
 
+            # Nudge: if after 5 iterations no write/edit has happened, remind the agent
+            if iteration == 5 and not files_modified and not nudge_sent:
+                nudge_sent = True
+                messages.append({"role": "user", "content": [{"type": "text", "text": "REMINDER: You have used 5 iterations without making any file changes. You MUST use write_file or edit_file NOW to make the required changes. Stop searching and start writing. If you cannot find the right files, create them."}]})
+
             response = await self._llm.create_message(
-                model="auto",
                 max_tokens=4096,
+                tier=ModelTier.BALANCED,
                 messages=messages,
                 tools=self.STEP_TOOLS,
             )
@@ -1738,6 +1839,12 @@ Execute this step now. Make real file changes, not just descriptions."""
                     # Execute the tool
                     result, is_error = await self._run_step_tool(tool_name, tool_input, root_path)
                     actions_taken.append(f"{tool_name}({tool_input.get('path', tool_input.get('pattern', ''))[:50]})")
+
+                    # Track file modifications
+                    if tool_name in ("write_file", "edit_file") and not is_error:
+                        modified_path = tool_input.get("path", "")
+                        if modified_path and modified_path not in files_modified:
+                            files_modified.append(modified_path)
 
                     # Publish action for real-time UI updates
                     action_label = {
@@ -1761,7 +1868,6 @@ Execute this step now. Make real file changes, not just descriptions."""
                     })
 
                 # Add assistant response and tool results to messages
-                # Store in normalized dict format
                 assistant_content = []
                 if response.text_content:
                     assistant_content.append({"type": "text", "text": response.text_content})
@@ -1792,16 +1898,25 @@ Execute this step now. Make real file changes, not just descriptions."""
                                 "plan_title": plan.get("title", ""),
                                 "step_title": step_title,
                                 "actions": actions_taken[:10],
-                                "files_modified": [a.split("(")[1].rstrip(")") for a in actions_taken if "write_file" in a or "edit_file" in a],
+                                "files_modified": files_modified,
                             },
                         )
                         await self._memory.store_learning(learning)
                     except Exception as e:
                         logger.debug("Failed to store step learning", error=str(e))
 
-                return final_text or f"Step completed with {len(actions_taken)} actions"
+                # Build informative output
+                if files_modified:
+                    modified_list = ", ".join([Path(f).name for f in files_modified])
+                    return f"{final_text}\n\n✅ Files modified: {modified_list}"
+                else:
+                    return f"{final_text}\n\n⚠️ No files were modified in this step."
 
-        return f"Step reached max iterations ({max_iterations}). Actions: {'; '.join(actions_taken)}"
+        # Max iterations reached
+        if files_modified:
+            modified_list = ", ".join([Path(f).name for f in files_modified])
+            return f"Step reached max iterations ({max_iterations}). Files modified: {modified_list}. Actions: {'; '.join(actions_taken[-5:])}"
+        return f"Step reached max iterations ({max_iterations}) with NO file changes. Actions: {'; '.join(actions_taken)}"
 
     async def _run_step_tool(self, tool_name: str, tool_input: dict, root_path: str = "/home/wyld-core") -> tuple[str, bool]:
         """
@@ -1846,6 +1961,7 @@ Execute this step now. Make real file changes, not just descriptions."""
                     tool_input["pattern"],
                     path=tool_input.get("path", root_path),
                     max_results=15,
+                    file_type=tool_input.get("file_type"),
                 )
                 return (json_mod.dumps(results, indent=2), False)
             elif tool_name == "run_command":
@@ -2254,8 +2370,8 @@ Task: {task_description}
 Respond with a JSON object containing search strategies:
 {{"file_patterns": ["*.py", "auth*.ts"], "search_terms": ["login", "user"], "key_dirs": ["services", "models"]}}
 
-- file_patterns: glob patterns for relevant files (max 4)
-- search_terms: keywords to search for in code (max 3)
+- file_patterns: glob patterns for relevant files (max 6)
+- search_terms: keywords to search for in code (max 5)
 - key_dirs: directories likely to contain relevant code
 
 Key project directories: services/, packages/, agents/, config/, docs/, database/, web/, pai/
@@ -2305,31 +2421,120 @@ Only output the JSON object, no other text."""
         exploration: dict[str, list[Any]] = {"files": [], "patterns": [], "content": []}
 
         # Find files matching patterns
-        for pattern in strategy.get("file_patterns", [])[:4]:
+        for pattern in strategy.get("file_patterns", [])[:6]:
             await self.publish_action("file_search", f"Searching: {pattern}")
             files = await _glob_files(pattern, base_path=base_path, max_results=15)
             exploration["files"].extend(files[:10])
 
         # Search for patterns in code
-        for term in strategy.get("search_terms", [])[:3]:
+        for term in strategy.get("search_terms", [])[:5]:
             await self.publish_action("file_search", f"Searching for: {term}")
             matches = await _grep_content(term, path=base_path, max_results=10)
             exploration["patterns"].extend(matches[:8])
 
+        # List directory structures for key dirs
+        for dir_name in strategy.get("key_dirs", [])[:4]:
+            dir_path = Path(base_path) / dir_name
+            if dir_path.is_dir():
+                await self.publish_action("file_search", f"Listing: {dir_name}/")
+                try:
+                    entries = sorted(dir_path.iterdir())[:20]
+                    dir_listing = []
+                    for entry in entries:
+                        prefix = "📁" if entry.is_dir() else "📄"
+                        dir_listing.append(f"{prefix} {entry.name}")
+                    exploration.setdefault("directories", []).append({
+                        "path": str(dir_path),
+                        "entries": dir_listing,
+                    })
+                except Exception:
+                    pass
+
         # Read key files discovered
         seen_paths = set()
-        files_to_read = exploration["files"][:4]
+        files_to_read = exploration["files"][:8]
         for f in files_to_read:
             path = f.get("path", "")
             if path and path not in seen_paths:
                 seen_paths.add(path)
                 file_name = Path(path).name
                 await self.publish_action("file_read", f"Reading: {file_name}")
-                content = await _read_file(path, max_lines=60)
+                content = await _read_file(path, max_lines=150)
                 exploration["content"].append({
                     "path": path,
-                    "content": content[:2000]
+                    "content": content[:4000]
                 })
+
+        # Second-pass exploration: ask Claude for follow-up searches based on gaps
+        try:
+            follow_up_prompt = f"""Given these initial exploration results and the task "{task_description}",
+what 2-3 additional specific searches would fill gaps in understanding?
+Return JSON: {{"follow_up_patterns": ["*.py"], "follow_up_terms": ["class_name"]}}
+
+Files found: {len(exploration["files"])}
+Patterns found: {len(exploration["patterns"])}
+Files read: {[Path(c["path"]).name for c in exploration["content"]]}
+
+Only output the JSON object, no other text."""
+
+            follow_up_response = await self._llm.create_message(
+                max_tokens=300,
+                tier=ModelTier.FAST,
+                messages=[{"role": "user", "content": follow_up_prompt}],
+            )
+
+            # Record API usage
+            from ai_core import get_cost_tracker
+            asyncio.create_task(
+                get_cost_tracker().record_usage(
+                    model=follow_up_response.model or self.config.model,
+                    input_tokens=follow_up_response.input_tokens,
+                    output_tokens=follow_up_response.output_tokens,
+                    cached_tokens=follow_up_response.cached_tokens,
+                    agent_type=self.agent_type,
+                    agent_name="wyld",
+                    user_id=self._state.current_user_id,
+                    project_id=self._state.current_project_id,
+                )
+            )
+
+            fu_text = follow_up_response.text_content or "{}"
+            fu_start = fu_text.find("{")
+            fu_end = fu_text.rfind("}") + 1
+            if fu_start >= 0 and fu_end > fu_start:
+                follow_up = json.loads(fu_text[fu_start:fu_end])
+            else:
+                follow_up = {}
+
+            # Execute follow-up searches
+            for pattern in follow_up.get("follow_up_patterns", [])[:3]:
+                await self.publish_action("file_search", f"Follow-up: {pattern}")
+                files = await _glob_files(pattern, base_path=base_path, max_results=10)
+                for f in files[:5]:
+                    if f.get("path") not in seen_paths:
+                        exploration["files"].append(f)
+
+            for term in follow_up.get("follow_up_terms", [])[:3]:
+                await self.publish_action("file_search", f"Follow-up: {term}")
+                matches = await _grep_content(term, path=base_path, max_results=8)
+                exploration["patterns"].extend(matches[:5])
+
+            # Read any new key files from follow-up
+            new_files = [f for f in exploration["files"] if f.get("path") not in seen_paths]
+            for f in new_files[:3]:
+                path = f.get("path", "")
+                if path:
+                    seen_paths.add(path)
+                    file_name = Path(path).name
+                    await self.publish_action("file_read", f"Reading: {file_name}")
+                    content = await _read_file(path, max_lines=150)
+                    exploration["content"].append({
+                        "path": path,
+                        "content": content[:4000]
+                    })
+
+        except Exception as e:
+            logger.debug("Follow-up exploration failed (non-critical)", error=str(e))
 
         logger.info(
             "Exploration complete",
@@ -2357,12 +2562,12 @@ Only output the JSON object, no other text."""
 
         patterns_summary = "\n".join([
             f"- {Path(p.get('file', '')).name}:{p.get('line', '?')}: {p.get('content', '')[:60]}..."
-            for p in exploration.get("patterns", [])[:8]
+            for p in exploration.get("patterns", [])[:12]
         ]) or "No patterns found"
 
         content_summary = "\n\n".join([
-            f"### {Path(c['path']).name}\n```\n{c['content'][:800]}\n```"
-            for c in exploration.get("content", [])[:2]
+            f"### {Path(c['path']).name}\n```\n{c['content'][:1500]}\n```"
+            for c in exploration.get("content", [])[:4]
         ]) or "No file contents available"
 
         # Load TELOS for value-aligned planning
@@ -2396,7 +2601,7 @@ The exploration above IS the research phase. Do NOT create steps that say "inves
 Every step must be a CONCRETE ACTION that modifies or creates a file. Each step will be executed by an agent with read/write file tools.
 
 Respond with a JSON array only:
-[{{"title": "Action verb + what", "description": "Specific file changes: what to write/modify and where", "agent": "code|infra|qa", "files": ["{base_path}/path/to/file"]}}]
+[{{"title": "Action verb + what", "description": "Specific file changes: what to write/modify and where", "agent": "code|infra|qa", "files": ["{base_path}/path/to/file"], "todos": ["Specific actionable sub-task 1", "Specific actionable sub-task 2"], "changes": [{{"file": "{base_path}/path/to/file", "action": "create|modify", "summary": "Brief description of change"}}]}}]
 
 Rules:
 - NEVER use agent type "research" — research is already complete
@@ -2406,11 +2611,13 @@ Rules:
 - Use "code" for source code changes, "infra" for config/deployment, "qa" for tests
 - Include a final "Verify changes" step (agent: "qa")
 - 3-6 steps maximum
+- Each step MUST include "todos": a list of 3-5 specific, actionable sub-tasks that describe exactly what to do
+- Each step MUST include "changes": a list of file change objects with "file" (full path), "action" ("create" or "modify"), and "summary" (brief description)
 - Only output the JSON array, no other text."""
 
         try:
             response = await self._llm.create_message(
-                max_tokens=1500,
+                max_tokens=3000,
                 tier=ModelTier.BALANCED,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -2484,12 +2691,53 @@ Rules:
             "failed": "❌",
         }
 
+        all_changes = []
+
         for step in plan.get("steps", []):
             icon = status_icons.get(step.get("status", "pending"), "⬜")
             agent_info = f" ({step.get('agent')})" if step.get("agent") else ""
             lines.append(f"{step.get('order', '?')}. {icon} **{step.get('title', 'Untitled')}**{agent_info}")
             if step.get("description"):
                 lines.append(f"   {step.get('description')}")
+            lines.append("")
+
+            # Show todos as checklist
+            if step.get("todos"):
+                lines.append("   **To-do:**")
+                for todo in step["todos"]:
+                    lines.append(f"   - [ ] {todo}")
+                lines.append("")
+
+            # Show file changes per step
+            if step.get("changes"):
+                lines.append("   **Files:**")
+                for change in step["changes"]:
+                    action_icon = "🆕" if change.get("action") == "create" else "✏️"
+                    file_path = change.get("file", "")
+                    # Show relative path for readability
+                    display_path = file_path.replace("/home/wyld-core/", "")
+                    lines.append(f"   - {action_icon} `{display_path}`")
+                    all_changes.append(change)
+                lines.append("")
+
+        # Add summary of all files to be changed
+        if all_changes:
+            seen_files = set()
+            unique_changes = []
+            for change in all_changes:
+                file_path = change.get("file", "")
+                if file_path not in seen_files:
+                    seen_files.add(file_path)
+                    unique_changes.append(change)
+
+            lines.extend(["---", "", "### 📁 All files to be changed:", ""])
+            for change in unique_changes:
+                action_icon = "🆕" if change.get("action") == "create" else "✏️"
+                file_path = change.get("file", "")
+                display_path = file_path.replace("/home/wyld-core/", "")
+                summary = change.get("summary", "")
+                summary_text = f" — {summary}" if summary else ""
+                lines.append(f"- {action_icon} `{display_path}`{summary_text}")
             lines.append("")
 
         if plan.get("status") == "pending":
