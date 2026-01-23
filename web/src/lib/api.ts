@@ -573,6 +573,32 @@ export const memoryApi = {
     }>(response);
   },
 
+  async store(token: string, data: {
+    content: string;
+    phase?: string;
+    category?: string;
+    scope?: string;
+    project_id?: string;
+    domain_id?: string;
+    confidence?: number;
+  }) {
+    const response = await fetch(`${API_BASE_URL}/api/memory/learnings`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{
+      id: string;
+      content: string;
+      phase?: string;
+      category?: string;
+      scope?: string;
+      created_at?: string;
+      message?: string;
+      error?: string;
+    }>(response);
+  },
+
   async get(token: string, id: string) {
     const response = await fetch(`${API_BASE_URL}/api/memory/learnings/${id}`, {
       method: 'GET',
@@ -829,6 +855,226 @@ export const notificationsApi = {
       body: JSON.stringify({ endpoint }),
     });
     return handleResponse<{ message: string }>(response);
+  },
+};
+
+// Workspace Types
+export interface FileNode {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  size?: number | null;
+  modified_at?: string | null;
+  children?: FileNode[] | null;
+  is_binary?: boolean;
+}
+
+export interface FileTreeResponse {
+  root: string;
+  nodes: FileNode[];
+}
+
+export interface FileContentResponse {
+  path: string;
+  content: string;
+  size: number;
+  language: string | null;
+  is_binary: boolean;
+}
+
+export interface GitFileStatus {
+  path: string;
+  status: string;
+}
+
+export interface GitStatusResponse {
+  branch: string | null;
+  is_clean: boolean;
+  modified: GitFileStatus[];
+  untracked: string[];
+  staged: GitFileStatus[];
+  ahead: number;
+  behind: number;
+  has_remote: boolean;
+}
+
+export interface GitLogEntry {
+  hash: string;
+  short_hash: string;
+  message: string;
+  author: string;
+  date: string;
+  files_changed: number | null;
+}
+
+export interface DeployResponse {
+  deploy_id: string;
+  status: string;
+  stages: Array<{ name: string; status: string; message?: string | null }>;
+  commit_hash: string | null;
+  message: string | null;
+}
+
+export interface DeployHistoryEntry {
+  id: string;
+  commit_hash: string | null;
+  message: string | null;
+  domain: string | null;
+  deploy_method: string | null;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_ms: number | null;
+}
+
+export interface FileSearchResult {
+  path: string;
+  line_number: number;
+  line_content: string;
+  context_before: string[];
+  context_after: string[];
+}
+
+// Workspace API
+export const workspaceApi = {
+  // File operations
+  async getFileTree(token: string, projectId: string, params?: { path?: string; depth?: number; show_hidden?: boolean }) {
+    const searchParams = new URLSearchParams();
+    if (params?.path) searchParams.set('path', params.path);
+    if (params?.depth) searchParams.set('depth', params.depth.toString());
+    if (params?.show_hidden) searchParams.set('show_hidden', 'true');
+
+    const url = `${API_BASE_URL}/api/projects/${projectId}/files${searchParams.toString() ? `?${searchParams}` : ''}`;
+    const response = await fetch(url, { headers: getHeaders(token) });
+    return handleResponse<FileTreeResponse>(response);
+  },
+
+  async getFileContent(token: string, projectId: string, path: string) {
+    const searchParams = new URLSearchParams({ path });
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/files/content?${searchParams}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<FileContentResponse>(response);
+  },
+
+  async writeFileContent(token: string, projectId: string, path: string, content: string) {
+    const searchParams = new URLSearchParams({ path });
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/files/content?${searchParams}`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify({ content }),
+    });
+    return handleResponse<FileContentResponse>(response);
+  },
+
+  async createFile(token: string, projectId: string, path: string, isDirectory: boolean = false) {
+    const searchParams = new URLSearchParams({ path });
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/files?${searchParams}`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ is_directory: isDirectory }),
+    });
+    return handleResponse<FileNode>(response);
+  },
+
+  async deleteFile(token: string, projectId: string, path: string) {
+    const searchParams = new URLSearchParams({ path });
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/files?${searchParams}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async renameFile(token: string, projectId: string, oldPath: string, newPath: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/files/rename`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ old_path: oldPath, new_path: newPath }),
+    });
+    return handleResponse<FileNode>(response);
+  },
+
+  async searchFiles(token: string, projectId: string, query: string, glob?: string) {
+    const searchParams = new URLSearchParams({ q: query });
+    if (glob) searchParams.set('glob', glob);
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/files/search?${searchParams}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ query: string; matches: FileSearchResult[]; total_matches: number; files_searched: number }>(response);
+  },
+
+  // Git operations
+  async getGitStatus(token: string, projectId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/status`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<GitStatusResponse>(response);
+  },
+
+  async gitCommit(token: string, projectId: string, message: string, files?: string[]) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/commit`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ message, files }),
+    });
+    return handleResponse<{ commit_hash: string; message: string; files_changed: number }>(response);
+  },
+
+  async gitPush(token: string, projectId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/push`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async getGitLog(token: string, projectId: string, limit: number = 20) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/log?limit=${limit}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ entries: GitLogEntry[]; branch: string | null }>(response);
+  },
+
+  async getGitDiff(token: string, projectId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/diff`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ diff: string; files_changed: number; insertions: number; deletions: number }>(response);
+  },
+
+  // Deploy operations
+  async deploy(token: string, projectId: string, message?: string, domainId?: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/deploy`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ message, domain_id: domainId }),
+    });
+    return handleResponse<DeployResponse>(response);
+  },
+
+  async getDeployHistory(token: string, projectId: string, limit: number = 10) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/deploys?limit=${limit}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ deploys: DeployHistoryEntry[]; total: number }>(response);
+  },
+
+  async rollback(token: string, projectId: string, commitHash?: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/rollback`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ commit_hash: commitHash }),
+    });
+    return handleResponse<{ revert_commit_hash: string; message: string; deploy_triggered: boolean }>(response);
+  },
+
+  // Health
+  async getProjectHealth(token: string, projectId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/health`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ domain: string; status: string; response_time_ms: number | null; checked_at: string | null }>(response);
   },
 };
 

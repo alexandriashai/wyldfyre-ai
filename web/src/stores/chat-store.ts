@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { conversationsApi, Conversation as ApiConversation } from "@/lib/api";
 import { notifications } from "@/lib/notifications";
 
+export type MessageStatus = "sending" | "sent" | "failed";
+
 interface Message {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
@@ -9,6 +11,7 @@ interface Message {
   agent?: string;
   created_at: string;
   isStreaming?: boolean;
+  status?: MessageStatus;
 }
 
 interface Conversation {
@@ -51,11 +54,22 @@ interface ChatState {
   // Track if app is in foreground for notifications
   isAppFocused: boolean;
 
+  // Message status tracking
+  messageStatuses: Record<string, MessageStatus>;
+  pendingMessages: Array<{ id: string; content: string; conversationId: string; projectId?: string }>;
+
+  // Connection state
+  connectionState: "connected" | "connecting" | "disconnected" | "reconnecting";
+
   // Plan state (Claude CLI style)
   currentPlan: string | null;
   planStatus: PlanStatus;
   planSteps: PlanStep[];
   currentStepIndex: number;
+
+  // Conversation organization
+  pinnedConversations: Set<string>;
+  searchQuery: string;
 
   // Filters
   projectFilter: string | null;
@@ -76,6 +90,16 @@ interface ChatState {
   clearMessages: () => void;
   setAppFocused: (focused: boolean) => void;
 
+  // Message status actions
+  setMessageStatus: (messageId: string, status: MessageStatus) => void;
+  markMessageFailed: (messageId: string) => void;
+  queueMessage: (message: { id: string; content: string; conversationId: string; projectId?: string }) => void;
+  flushPendingMessages: () => Array<{ id: string; content: string; conversationId: string; projectId?: string }>;
+  removeFromQueue: (messageId: string) => void;
+
+  // Connection state
+  setConnectionState: (state: "connected" | "connecting" | "disconnected" | "reconnecting") => void;
+
   // Plan actions
   updatePlan: (content: string, status?: PlanStatus) => void;
   updateSteps: (steps: PlanStep[], currentStep: number) => void;
@@ -85,6 +109,10 @@ interface ChatState {
 
   // Local state updates (from WebSocket pushes)
   renameConversationLocal: (conversationId: string, title: string) => void;
+
+  // Conversation organization
+  togglePinConversation: (conversationId: string) => void;
+  setSearchQuery: (query: string) => void;
 
   // Filter actions
   setProjectFilter: (projectId: string | null) => void;
@@ -99,10 +127,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   error: null,
   streamingMessage: "",
   isAppFocused: true,
+  messageStatuses: {},
+  pendingMessages: [],
+  connectionState: "disconnected",
   currentPlan: null,
   planStatus: null,
   planSteps: [],
   currentStepIndex: 0,
+  pinnedConversations: new Set<string>(),
+  searchQuery: "",
   projectFilter: null,
 
   fetchConversations: async (token: string, projectId?: string | null) => {
@@ -332,6 +365,49 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isAppFocused: focused });
   },
 
+  // Message status actions
+  setMessageStatus: (messageId: string, status: MessageStatus) => {
+    set((state) => ({
+      messageStatuses: { ...state.messageStatuses, [messageId]: status },
+      messages: state.messages.map((m) =>
+        m.id === messageId ? { ...m, status } : m
+      ),
+    }));
+  },
+
+  markMessageFailed: (messageId: string) => {
+    set((state) => ({
+      messageStatuses: { ...state.messageStatuses, [messageId]: "failed" },
+      messages: state.messages.map((m) =>
+        m.id === messageId ? { ...m, status: "failed" as MessageStatus } : m
+      ),
+      isSending: false,
+    }));
+  },
+
+  queueMessage: (message) => {
+    set((state) => ({
+      pendingMessages: [...state.pendingMessages, message],
+    }));
+  },
+
+  flushPendingMessages: () => {
+    const pending = get().pendingMessages;
+    set({ pendingMessages: [] });
+    return pending;
+  },
+
+  removeFromQueue: (messageId: string) => {
+    set((state) => ({
+      pendingMessages: state.pendingMessages.filter((m) => m.id !== messageId),
+    }));
+  },
+
+  // Connection state
+  setConnectionState: (connectionState) => {
+    set({ connectionState });
+  },
+
   // Plan actions
   updatePlan: (content: string, status?: PlanStatus) => {
     set({
@@ -396,6 +472,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ? { ...state.currentConversation, title }
           : state.currentConversation,
     }));
+  },
+
+  // Conversation organization
+  togglePinConversation: (conversationId: string) => {
+    set((state) => {
+      const newPinned = new Set(state.pinnedConversations);
+      if (newPinned.has(conversationId)) {
+        newPinned.delete(conversationId);
+      } else {
+        newPinned.add(conversationId);
+      }
+      return { pinnedConversations: newPinned };
+    });
+  },
+
+  setSearchQuery: (query: string) => {
+    set({ searchQuery: query });
   },
 
   // Filter actions

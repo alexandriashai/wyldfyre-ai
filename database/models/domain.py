@@ -5,7 +5,7 @@ Domain model for managed domains and SSL certificates.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ai_core import DomainStatus
@@ -48,6 +48,21 @@ class Domain(Base, UUIDMixin, TimestampMixin):
     nginx_config_path: Mapped[str | None] = mapped_column(String(500))
     proxy_target: Mapped[str | None] = mapped_column(String(255))  # localhost:3000
     web_root: Mapped[str | None] = mapped_column(String(500))  # /var/www/example.com
+
+    # Deploy configuration
+    deploy_method: Mapped[str] = mapped_column(String(50), default="local_sync")
+    deploy_ssh_host: Mapped[str | None] = mapped_column(String(255))
+    deploy_ssh_path: Mapped[str | None] = mapped_column(String(500))
+    deploy_ssh_credential_id: Mapped[str | None] = mapped_column(String(36))
+    deploy_git_remote: Mapped[str | None] = mapped_column(String(500))
+    deploy_git_branch: Mapped[str | None] = mapped_column(String(100), default="main")
+    deploy_exclude_patterns: Mapped[str | None] = mapped_column(Text)  # JSON array
+    deploy_delete_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Health monitoring
+    last_health_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    health_status: Mapped[str] = mapped_column(String(20), default="unknown")
+    response_time_ms: Mapped[int | None] = mapped_column(Integer)
 
     # Metadata
     notes: Mapped[str | None] = mapped_column(Text)

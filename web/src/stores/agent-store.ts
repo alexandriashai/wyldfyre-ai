@@ -3,12 +3,30 @@ import { create } from "zustand";
 import { agentsApi } from "@/lib/api";
 import { notifications } from "@/lib/notifications";
 
-interface AgentAction {
+export type ActionStatus = "running" | "success" | "error";
+
+export interface AgentAction {
   id: string;
   agent: string;
   action: string;
   description: string;
   timestamp: string;
+  type?: "tool_call" | "tool_result" | "thinking" | "info" | "error" | "parallel";
+  duration?: number;
+  output?: string;
+  status?: ActionStatus;
+  groupId?: string;
+}
+
+export interface ActionGroup {
+  id: string;
+  actions: AgentAction[];
+  startTime: string;
+  endTime?: string;
+  duration?: number;
+  isParallel?: boolean;
+  iteration?: number;
+  tokenUsage?: { input: number; output: number };
 }
 
 interface Agent {
@@ -40,6 +58,8 @@ interface AgentState {
   isAppFocused: boolean;
   // Real-time action log (Claude Code style)
   actionLog: AgentAction[];
+  actionGroups: ActionGroup[];
+  currentIteration: number;
   maxActionLogSize: number;
 
   // Actions
@@ -74,6 +94,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   previousStatuses: {},
   isAppFocused: true,
   actionLog: [],
+  actionGroups: [],
+  currentIteration: 0,
   maxActionLogSize: 100,
 
   fetchAgents: async (token: string) => {
@@ -230,27 +252,94 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       (a) => a.agent === agent && a.action === action && a.description === description
     );
     if (isDuplicate) {
-      console.log("[AgentStore] Skipping duplicate action:", action, description);
       return;
     }
+
+    // Infer action type from the action string
+    let type: AgentAction["type"] = "info";
+    let status: ActionStatus = "success";
+    if (action.includes("tool_call") || action.includes("calling") || action.includes("execute")) {
+      type = "tool_call";
+      status = "running";
+    } else if (action.includes("tool_result") || action.includes("result")) {
+      type = "tool_result";
+    } else if (action.includes("think") || action.includes("reasoning")) {
+      type = "thinking";
+    } else if (action.includes("error") || action.includes("fail")) {
+      type = "error";
+      status = "error";
+    } else if (action.includes("parallel")) {
+      type = "parallel";
+    }
+
+    const now = timestamp || new Date().toISOString();
+    const groupId = state.actionGroups.length > 0
+      ? state.actionGroups[state.actionGroups.length - 1].id
+      : crypto.randomUUID();
 
     const newAction: AgentAction = {
       id: crypto.randomUUID(),
       agent,
       action,
       description,
-      timestamp: timestamp || new Date().toISOString(),
+      timestamp: now,
+      type,
+      status,
+      groupId,
     };
 
     // Add to action log, keeping within max size
     const updatedLog = [...state.actionLog, newAction];
     if (updatedLog.length > state.maxActionLogSize) {
-      updatedLog.shift(); // Remove oldest
+      updatedLog.shift();
     }
 
-    // Update agent's current action
+    // Update action groups
+    let groups = [...state.actionGroups];
+    let currentIteration = state.currentIteration;
+
+    // If tool_result comes after tool_call, compute duration
+    if (type === "tool_result" && state.actionLog.length > 0) {
+      const lastToolCall = [...state.actionLog].reverse().find((a) => a.type === "tool_call" && a.status === "running");
+      if (lastToolCall) {
+        const duration = new Date(now).getTime() - new Date(lastToolCall.timestamp).getTime();
+        newAction.duration = duration;
+        // Update the tool_call status
+        const callIdx = updatedLog.findIndex((a) => a.id === lastToolCall.id);
+        if (callIdx >= 0) {
+          updatedLog[callIdx] = { ...updatedLog[callIdx], status: "success", duration };
+        }
+      }
+    }
+
+    // Group logic: create new group when thinking starts, or when action type changes significantly
+    const lastGroup = groups[groups.length - 1];
+    if (!lastGroup || type === "thinking") {
+      if (type === "thinking") {
+        currentIteration++;
+      }
+      groups.push({
+        id: crypto.randomUUID(),
+        actions: [newAction],
+        startTime: now,
+        iteration: currentIteration,
+      });
+    } else {
+      // Add to current group
+      lastGroup.actions.push(newAction);
+      lastGroup.endTime = now;
+      lastGroup.duration = new Date(now).getTime() - new Date(lastGroup.startTime).getTime();
+    }
+
+    // Keep groups manageable
+    if (groups.length > 50) {
+      groups = groups.slice(-50);
+    }
+
     set((state) => ({
       actionLog: updatedLog,
+      actionGroups: groups,
+      currentIteration,
       agents: state.agents.map((a) =>
         a.name === agent
           ? { ...a, current_action: newAction }
@@ -262,6 +351,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   clearAgentActions: () => {
     set((state) => ({
       actionLog: [],
+      actionGroups: [],
+      currentIteration: 0,
       agents: state.agents.map((a) => ({
         ...a,
         current_action: undefined,
@@ -337,3 +428,15 @@ export const useAgentLoadingState = () =>
  */
 export const useActionLog = () =>
   useAgentStore(useCallback((state) => state.actionLog, []));
+
+/**
+ * Get action groups for timeline display.
+ */
+export const useActionGroups = () =>
+  useAgentStore(useCallback((state) => state.actionGroups, []));
+
+/**
+ * Get current iteration number.
+ */
+export const useCurrentIteration = () =>
+  useAgentStore(useCallback((state) => state.currentIteration, []));

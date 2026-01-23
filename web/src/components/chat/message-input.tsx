@@ -6,7 +6,7 @@ import { useChat } from "@/hooks/useChat";
 import { useVoice } from "@/hooks/useVoice";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Send, Paperclip, Mic, Square, Loader2, Hash } from "lucide-react";
+import { Send, Paperclip, Mic, Square, Loader2, Hash, WifiOff } from "lucide-react";
 import { CommandSuggestions, getFilteredCommands, Command } from "./command-suggestions";
 
 export function MessageInput() {
@@ -138,7 +138,9 @@ export function MessageInput() {
     }
   };
 
-  const isDisabled = !isConnected || !currentConversation;
+  const { connectionState } = useChatStore();
+  const isDisabled = !currentConversation;
+  const isOffline = !isConnected;
 
   return (
     <div className="border-t bg-card p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shrink-0">
@@ -185,9 +187,11 @@ export function MessageInput() {
             placeholder={
               isDisabled
                 ? "Select a conversation to start"
+                : isOffline
+                ? "Messages will be sent when reconnected..."
                 : "Type / for commands or # to tag memory..."
             }
-            disabled={isDisabled || isSending}
+            disabled={isDisabled}
             rows={1}
             className={cn(
               "w-full resize-none rounded-lg border bg-background px-3 py-2 text-base",
@@ -240,10 +244,15 @@ export function MessageInput() {
         </Button>
       </form>
 
-      {!isConnected && (
-        <p className="mt-2 text-xs text-destructive">
-          Disconnected from server. Reconnecting...
-        </p>
+      {isOffline && connectionState !== "connected" && (
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-yellow-600 dark:text-yellow-500">
+          <WifiOff className="h-3 w-3" />
+          <span>
+            {connectionState === "reconnecting"
+              ? "Reconnecting... Messages will be queued."
+              : "Disconnected. Messages will be sent when reconnected."}
+          </span>
+        </div>
       )}
     </div>
   );

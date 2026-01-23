@@ -32,6 +32,7 @@ from .routes import (
     settings_router,
     tasks_router,
     usage_router,
+    workspace_router,
 )
 from .websocket.handlers import AgentResponseHandler
 from .websocket.manager import get_connection_manager
@@ -110,6 +111,9 @@ def create_app() -> FastAPI:
     """
     config = get_api_config()
 
+    if config.jwt_secret_key == "change-me-in-production-use-secrets-manager":
+        logger.critical("SECURITY: Using insecure default JWT secret! Set JWT_SECRET env var.")
+
     app = FastAPI(
         title="Wyld Fyre AI API",
         description="Backend API for Wyld Fyre AI - Multi-Agent AI Infrastructure powered by Claude",
@@ -147,6 +151,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications_router, prefix="/api")
     app.include_router(grafana_router, prefix="/api")  # Grafana SSO proxy
     app.include_router(usage_router, prefix="/api")  # Usage analytics
+    app.include_router(workspace_router, prefix="/api")  # Workspace file/git/deploy
     app.include_router(chat_router)  # WebSocket at root level
 
     # Prometheus metrics endpoint

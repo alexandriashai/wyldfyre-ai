@@ -50,6 +50,22 @@ fi
 
 log_info "Starting Wyld Fyre AI agents..."
 
+# Kill any stale agent processes from previous runs
+# Matches both old module names (infra_agent) and new (agents.infra.src.infra_agent.agent)
+log_info "Checking for stale agent processes..."
+STALE_PIDS=$(ps aux | grep -E "python3?\s+-m\s+(infra_agent|code_agent|data_agent|research_agent|qa_agent|supervisor|agents\.|services\.supervisor)" | grep -v grep | grep -v "$$" | awk '{print $2}')
+if [ -n "$STALE_PIDS" ]; then
+    log_warn "Killing stale agent processes: $STALE_PIDS"
+    echo "$STALE_PIDS" | xargs kill 2>/dev/null || true
+    sleep 3
+    # Force kill any survivors
+    REMAINING=$(echo "$STALE_PIDS" | xargs -I{} sh -c 'kill -0 {} 2>/dev/null && echo {}')
+    if [ -n "$REMAINING" ]; then
+        log_warn "Force killing remaining: $REMAINING"
+        echo "$REMAINING" | xargs kill -9 2>/dev/null || true
+    fi
+fi
+
 # Create logs directory if it doesn't exist
 mkdir -p "$LOG_DIR"
 
@@ -75,14 +91,9 @@ log_info "Using Anthropic API key: ${ANTHROPIC_API_KEY:0:20}..."
 cd "$PROJECT_ROOT"
 tmux new-session -d -s "$SESSION_NAME" -n "wyld"
 
-# Extract key API keys from .env for tmux sessions
-ANTHROPIC_KEY=$(grep '^ANTHROPIC_API_KEY=' "$PROJECT_ROOT/.env" | cut -d= -f2)
-OPENAI_KEY=$(grep '^OPENAI_API_KEY=' "$PROJECT_ROOT/.env" | cut -d= -f2)
-REDIS_PASS=$(grep '^REDIS_PASSWORD=' "$PROJECT_ROOT/.env" | cut -d= -f2)
-QDRANT_KEY=$(grep '^QDRANT_API_KEY=' "$PROJECT_ROOT/.env" | cut -d= -f2)
-
 # Common environment setup command for all agents
-ENV_SETUP="cd $PROJECT_ROOT && source $PROJECT_ROOT/.venv/bin/activate && export ANTHROPIC_API_KEY=$ANTHROPIC_KEY OPENAI_API_KEY=$OPENAI_KEY REDIS_HOST=localhost REDIS_PORT=6379 REDIS_PASSWORD=$REDIS_PASS QDRANT_HOST=localhost QDRANT_PORT=6333 QDRANT_API_KEY=$QDRANT_KEY QDRANT_PREFER_GRPC=false QDRANT_HTTPS=false"
+# Sources .env for all config, then overrides hosts for localhost (not Docker network)
+ENV_SETUP="cd $PROJECT_ROOT && source $PROJECT_ROOT/.venv/bin/activate && set -a && source $PROJECT_ROOT/.env && set +a && export REDIS_HOST=localhost POSTGRES_HOST=localhost QDRANT_HOST=localhost QDRANT_PREFER_GRPC=false QDRANT_HTTPS=false"
 
 # Wyld (Supervisor) - Window 0
 tmux send-keys -t "$SESSION_NAME:wyld" "cd $PROJECT_ROOT && $ENV_SETUP" C-m

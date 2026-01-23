@@ -238,6 +238,73 @@ async def list_learnings(
         }
 
 
+class CreateLearningRequest(BaseModel):
+    """Request body for creating a new learning."""
+
+    content: str
+    phase: PAIPhase | None = None
+    category: str | None = None
+    scope: LearningScope = LearningScope.GLOBAL
+    project_id: str | None = None
+    domain_id: str | None = None
+    confidence: float | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@router.post("/learnings")
+async def create_learning(
+    body: CreateLearningRequest,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """
+    Store a new learning/memory.
+
+    Creates a new entry in the vector store with the given content and metadata.
+    """
+    try:
+        qdrant = await get_qdrant_store()
+
+        # Build metadata
+        meta: dict[str, Any] = {
+            "phase": body.phase.value if body.phase else None,
+            "category": body.category,
+            "scope": body.scope.value,
+            "outcome": "success",
+            "agent": "user",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if body.project_id:
+            meta["project_id"] = body.project_id
+        if body.domain_id:
+            meta["domain_id"] = body.domain_id
+        if body.confidence is not None:
+            meta["confidence"] = body.confidence
+        if body.metadata:
+            meta.update(body.metadata)
+
+        doc_id = await qdrant.upsert(
+            id=None,
+            text=body.content,
+            metadata=meta,
+        )
+
+        await qdrant.disconnect()
+
+        return {
+            "id": doc_id,
+            "content": body.content,
+            "phase": body.phase.value if body.phase else None,
+            "category": body.category,
+            "scope": body.scope.value,
+            "created_at": meta["created_at"],
+            "message": "Learning stored successfully",
+        }
+
+    except Exception as e:
+        logger.error("Failed to create learning", error=str(e))
+        return {"error": str(e)}
+
+
 class UpdateLearningRequest(BaseModel):
     """Request body for updating a learning."""
 

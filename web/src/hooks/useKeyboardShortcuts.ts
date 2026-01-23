@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useCallback } from "react";
+import { usePreferencesStore, ShortcutBinding } from "@/stores/preferences-store";
 
 type KeyboardShortcut = {
   key: string;
@@ -78,7 +79,14 @@ export function useKeyboardShortcuts(
 }
 
 /**
- * Common keyboard shortcuts for the app
+ * Get a configured shortcut binding by ID, falling back to default if not found
+ */
+function getConfiguredBinding(shortcuts: ShortcutBinding[], id: string): ShortcutBinding | undefined {
+  return shortcuts.find((s) => s.id === id);
+}
+
+/**
+ * Common keyboard shortcuts for the app - uses configurable bindings from preferences
  */
 export function useAppShortcuts({
   onNewChat,
@@ -91,37 +99,49 @@ export function useAppShortcuts({
   onSearch?: () => void;
   onEscape?: () => void;
 }) {
+  const configuredShortcuts = usePreferencesStore((s) => s.shortcuts);
   const shortcuts: KeyboardShortcut[] = [];
 
   if (onNewChat) {
+    const binding = getConfiguredBinding(configuredShortcuts, "new-chat");
     shortcuts.push({
-      key: "n",
-      ctrlKey: true,
+      key: binding?.key || "n",
+      ctrlKey: binding?.ctrlKey ?? true,
+      shiftKey: binding?.shiftKey,
+      altKey: binding?.altKey,
       callback: onNewChat,
       description: "New conversation",
     });
   }
 
   if (onToggleSidebar) {
+    const binding = getConfiguredBinding(configuredShortcuts, "toggle-sidebar");
     shortcuts.push({
-      key: "b",
-      ctrlKey: true,
+      key: binding?.key || "b",
+      ctrlKey: binding?.ctrlKey ?? true,
+      shiftKey: binding?.shiftKey,
+      altKey: binding?.altKey,
       callback: onToggleSidebar,
       description: "Toggle sidebar",
     });
   }
 
   if (onSearch) {
+    const binding = getConfiguredBinding(configuredShortcuts, "search");
     shortcuts.push({
-      key: "/",
+      key: binding?.key || "/",
+      ctrlKey: binding?.ctrlKey,
+      shiftKey: binding?.shiftKey,
+      altKey: binding?.altKey,
       callback: onSearch,
       description: "Focus search",
     });
   }
 
   if (onEscape) {
+    const binding = getConfiguredBinding(configuredShortcuts, "escape");
     shortcuts.push({
-      key: "Escape",
+      key: binding?.key || "Escape",
       callback: onEscape,
       description: "Close/Cancel",
     });
@@ -145,4 +165,27 @@ export function useFocusShortcut(
       callback: () => ref.current?.focus(),
     },
   ]);
+}
+
+/**
+ * Format a shortcut binding for display
+ */
+export function formatShortcut(binding: ShortcutBinding): string {
+  const parts: string[] = [];
+  if (binding.ctrlKey) parts.push("Ctrl");
+  if (binding.shiftKey) parts.push("Shift");
+  if (binding.altKey) parts.push("Alt");
+
+  const keyDisplay = binding.key === " " ? "Space" :
+    binding.key === "Escape" ? "Esc" :
+    binding.key === "Enter" ? "Enter" :
+    binding.key === "ArrowUp" ? "Up" :
+    binding.key === "ArrowDown" ? "Down" :
+    binding.key === "ArrowLeft" ? "Left" :
+    binding.key === "ArrowRight" ? "Right" :
+    binding.key.length === 1 ? binding.key.toUpperCase() :
+    binding.key;
+
+  parts.push(keyDisplay);
+  return parts.join(" + ");
 }

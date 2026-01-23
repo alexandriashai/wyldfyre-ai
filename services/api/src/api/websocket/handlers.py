@@ -182,8 +182,8 @@ class MessageHandler:
                 user_id=connection.user_id,
             )
 
-        # Generate message ID
-        message_id = str(uuid4())
+        # Use client-provided message_id if available, otherwise generate
+        message_id = data.get("message_id") or str(uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
 
         # Store message in Redis

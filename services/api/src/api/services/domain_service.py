@@ -1,19 +1,50 @@
 """
 Domain management service.
 
-Coordinates between API and Infra Agent for domain operations.
+Coordinates domain operations with direct provisioning code path.
+Auto-provisions domains on creation (DNS, Nginx, SSL) without LLM agent.
 """
 
+import asyncio
+import grp
+import os
+import pwd
+import socket
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+import aiohttp
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ai_core import DomainStatus, get_logger
+from ai_core import AgentType, DomainStatus, TaskStatus, get_logger
 from ai_messaging import PubSubManager, RedisClient
 
 logger = get_logger(__name__)
+
+# Server configuration for auto-provisioning
+SERVER_IP = os.environ.get("SERVER_IP", "51.89.11.38")
+SSL_EMAIL = os.environ.get("SSL_EMAIL", "alexandria.shai.eden@gmail.com")
+WEB_ROOT_BASE = os.environ.get("WEB_ROOT_BASE", "/home/wyld-web/static")
+
+# Nginx / SSL paths for direct provisioning
+NGINX_SITES_AVAILABLE = Path(os.environ.get("NGINX_SITES_AVAILABLE", "/etc/nginx/sites-available"))
+NGINX_SITES_ENABLED = Path(os.environ.get("NGINX_SITES_ENABLED", "/etc/nginx/sites-enabled"))
+CERTBOT_PATH = os.environ.get("CERTBOT_PATH", "certbot")
+WEB_USER = os.environ.get("WEB_USER", "www-data")
+WEB_GROUP = os.environ.get("WEB_GROUP", "www-data")
+
+# Cloudflare API
+CF_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+CF_API_EMAIL = os.environ.get("CLOUDFLARE_EMAIL", "")
+CF_API_KEY = os.environ.get("CLOUDFLARE_API_KEY", "")
+CF_API_BASE = "https://api.cloudflare.com/client/v4"
+
+# Deduplication constants
+FAST_FAILURE_THRESHOLD = 10  # seconds - failures faster than this are suspicious
+GRACE_WINDOW = 30  # seconds - wait for a possible "completed" after a failure
 
 
 class DomainService:
@@ -84,17 +115,25 @@ class DomainService:
         ssl_enabled: bool = True,
         dns_provider: str = "cloudflare",
         project_id: str | None = None,
+        auto_provision: bool = True,
     ) -> Any:
         """
-        Create a new domain record.
+        Create a new domain record and auto-provision infrastructure.
+
+        Creates the DB record then triggers the Infra Agent to:
+        1. Create DNS A record pointing to server IP
+        2. Create web root directory
+        3. Configure Nginx virtual host
+        4. Request SSL certificate via Let's Encrypt
 
         Args:
             domain_name: The domain name
             proxy_target: Optional proxy target (e.g., localhost:3000)
-            web_root: Optional web root directory (e.g., /var/www/example.com)
-            ssl_enabled: Whether to enable SSL
+            web_root: Optional web root directory (defaults to /var/www/{domain})
+            ssl_enabled: Whether to enable SSL (default: True)
             dns_provider: DNS provider name
             project_id: Optional project to associate with
+            auto_provision: Whether to auto-provision (default: True)
 
         Returns:
             Created Domain object
@@ -113,6 +152,10 @@ class DomainService:
         # Validate domain name
         if not self._validate_domain_name(domain_name):
             raise ValueError(f"Invalid domain name: {domain_name}")
+
+        # Default web root
+        if not web_root:
+            web_root = f"{WEB_ROOT_BASE}/{domain_name}"
 
         # Create domain record
         domain = Domain(
@@ -135,6 +178,21 @@ class DomainService:
         domain = result.scalar_one()
 
         logger.info("Domain created", domain=domain_name, id=domain.id, project_id=project_id)
+
+        # Auto-provision: trigger full infrastructure setup
+        if auto_provision:
+            try:
+                await self.provision_domain(domain_name)
+                logger.info("Auto-provisioning triggered", domain=domain_name)
+            except Exception as e:
+                logger.error("Auto-provision failed to dispatch", domain=domain_name, error=str(e))
+
+            # Re-load domain after provisioning changed status/timestamps
+            result = await self.db.execute(
+                select(Domain).options(selectinload(Domain.project)).where(Domain.id == domain.id)
+            )
+            domain = result.scalar_one()
+
         return domain
 
     async def update_domain(
@@ -203,13 +261,10 @@ class DomainService:
 
     async def provision_domain(self, domain_name: str) -> dict[str, Any]:
         """
-        Request domain provisioning via Infra Agent.
+        Provision a domain using direct code path (DNS → Nginx → SSL → Verify).
 
-        This sends a task to the Infra Agent to:
-        1. Create web root directory
-        2. Set up Nginx configuration
-        3. Request SSL certificate
-        4. Configure DNS (if applicable)
+        Executes provisioning steps directly without LLM agent involvement.
+        Returns immediately; background task updates domain status on completion.
 
         Args:
             domain_name: The domain to provision
@@ -217,7 +272,7 @@ class DomainService:
         Returns:
             Task submission result with task_id for tracking
         """
-        from uuid import uuid4
+        from ai_db import Task
 
         domain = await self.get_domain(domain_name)
         if not domain:
@@ -227,28 +282,30 @@ class DomainService:
         domain.status = DomainStatus.PROVISIONING
         await self.db.flush()
 
-        # Generate task ID for tracking
+        # Generate task ID and create DB record (fixes FK errors in api_usage)
         task_id = str(uuid4())
+        task_record = Task(
+            id=task_id,
+            task_type="provision",
+            title=f"Provision domain {domain_name}",
+            status=TaskStatus.PENDING,
+            priority=8,
+            agent_type=AgentType.INFRA,
+        )
+        self.db.add(task_record)
+        await self.db.flush()
 
-        # Publish task to infra agent channel
-        await self.pubsub.publish(
-            channel="infra-agent:tasks",
-            message={
-                "task_id": task_id,
-                "action": "provision_domain",
-                "payload": {
-                    "domain": domain_name,
-                    "proxy_target": domain.proxy_target,
-                    "ssl_enabled": domain.ssl_enabled,
-                },
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
+        # Launch background provisioning (non-blocking)
+        asyncio.create_task(
+            self._execute_provisioning(task_id, domain_name, domain)
         )
 
         logger.info(
-            "Domain provisioning requested",
+            "Domain provisioning started (direct)",
             domain=domain_name,
             task_id=task_id,
+            server_ip=SERVER_IP,
+            ssl_enabled=domain.ssl_enabled,
         )
 
         return {
@@ -256,6 +313,435 @@ class DomainService:
             "task_id": task_id,
             "message": f"Provisioning started for {domain_name}",
         }
+
+    async def _execute_provisioning(
+        self, task_id: str, domain_name: str, domain: Any
+    ) -> None:
+        """
+        Background task: runs DNS + nginx + SSL + verify, updates status.
+
+        Uses standalone DB sessions since the request-scoped session is closed.
+        """
+        from ..database import db_session_context
+        from ai_db import Domain, Task
+
+        started_at = datetime.now(timezone.utc)
+
+        try:
+            # Step 1: Create DNS record via Cloudflare API
+            logger.info("Provisioning step 1: DNS record", domain=domain_name)
+            await self._create_dns_record(domain_name, domain)
+
+            # Step 2: Provision nginx + web root
+            logger.info("Provisioning step 2: Nginx + web root", domain=domain_name)
+            await self._provision_nginx(domain_name, domain)
+
+            # Step 3: Request SSL (only if not Cloudflare-proxied)
+            if not self._is_cloudflare_proxied(domain):
+                logger.info("Provisioning step 3: SSL certificate", domain=domain_name)
+                await self._request_ssl_certificate(domain_name, domain)
+            else:
+                logger.info("Provisioning step 3: Skipping SSL (Cloudflare-proxied)", domain=domain_name)
+
+            # Step 4: Verify
+            logger.info("Provisioning step 4: Verification", domain=domain_name)
+            await self._verify_domain_direct(domain_name)
+
+            # Update status to ACTIVE
+            async with db_session_context() as session:
+                result = await session.execute(
+                    select(Domain).where(Domain.domain_name == domain_name)
+                )
+                d = result.scalar_one_or_none()
+                if d:
+                    d.status = DomainStatus.ACTIVE
+
+                # Update task record
+                task_result = await session.execute(
+                    select(Task).where(Task.id == task_id)
+                )
+                task = task_result.scalar_one_or_none()
+                if task:
+                    task.status = TaskStatus.COMPLETED
+                    task.completed_at = datetime.now(timezone.utc)
+                    task.duration_ms = int(
+                        (datetime.now(timezone.utc) - started_at).total_seconds() * 1000
+                    )
+
+            logger.info("Domain provisioned successfully (direct)", domain=domain_name, task_id=task_id)
+
+        except Exception as e:
+            logger.error(
+                "Domain provisioning failed (direct)",
+                domain=domain_name,
+                task_id=task_id,
+                error=str(e),
+            )
+            async with db_session_context() as session:
+                result = await session.execute(
+                    select(Domain).where(Domain.domain_name == domain_name)
+                )
+                d = result.scalar_one_or_none()
+                if d:
+                    d.status = DomainStatus.PENDING
+                    d.error_message = str(e)[:500]
+
+                # Update task record
+                task_result = await session.execute(
+                    select(Task).where(Task.id == task_id)
+                )
+                task = task_result.scalar_one_or_none()
+                if task:
+                    task.status = TaskStatus.FAILED
+                    task.error_message = str(e)[:500]
+                    task.completed_at = datetime.now(timezone.utc)
+                    task.duration_ms = int(
+                        (datetime.now(timezone.utc) - started_at).total_seconds() * 1000
+                    )
+
+    def _is_cloudflare_proxied(self, domain: Any) -> bool:
+        """Check if domain uses Cloudflare proxy (orange cloud), skipping local SSL."""
+        return getattr(domain, "dns_provider", "") == "cloudflare"
+
+    async def _create_dns_record(self, domain_name: str, domain: Any) -> None:
+        """Create DNS A record via Cloudflare API."""
+        headers = self._get_cf_headers()
+        if not headers:
+            raise RuntimeError("Cloudflare API credentials not configured")
+
+        root_domain = self._get_root_domain(domain_name)
+        dns_name = self._get_dns_name(domain_name)
+
+        # Look up zone ID
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{CF_API_BASE}/zones",
+                headers=headers,
+                params={"name": root_domain},
+            ) as resp:
+                result = await resp.json()
+                if resp.status >= 400 or not result.get("result"):
+                    raise RuntimeError(f"Zone not found for domain: {root_domain}")
+                zone_id = result["result"][0]["id"]
+
+            # Create A record
+            data = {
+                "type": "A",
+                "name": dns_name,
+                "content": SERVER_IP,
+                "ttl": 1,
+                "proxied": True,
+            }
+            async with session.post(
+                f"{CF_API_BASE}/zones/{zone_id}/dns_records",
+                headers=headers,
+                json=data,
+            ) as resp:
+                result = await resp.json()
+                if resp.status >= 400:
+                    errors = result.get("errors", [])
+                    # Ignore "already exists" errors (code 81057)
+                    if errors and errors[0].get("code") == 81057:
+                        logger.info("DNS record already exists", domain=domain_name)
+                        return
+                    error_msg = errors[0].get("message") if errors else "Unknown error"
+                    raise RuntimeError(f"Failed to create DNS record: {error_msg}")
+
+        logger.info("DNS record created", domain=domain_name, ip=SERVER_IP)
+
+    async def _provision_nginx(self, domain_name: str, domain: Any) -> None:
+        """Create web root directory, nginx config, enable site, and reload."""
+        web_root = Path(domain.web_root or f"{WEB_ROOT_BASE}/{domain_name}")
+        site_type = "proxy" if domain.proxy_target else "static"
+
+        # Step 1: Create web root directory
+        web_root.mkdir(parents=True, exist_ok=True)
+        try:
+            uid = pwd.getpwnam(WEB_USER).pw_uid
+            gid = grp.getgrnam(WEB_GROUP).gr_gid
+            os.chown(web_root, uid, gid)
+        except KeyError:
+            logger.warning("Could not set web root ownership", user=WEB_USER, group=WEB_GROUP)
+        os.chmod(web_root, 0o755)
+
+        # Create default index.html for static sites
+        if site_type == "static":
+            index_path = web_root / "index.html"
+            if not index_path.exists():
+                index_path.write_text(
+                    f"<!DOCTYPE html><html><head><title>{domain_name}</title></head>"
+                    f"<body><h1>{domain_name}</h1><p>Site provisioned successfully.</p></body></html>\n"
+                )
+
+        # Step 2: Write nginx config
+        nginx_config = NGINX_SITES_AVAILABLE / domain_name
+        if site_type == "static":
+            config_content = (
+                f"server {{\n"
+                f"    listen 80;\n"
+                f"    listen [::]:80;\n"
+                f"    server_name {domain_name};\n\n"
+                f"    root {web_root};\n"
+                f"    index index.html index.htm;\n\n"
+                f"    location / {{\n"
+                f"        try_files $uri $uri/ =404;\n"
+                f"    }}\n\n"
+                f"    access_log /var/log/nginx/{domain_name}.access.log;\n"
+                f"    error_log /var/log/nginx/{domain_name}.error.log;\n"
+                f"}}\n"
+            )
+        else:  # proxy
+            config_content = (
+                f"server {{\n"
+                f"    listen 80;\n"
+                f"    listen [::]:80;\n"
+                f"    server_name {domain_name};\n\n"
+                f"    location / {{\n"
+                f"        proxy_pass {domain.proxy_target};\n"
+                f"        proxy_http_version 1.1;\n"
+                f"        proxy_set_header Upgrade $http_upgrade;\n"
+                f"        proxy_set_header Connection 'upgrade';\n"
+                f"        proxy_set_header Host $host;\n"
+                f"        proxy_set_header X-Real-IP $remote_addr;\n"
+                f"        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+                f"        proxy_set_header X-Forwarded-Proto $scheme;\n"
+                f"        proxy_read_timeout 86400;\n"
+                f"    }}\n\n"
+                f"    access_log /var/log/nginx/{domain_name}.access.log;\n"
+                f"    error_log /var/log/nginx/{domain_name}.error.log;\n"
+                f"}}\n"
+            )
+        nginx_config.write_text(config_content)
+
+        # Step 3: Enable site (symlink)
+        nginx_enabled = NGINX_SITES_ENABLED / domain_name
+        if not nginx_enabled.exists():
+            nginx_enabled.symlink_to(nginx_config)
+
+        # Step 4: Test and reload nginx
+        code, _, stderr = await self._run_command(["nginx", "-t"])
+        if code != 0:
+            raise RuntimeError(f"Nginx config test failed: {stderr}")
+        await self._run_command(["nginx", "-s", "reload"])
+
+        logger.info("Nginx provisioned", domain=domain_name, site_type=site_type)
+
+    async def _request_ssl_certificate(self, domain_name: str, domain: Any) -> None:
+        """Request SSL certificate via certbot."""
+        web_root = Path(domain.web_root or f"{WEB_ROOT_BASE}/{domain_name}")
+
+        ssl_args = [
+            CERTBOT_PATH, "certonly",
+            "--webroot", "-w", str(web_root),
+            "-d", domain_name,
+            "--email", SSL_EMAIL,
+            "--agree-tos", "--non-interactive",
+        ]
+
+        code, stdout, stderr = await self._run_command(ssl_args)
+        if code != 0:
+            raise RuntimeError(f"SSL certificate request failed: {stderr or stdout}")
+
+        # Update nginx config with SSL
+        nginx_config = NGINX_SITES_AVAILABLE / domain_name
+        ssl_config = (
+            f"server {{\n"
+            f"    listen 80;\n"
+            f"    listen [::]:80;\n"
+            f"    server_name {domain_name};\n"
+            f"    return 301 https://$server_name$request_uri;\n"
+            f"}}\n\n"
+            f"server {{\n"
+            f"    listen 443 ssl http2;\n"
+            f"    listen [::]:443 ssl http2;\n"
+            f"    server_name {domain_name};\n\n"
+            f"    ssl_certificate /etc/letsencrypt/live/{domain_name}/fullchain.pem;\n"
+            f"    ssl_certificate_key /etc/letsencrypt/live/{domain_name}/privkey.pem;\n"
+            f"    ssl_protocols TLSv1.2 TLSv1.3;\n\n"
+            f"    root {web_root};\n"
+            f"    index index.html index.htm;\n\n"
+            f"    location / {{\n"
+            f"        try_files $uri $uri/ =404;\n"
+            f"    }}\n\n"
+            f"    access_log /var/log/nginx/{domain_name}.access.log;\n"
+            f"    error_log /var/log/nginx/{domain_name}.error.log;\n"
+            f"}}\n"
+        )
+        nginx_config.write_text(ssl_config)
+        await self._run_command(["nginx", "-s", "reload"])
+
+        logger.info("SSL certificate provisioned", domain=domain_name)
+
+    async def _verify_domain_direct(self, domain_name: str) -> None:
+        """Verify domain DNS resolution and HTTP accessibility."""
+        # Check DNS resolution (with retry for propagation)
+        for attempt in range(3):
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, socket.gethostbyname, domain_name)
+                break
+            except socket.gaierror:
+                if attempt == 2:
+                    logger.warning("DNS not yet resolving (may still be propagating)", domain=domain_name)
+                    return  # Non-fatal: DNS propagation can take time
+                await asyncio.sleep(5)
+
+        # Check HTTP accessibility
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(f"http://{domain_name}/", allow_redirects=False) as resp:
+                    if resp.status in (200, 301, 302, 307, 308):
+                        logger.info("Domain verified accessible", domain=domain_name, status=resp.status)
+                    else:
+                        logger.warning("Domain returned unexpected status", domain=domain_name, status=resp.status)
+        except Exception as e:
+            logger.warning("Domain HTTP check failed (may need propagation time)", domain=domain_name, error=str(e))
+
+    def _get_cf_headers(self) -> dict[str, str]:
+        """Get Cloudflare API authentication headers."""
+        if CF_API_TOKEN:
+            return {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "application/json"}
+        elif CF_API_EMAIL and CF_API_KEY:
+            return {"X-Auth-Email": CF_API_EMAIL, "X-Auth-Key": CF_API_KEY, "Content-Type": "application/json"}
+        return {}
+
+    async def _run_command(self, cmd: list[str]) -> tuple[int, str, str]:
+        """Run a subprocess command and return (returncode, stdout, stderr)."""
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        return (process.returncode or 0, stdout.decode().strip(), stderr.decode().strip())
+
+    async def _wait_for_provision_complete(
+        self, task_id: str, domain_name: str, timeout: int = 600
+    ) -> None:
+        """
+        Background task that listens for task completion via Redis pubsub.
+
+        Includes deduplication: ignores suspiciously fast failures and waits
+        a grace window for a possible "completed" after receiving a failure.
+
+        Args:
+            task_id: The task ID to listen for
+            domain_name: The domain to update
+            timeout: Max wait time in seconds
+        """
+        import json
+
+        pubsub = None
+        try:
+            channel = f"task:{task_id}:response"
+
+            pubsub = self.redis.client.pubsub()
+            await pubsub.subscribe(channel)
+
+            start = asyncio.get_event_loop().time()
+            pending_failure: dict | None = None
+            pending_failure_at: float = 0
+
+            while (asyncio.get_event_loop().time() - start) < timeout:
+                # If we have a pending failure and grace window expired, accept it
+                if pending_failure and (asyncio.get_event_loop().time() - pending_failure_at) >= GRACE_WINDOW:
+                    await self._update_domain_status(
+                        domain_name, task_id, "failed",
+                        error=pending_failure.get("error", "Provisioning failed"),
+                    )
+                    break
+
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=5.0
+                )
+                if message and message.get("type") == "message":
+                    data = json.loads(message["data"])
+                    status = data.get("status", "")
+                    elapsed = asyncio.get_event_loop().time() - start
+
+                    logger.info(
+                        "Provision response received",
+                        domain=domain_name,
+                        task_id=task_id,
+                        status=status,
+                        elapsed=f"{elapsed:.1f}s",
+                    )
+
+                    if status == "completed":
+                        # Completed is always definitive
+                        await self._update_domain_status(domain_name, task_id, "completed")
+                        break
+                    elif status == "failed":
+                        if elapsed < FAST_FAILURE_THRESHOLD:
+                            # Suspiciously fast failure - likely stale process, ignore
+                            logger.warning(
+                                "Ignoring suspiciously fast failure",
+                                domain=domain_name,
+                                elapsed=f"{elapsed:.1f}s",
+                            )
+                            continue
+                        else:
+                            # Store as pending, wait grace window for possible completion
+                            pending_failure = data
+                            pending_failure_at = asyncio.get_event_loop().time()
+                            continue
+
+        except Exception as e:
+            logger.error("Provision completion listener failed", domain=domain_name, error=str(e))
+        finally:
+            if pubsub:
+                try:
+                    await pubsub.unsubscribe(channel)
+                    await pubsub.close()
+                except Exception:
+                    pass
+
+    async def _update_domain_status(
+        self, domain_name: str, task_id: str, status: str, error: str | None = None
+    ) -> None:
+        """Update domain and task status in a standalone DB session."""
+        from ..database import db_session_context
+        from ai_db import Domain, Task
+
+        async with db_session_context() as session:
+            result = await session.execute(
+                select(Domain).where(Domain.domain_name == domain_name)
+            )
+            domain = result.scalar_one_or_none()
+            if domain:
+                if status == "completed":
+                    domain.status = DomainStatus.ACTIVE
+                    logger.info("Domain provisioned successfully", domain=domain_name)
+                else:
+                    domain.status = DomainStatus.PENDING
+                    domain.error_message = error or "Provisioning failed"
+                    logger.error("Domain provisioning failed", domain=domain_name, error=error)
+
+            # Update task record status
+            task_result = await session.execute(
+                select(Task).where(Task.id == task_id)
+            )
+            task = task_result.scalar_one_or_none()
+            if task:
+                task.status = TaskStatus.COMPLETED if status == "completed" else TaskStatus.FAILED
+                task.completed_at = datetime.now(timezone.utc)
+                if error:
+                    task.error_message = error
+
+    def _get_root_domain(self, domain_name: str) -> str:
+        """Extract root domain (e.g., 'example.com' from 'sub.example.com')."""
+        parts = domain_name.split(".")
+        if len(parts) > 2:
+            return ".".join(parts[-2:])
+        return domain_name
+
+    def _get_dns_name(self, domain_name: str) -> str:
+        """Get the DNS record name (e.g., '@' for root, 'sub' for subdomain)."""
+        parts = domain_name.split(".")
+        if len(parts) > 2:
+            return ".".join(parts[:-2])
+        return "@"
 
     async def verify_domain(self, domain_name: str) -> dict[str, Any]:
         """
@@ -267,26 +753,27 @@ class DomainService:
         Returns:
             Task submission result with task_id for tracking
         """
-        from uuid import uuid4
-
         task_id = str(uuid4())
 
-        # Publish verification task
         await self.pubsub.publish(
-            channel="infra-agent:tasks",
+            channel=f"agent:{AgentType.INFRA.value}:tasks",
             message={
-                "task_id": task_id,
-                "action": "verify_domain",
-                "payload": {"domain": domain_name},
+                "id": task_id,
+                "type": "task_request",
+                "task_type": "verify",
+                "target_agent": AgentType.INFRA.value,
+                "payload": {
+                    "content": (
+                        f"Verify the domain '{domain_name}' is properly configured:\n"
+                        f"Use verify_domain with domain='{domain_name}'\n"
+                        f"Check DNS resolution, nginx config, HTTP/HTTPS accessibility, and SSL certificate status."
+                    ),
+                },
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
 
-        logger.info(
-            "Domain verification requested",
-            domain=domain_name,
-            task_id=task_id,
-        )
+        logger.info("Domain verification requested", domain=domain_name, task_id=task_id)
 
         return {
             "success": True,
@@ -304,26 +791,27 @@ class DomainService:
         Returns:
             Task submission result with task_id for tracking
         """
-        from uuid import uuid4
-
         task_id = str(uuid4())
 
-        # Publish renewal task
         await self.pubsub.publish(
-            channel="infra-agent:tasks",
+            channel=f"agent:{AgentType.INFRA.value}:tasks",
             message={
-                "task_id": task_id,
-                "action": "renew_certificate",
-                "payload": {"domain": domain_name},
+                "id": task_id,
+                "type": "task_request",
+                "task_type": "ssl_renew",
+                "target_agent": AgentType.INFRA.value,
+                "payload": {
+                    "content": (
+                        f"Renew the SSL certificate for '{domain_name}':\n"
+                        f"Run: certbot renew --cert-name {domain_name} --force-renewal\n"
+                        f"Then reload nginx: nginx -s reload"
+                    ),
+                },
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
 
-        logger.info(
-            "SSL renewal requested",
-            domain=domain_name,
-            task_id=task_id,
-        )
+        logger.info("SSL renewal requested", domain=domain_name, task_id=task_id)
 
         return {
             "success": True,

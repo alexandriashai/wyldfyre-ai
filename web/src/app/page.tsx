@@ -11,7 +11,7 @@ export default function Home() {
   useEffect(() => {
     if (!isLoading) {
       if (isAuthenticated) {
-        router.push("/chat");
+        router.push("/workspace");
       } else {
         router.push("/login");
       }

@@ -4,7 +4,7 @@ API-specific configuration settings.
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +36,7 @@ class APIConfig(BaseSettings):
     jwt_secret_key: str = Field(
         default="change-me-in-production-use-secrets-manager",
         description="JWT signing secret",
+        validation_alias=AliasChoices("API_JWT_SECRET_KEY", "JWT_SECRET"),
     )
     jwt_algorithm: str = Field(default="HS256", description="JWT algorithm")
     jwt_access_token_expire_minutes: int = Field(

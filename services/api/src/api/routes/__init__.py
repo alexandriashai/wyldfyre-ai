@@ -16,6 +16,7 @@ from .projects import router as projects_router
 from .settings import router as settings_router
 from .tasks import router as tasks_router
 from .usage import router as usage_router
+from .workspace import router as workspace_router
 
 __all__ = [
     "agents_router",
@@ -32,4 +33,5 @@ __all__ = [
     "settings_router",
     "tasks_router",
     "usage_router",
+    "workspace_router",
 ]

@@ -63,17 +63,21 @@ async def create_domain(
     domain_service: DomainService = Depends(get_domain_service),
 ) -> DomainResponse:
     """
-    Create a new domain configuration.
+    Create and auto-provision a new domain.
 
-    This creates the database record. Use POST /domains/{name}/provision
-    to actually set up the domain on the server.
+    Automatically triggers full infrastructure setup:
+    1. Creates DNS A record via Cloudflare
+    2. Creates web root directory
+    3. Configures Nginx virtual host
+    4. Requests SSL certificate via Let's Encrypt
+    5. Updates status to ACTIVE on completion
     """
     try:
         domain = await domain_service.create_domain(
             domain_name=request.domain_name,
             proxy_target=request.proxy_target,
             web_root=request.web_root,
-            ssl_enabled=request.ssl_enabled,
+            ssl_enabled=request.ssl_enabled if request.ssl_enabled is not None else True,
             dns_provider=request.dns_provider,
             project_id=request.project_id,
         )

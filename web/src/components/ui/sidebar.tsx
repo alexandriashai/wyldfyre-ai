@@ -23,6 +23,7 @@ import {
   Trash2,
   MoreVertical,
   Pencil,
+  LayoutDashboard,
 } from "lucide-react";
 import { Button } from "./button";
 import { ScrollArea } from "./scroll-area";
@@ -57,6 +58,7 @@ interface SidebarProps {
 }
 
 const navItems = [
+  { href: "/workspace", icon: LayoutDashboard, label: "Workspace" },
   { href: "/chat", icon: MessageSquare, label: "Chat" },
   { href: "/projects", icon: FolderKanban, label: "Projects" },
   { href: "/agents", icon: Bot, label: "Agents" },

@@ -2,10 +2,10 @@
 
 import { useEffect, useRef } from "react";
 import { cn, getAgentColor, getAgentBgColor, formatDate } from "@/lib/utils";
-import { useChatStore } from "@/stores/chat-store";
+import { useChatStore, MessageStatus } from "@/stores/chat-store";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Bot, User, Check, X } from "lucide-react";
+import { Bot, User, Check, X, RefreshCw, Loader2, AlertCircle, WifiOff } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -18,12 +18,13 @@ interface Message {
   agent?: string;
   created_at: string;
   isStreaming?: boolean;
+  status?: MessageStatus;
 }
 
 // Check if message contains a pending plan that needs approval
 function isPendingPlanMessage(content: string): boolean {
   return (
-    (content.includes("## 📋 Plan:") || content.includes("## Plan:")) &&
+    (content.includes("## Plan:") || content.includes("## Plan:")) &&
     (content.includes("/plan approve") || content.includes("Status:** Pending"))
   );
 }
@@ -53,9 +54,53 @@ function PlanActionButtons({ onApprove, onReject }: { onApprove: () => void; onR
   );
 }
 
-function MessageBubble({ message, onPlanAction }: { message: Message; onPlanAction?: (action: string) => void }) {
+function MessageStatusIndicator({ status, onRetry }: { status?: MessageStatus; onRetry?: () => void }) {
+  if (!status || status === "sent") return null;
+
+  if (status === "sending") {
+    return (
+      <div className="flex items-center gap-1 mt-1">
+        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+        <span className="text-xs text-muted-foreground">Sending...</span>
+      </div>
+    );
+  }
+
+  if (status === "failed") {
+    return (
+      <div className="flex items-center gap-2 mt-1">
+        <AlertCircle className="h-3 w-3 text-destructive" />
+        <span className="text-xs text-destructive">Failed to send</span>
+        {onRetry && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onRetry}
+            className="h-5 px-2 text-xs text-primary hover:text-primary"
+          >
+            <RefreshCw className="h-3 w-3 mr-1" />
+            Retry
+          </Button>
+        )}
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function MessageBubble({
+  message,
+  onPlanAction,
+  onRetry,
+}: {
+  message: Message;
+  onPlanAction?: (action: string) => void;
+  onRetry?: (messageId: string) => void;
+}) {
   const isUser = message.role === "user";
   const showPlanButtons = !isUser && isPendingPlanMessage(message.content) && onPlanAction;
+  const isFailed = message.status === "failed";
 
   return (
     <div
@@ -92,7 +137,7 @@ function MessageBubble({ message, onPlanAction }: { message: Message; onPlanActi
             isUser
               ? "bg-primary text-primary-foreground"
               : "bg-muted",
-            // Plan messages get special layout
+            isFailed && "border-2 border-destructive/50 bg-destructive/5",
             showPlanButtons ? "flex flex-col" : "px-3 py-2"
           )}
         >
@@ -144,9 +189,17 @@ function MessageBubble({ message, onPlanAction }: { message: Message; onPlanActi
           )}
         </div>
 
-        <span className="text-xs text-muted-foreground">
-          {formatDate(message.created_at)}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            {formatDate(message.created_at)}
+          </span>
+          {isUser && (
+            <MessageStatusIndicator
+              status={message.status}
+              onRetry={onRetry ? () => onRetry(message.id) : undefined}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
@@ -181,9 +234,35 @@ function StreamingMessage({ content, agent }: { content: string; agent?: string 
   );
 }
 
+function ConnectionBanner({ state }: { state: string }) {
+  if (state === "connected") return null;
+
+  const config = {
+    connecting: { icon: Loader2, text: "Connecting...", className: "bg-blue-500/10 text-blue-500" },
+    reconnecting: { icon: WifiOff, text: "Reconnecting", className: "bg-yellow-500/10 text-yellow-500" },
+    disconnected: { icon: WifiOff, text: "Disconnected", className: "bg-destructive/10 text-destructive" },
+  };
+
+  const { icon: Icon, text, className } = config[state as keyof typeof config] || config.disconnected;
+
+  return (
+    <div className={cn("flex items-center justify-center gap-2 py-2 px-4 text-sm font-medium", className)}>
+      <Icon className={cn("h-4 w-4", state === "connecting" || state === "reconnecting" ? "animate-spin" : "")} />
+      <span>{text}</span>
+      {state === "reconnecting" && (
+        <span className="inline-flex gap-0.5">
+          <span className="animate-bounce [animation-delay:0ms]">.</span>
+          <span className="animate-bounce [animation-delay:150ms]">.</span>
+          <span className="animate-bounce [animation-delay:300ms]">.</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function MessageList() {
-  const { messages, streamingMessage } = useChatStore();
-  const { sendMessage } = useChat();
+  const { messages, streamingMessage, connectionState } = useChatStore();
+  const { sendMessage, retryMessage } = useChat();
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -211,33 +290,45 @@ export function MessageList() {
     sendMessage(`/plan ${action}`);
   };
 
+  // Handle retry
+  const handleRetry = (messageId: string) => {
+    retryMessage(messageId);
+  };
+
   if (messages.length === 0 && !streamingMessage) {
     return (
-      <div className="flex-1 min-h-0 flex items-center justify-center text-muted-foreground p-4">
-        <div className="text-center">
-          <Bot className="h-12 w-12 mx-auto mb-4 opacity-50" />
-          <p>Start a conversation with the AI agents</p>
-          <p className="text-sm mt-1">Type a message below to get started</p>
+      <div className="flex-1 min-h-0 flex flex-col">
+        <ConnectionBanner state={connectionState} />
+        <div className="flex-1 flex items-center justify-center text-muted-foreground p-4">
+          <div className="text-center">
+            <Bot className="h-12 w-12 mx-auto mb-4 opacity-50" />
+            <p>Start a conversation with the AI agents</p>
+            <p className="text-sm mt-1">Type a message below to get started</p>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="flex-1 min-h-0 w-full overflow-y-auto overscroll-contain"
-    >
-      <div className="flex flex-col w-full">
-        {messages.map((message) => (
-          <MessageBubble
-            key={message.id}
-            message={message}
-            onPlanAction={handlePlanAction}
-          />
-        ))}
-        {streamingMessage && <StreamingMessage content={streamingMessage} />}
-        <div ref={scrollRef} />
+    <div className="flex-1 min-h-0 flex flex-col">
+      <ConnectionBanner state={connectionState} />
+      <div
+        ref={containerRef}
+        className="flex-1 min-h-0 w-full overflow-y-auto overscroll-contain"
+      >
+        <div className="flex flex-col w-full">
+          {messages.map((message) => (
+            <MessageBubble
+              key={message.id}
+              message={message}
+              onPlanAction={handlePlanAction}
+              onRetry={handleRetry}
+            />
+          ))}
+          {streamingMessage && <StreamingMessage content={streamingMessage} />}
+          <div ref={scrollRef} />
+        </div>
       </div>
     </div>
   );

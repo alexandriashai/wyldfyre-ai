@@ -23,7 +23,7 @@ interface PlanStep {
 }
 
 interface ChatMessage {
-  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed";
+  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress";
   title?: string;
   conversation_id?: string;
   message_id?: string;
@@ -48,14 +48,21 @@ interface ChatMessage {
   steps?: PlanStep[];
   current_step?: number;
   modification?: string;
+  // Deploy progress fields
+  domain?: string;
+  stage?: string;
+  progress?: number;
+  log?: string;
 }
+
+export type ConnectionState = "connected" | "connecting" | "disconnected" | "reconnecting";
 
 export function useChat() {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
-  const maxReconnectAttempts = 5;
+  const maxReconnectAttempts = 10;
 
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -70,6 +77,11 @@ export function useChat() {
     setIsSending,
     updatePlan,
     updateSteps,
+    setMessageStatus,
+    markMessageFailed,
+    setConnectionState,
+    flushPendingMessages,
+    queueMessage,
   } = useChatStore();
   const { updateAgentStatus, addAgentAction, clearAgentActions } = useAgentStore();
 
@@ -133,14 +145,16 @@ export function useChat() {
           break;
 
         case "agent_action":
-          console.log("[WebSocket] Received agent_action:", data);
           if (data.agent && data.action && data.description) {
             addAgentAction(data.agent, data.action, data.description, data.timestamp);
           }
           break;
 
         case "message_ack":
-          // Message acknowledgment, clear previous actions for new task
+          // Message acknowledgment - mark as sent and clear previous actions
+          if (data.message_id) {
+            setMessageStatus(data.message_id, "sent");
+          }
           clearAgentActions();
           break;
 
@@ -155,13 +169,15 @@ export function useChat() {
 
         case "error":
           console.error("Server error:", data.error);
+          // If there's a message_id, mark it as failed
+          if (data.message_id) {
+            markMessageFailed(data.message_id);
+          }
           clearStreamingMessage();
           setIsSending(false);
           break;
 
         case "command_result":
-          // Command executed successfully - add result as system message
-          // Skip adding message if it's a plan_creating action (supervisor will send plan_update)
           if (data.content && data.action !== "plan_creating") {
             addMessage({
               id: crypto.randomUUID(),
@@ -170,14 +186,10 @@ export function useChat() {
               agent: "system",
               created_at: data.timestamp || new Date().toISOString(),
             });
-            // Command completed, clear sending state
             setIsSending(false);
           }
-          // If command result includes plan data, update the plan panel
-          // Empty string or null clears the plan (e.g., on rejection)
           if (data.plan_content !== undefined) {
             if (data.plan_content === "" || data.plan_content === null) {
-              // Clear the plan panel
               useChatStore.getState().clearPlan();
             } else {
               updatePlan(
@@ -189,7 +201,6 @@ export function useChat() {
           break;
 
         case "command_error":
-          // Command failed - add error as system message
           if (data.error) {
             addMessage({
               id: crypto.randomUUID(),
@@ -202,28 +213,22 @@ export function useChat() {
           break;
 
         case "memory_saved":
-          // Memory was saved with tags - log for debugging
           console.log("Memory saved with tags:", data.tags);
           break;
 
         case "plan_update":
-          // Plan content or status updated - update the plan panel only (not chat)
-          // The plan panel component handles displaying and approving/rejecting
           if (data.plan_content !== undefined) {
             updatePlan(
               data.plan_content,
               data.plan_status as "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null
             );
-            // Plan update received, clear sending state
             setIsSending(false);
           }
           break;
 
         case "step_update":
-          // Plan step progress update (todo-style checkboxes)
           if (data.steps) {
             updateSteps(data.steps, data.current_step || 0);
-            // Log modification type if present
             if (data.modification) {
               console.log(`[Plan] Modified: ${data.modification}`);
             }
@@ -231,19 +236,23 @@ export function useChat() {
           break;
 
         case "task_control_ack":
-          // Task control command acknowledged
           console.log(`Task ${data.action} acknowledged`);
           break;
 
         case "message_queued":
-          // Message was queued while agent is busy
           console.log("Message queued:", data.content);
           break;
 
         case "conversation_renamed":
-          // Server generated a title for the conversation
           if (data.conversation_id && data.title) {
             useChatStore.getState().renameConversationLocal(data.conversation_id, data.title);
+          }
+          break;
+
+        case "deploy_progress":
+          // Emit a custom event for deploy progress tracking
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("deploy_progress", { detail: data }));
           }
           break;
 
@@ -253,7 +262,7 @@ export function useChat() {
     } catch (e) {
       console.error("Failed to parse WebSocket message:", e);
     }
-  }, [addMessage, updateStreamingMessage, clearStreamingMessage, setIsSending, updateAgentStatus, addAgentAction, clearAgentActions, updatePlan, updateSteps]);
+  }, [addMessage, updateStreamingMessage, clearStreamingMessage, setIsSending, updateAgentStatus, addAgentAction, clearAgentActions, updatePlan, updateSteps, setMessageStatus, markMessageFailed]);
 
   const connect = useCallback(() => {
     const wsUrl = getWsUrl();
@@ -266,6 +275,7 @@ export function useChat() {
     }
 
     setIsConnecting(true);
+    setConnectionState(reconnectAttemptsRef.current > 0 ? "reconnecting" : "connecting");
 
     try {
       const socket = new WebSocket(wsUrl);
@@ -273,9 +283,24 @@ export function useChat() {
       socket.onopen = () => {
         setIsConnected(true);
         setIsConnecting(false);
+        setConnectionState("connected");
         reconnectAttemptsRef.current = 0;
         startPingInterval();
-        console.log("WebSocket connected");
+
+        // Flush pending messages on reconnect
+        const pending = flushPendingMessages();
+        if (pending.length > 0) {
+          pending.forEach((msg) => {
+            socket.send(JSON.stringify({
+              type: "chat",
+              conversation_id: msg.conversationId,
+              project_id: msg.projectId || undefined,
+              content: msg.content,
+              message_id: msg.id,
+            }));
+            setMessageStatus(msg.id, "sending");
+          });
+        }
       };
 
       socket.onclose = (event) => {
@@ -285,18 +310,21 @@ export function useChat() {
 
         // Don't reconnect if closed normally (code 1000) or auth failed (4001)
         if (event.code !== 1000 && event.code !== 4001) {
+          setConnectionState("reconnecting");
           // Attempt to reconnect with exponential backoff
           if (reconnectAttemptsRef.current < maxReconnectAttempts) {
             const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
             reconnectAttemptsRef.current++;
-            console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
             reconnectTimeoutRef.current = setTimeout(connect, delay);
+          } else {
+            setConnectionState("disconnected");
           }
+        } else {
+          setConnectionState("disconnected");
         }
       };
 
-      socket.onerror = (error) => {
-        console.error("WebSocket error:", error);
+      socket.onerror = () => {
         setIsConnecting(false);
       };
 
@@ -306,8 +334,9 @@ export function useChat() {
     } catch (e) {
       console.error("Failed to create WebSocket:", e);
       setIsConnecting(false);
+      setConnectionState("disconnected");
     }
-  }, [getWsUrl, handleMessage, startPingInterval, stopPingInterval]);
+  }, [getWsUrl, handleMessage, startPingInterval, stopPingInterval, setConnectionState, flushPendingMessages, setMessageStatus]);
 
   const disconnect = useCallback(() => {
     stopPingInterval();
@@ -321,35 +350,91 @@ export function useChat() {
       socketRef.current.close(1000, "User disconnected");
       socketRef.current = null;
       setIsConnected(false);
+      setConnectionState("disconnected");
     }
-  }, [stopPingInterval]);
+  }, [stopPingInterval, setConnectionState]);
 
   const sendMessage = useCallback(
     (content: string) => {
-      if (socketRef.current?.readyState !== WebSocket.OPEN || !currentConversation) {
-        console.error("Not connected or no conversation selected");
+      if (!currentConversation) {
+        console.error("No conversation selected");
         return;
       }
 
-      // Add user message immediately
+      const messageId = crypto.randomUUID();
+
+      // Add user message immediately (optimistic)
       const userMessage = {
-        id: crypto.randomUUID(),
+        id: messageId,
         role: "user" as const,
         content,
         created_at: new Date().toISOString(),
+        status: "sending" as const,
       };
       addMessage(userMessage);
+      setMessageStatus(messageId, "sending");
       setIsSending(true);
 
-      // Send to server (include project_id for agent context)
-      socketRef.current.send(JSON.stringify({
-        type: "chat",
-        conversation_id: currentConversation.id,
-        project_id: currentConversation.project_id || undefined,
-        content,
-      }));
+      // If disconnected, queue the message
+      if (socketRef.current?.readyState !== WebSocket.OPEN) {
+        queueMessage({
+          id: messageId,
+          content,
+          conversationId: currentConversation.id,
+          projectId: currentConversation.project_id || undefined,
+        });
+        return;
+      }
+
+      // Send to server
+      try {
+        socketRef.current.send(JSON.stringify({
+          type: "chat",
+          conversation_id: currentConversation.id,
+          project_id: currentConversation.project_id || undefined,
+          content,
+          message_id: messageId,
+        }));
+      } catch {
+        markMessageFailed(messageId);
+      }
     },
-    [currentConversation, addMessage, setIsSending]
+    [currentConversation, addMessage, setIsSending, setMessageStatus, queueMessage, markMessageFailed]
+  );
+
+  const retryMessage = useCallback(
+    (messageId: string) => {
+      const state = useChatStore.getState();
+      const message = state.messages.find((m) => m.id === messageId);
+      if (!message || !currentConversation) return;
+
+      // Reset status to sending
+      setMessageStatus(messageId, "sending");
+      setIsSending(true);
+
+      if (socketRef.current?.readyState !== WebSocket.OPEN) {
+        queueMessage({
+          id: messageId,
+          content: message.content,
+          conversationId: currentConversation.id,
+          projectId: currentConversation.project_id || undefined,
+        });
+        return;
+      }
+
+      try {
+        socketRef.current.send(JSON.stringify({
+          type: "chat",
+          conversation_id: currentConversation.id,
+          project_id: currentConversation.project_id || undefined,
+          content: message.content,
+          message_id: messageId,
+        }));
+      } catch {
+        markMessageFailed(messageId);
+      }
+    },
+    [currentConversation, setMessageStatus, setIsSending, queueMessage, markMessageFailed]
   );
 
   const subscribeToConversation = useCallback(
@@ -442,9 +527,11 @@ export function useChat() {
   return {
     isConnected,
     isConnecting,
+    connectionState: useChatStore.getState().connectionState,
     connect,
     disconnect,
     sendMessage,
+    retryMessage,
     subscribeToConversation,
     unsubscribeFromConversation,
     // Task control
