@@ -143,12 +143,11 @@ class LLMClient:
         if not self._primary:
             raise RuntimeError("No LLM provider configured. Check API keys.")
 
-        # Try primary provider
+        # Try primary provider, fall back to secondary on any failure
         try:
             return await self._call_provider(self._primary, model, max_tokens, system, messages, tools)
         except Exception as e:
-            # Check if we should fallback
-            if self._fallback and _should_fallback(e):
+            if self._fallback:
                 logger.warning(
                     "Primary provider failed, falling back",
                     primary=self._primary.provider_type.value,
