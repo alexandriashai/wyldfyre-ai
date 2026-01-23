@@ -6,6 +6,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import ReactMarkdown from "react-markdown";
 import {
   Collapsible,
   CollapsibleContent,
@@ -44,33 +45,6 @@ function getStepDuration(step: PlanStep): number | null {
   return null;
 }
 
-// Simple markdown-like rendering
-function renderPlanContent(content: string) {
-  const lines = content.split("\n");
-  const elements: JSX.Element[] = [];
-
-  lines.forEach((line, i) => {
-    if (line.startsWith("### ")) {
-      elements.push(<h4 key={i} className="font-semibold text-sm mt-3 mb-1">{line.slice(4)}</h4>);
-    } else if (line.startsWith("## ")) {
-      elements.push(<h3 key={i} className="font-semibold mt-3 mb-1">{line.slice(3)}</h3>);
-    } else if (line.startsWith("# ")) {
-      elements.push(<h2 key={i} className="font-bold text-lg mt-4 mb-2">{line.slice(2)}</h2>);
-    } else if (line.startsWith("- ") || line.startsWith("* ")) {
-      elements.push(<li key={i} className="ml-4 text-sm">{line.slice(2)}</li>);
-    } else if (/^\d+\.\s/.test(line)) {
-      elements.push(<li key={i} className="ml-4 text-sm list-decimal">{line.replace(/^\d+\.\s/, "")}</li>);
-    } else if (line.startsWith("```")) {
-      // Skip
-    } else if (line.trim() === "") {
-      elements.push(<div key={i} className="h-2" />);
-    } else {
-      elements.push(<p key={i} className="text-sm">{line}</p>);
-    }
-  });
-
-  return elements;
-}
 
 function StepItem({ step, index, isLast }: { step: PlanStep; index: number; isLast: boolean }) {
   const [showOutput, setShowOutput] = useState(false);
@@ -151,7 +125,27 @@ function StepItem({ step, index, isLast }: { step: PlanStep; index: number; isLa
           </div>
 
           {step.description && (
-            <p className="text-xs text-muted-foreground mt-0.5">{step.description}</p>
+            <div className="text-xs text-muted-foreground mt-0.5 prose prose-xs dark:prose-invert max-w-none [&_p]:m-0 [&_ul]:m-0 [&_ol]:m-0 [&_li]:m-0">
+              <ReactMarkdown>{step.description}</ReactMarkdown>
+            </div>
+          )}
+
+          {/* Todos / sub-tasks */}
+          {step.todos && step.todos.length > 0 && (
+            <ul className="mt-1 space-y-0.5">
+              {step.todos.map((todo, i) => (
+                <li key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                  <span className="mt-0.5 shrink-0">
+                    {step.status === "completed" ? (
+                      <Check className="h-3 w-3 text-green-500" />
+                    ) : (
+                      <Square className="h-3 w-3" />
+                    )}
+                  </span>
+                  <span>{todo}</span>
+                </li>
+              ))}
+            </ul>
           )}
 
           {/* Files affected */}
@@ -347,9 +341,9 @@ export function PlanPanel({ className }: PlanPanelProps) {
       onOpenChange={setIsOpen}
       className={cn("border-b bg-muted/30", className)}
     >
-      <CollapsibleTrigger asChild>
-        <div className="flex items-center justify-between px-4 py-2 cursor-pointer hover:bg-muted/50 transition-colors">
-          <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between px-4 py-2">
+        <CollapsibleTrigger asChild>
+          <div className="flex items-center gap-2 flex-1 cursor-pointer hover:opacity-80 transition-opacity">
             <FileText className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm font-medium">Plan</span>
             <Badge variant={status.variant} className="h-5 text-xs">
@@ -361,14 +355,23 @@ export function PlanPanel({ className }: PlanPanelProps) {
                 {planSteps.filter((s) => s.status === "completed").length}/{planSteps.length}
               </span>
             )}
+            {isOpen ? (
+              <ChevronUp className="h-4 w-4 text-muted-foreground ml-auto" />
+            ) : (
+              <ChevronDown className="h-4 w-4 text-muted-foreground ml-auto" />
+            )}
           </div>
-          {isOpen ? (
-            <ChevronUp className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
-          )}
-        </div>
-      </CollapsibleTrigger>
+        </CollapsibleTrigger>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={(e) => { e.stopPropagation(); clearPlan(); }}
+          className="h-7 w-7 ml-2 shrink-0 text-muted-foreground hover:text-foreground hover:bg-destructive/10"
+          title="Dismiss plan"
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      </div>
       <CollapsibleContent>
         <div className="px-4 pb-3">
           <div className="max-h-[60vh] sm:max-h-80 overflow-y-auto overscroll-contain touch-pan-y">
@@ -386,7 +389,7 @@ export function PlanPanel({ className }: PlanPanelProps) {
               </div>
             ) : (
               <div className="prose prose-sm dark:prose-invert max-w-none">
-                {renderPlanContent(currentPlan)}
+                <ReactMarkdown>{currentPlan}</ReactMarkdown>
               </div>
             )}
           </div>

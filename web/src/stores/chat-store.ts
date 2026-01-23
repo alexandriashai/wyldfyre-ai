@@ -37,6 +37,8 @@ export interface PlanStep {
   status: "pending" | "in_progress" | "completed" | "failed" | "skipped";
   agent?: string;
   files?: string[];
+  todos?: string[];
+  changes?: Array<{ file: string; action: string; summary: string }>;
   output?: string;
   error?: string;
   started_at?: string;
@@ -413,6 +415,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       currentPlan: content,
       planStatus: status || "DRAFT",
+      planSteps: [],
+      currentStepIndex: 0,
     });
   },
 

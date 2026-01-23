@@ -16,6 +16,8 @@ interface PlanStep {
   status: "pending" | "in_progress" | "completed" | "failed" | "skipped";
   agent?: string;
   files?: string[];
+  todos?: string[];
+  changes?: Array<{ file: string; action: string; summary: string }>;
   output?: string;
   error?: string;
   started_at?: string;

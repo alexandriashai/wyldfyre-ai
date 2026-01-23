@@ -1283,6 +1283,20 @@ class SupervisorAgent(BaseAgent):
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         },
                     )
+                    # Send structured steps so frontend can render interactive step UI
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "step_update",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "plan_id": plan_id,
+                            "steps": plan["steps"],
+                            "current_step": 0,
+                            "agent": "wyld",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
 
                 logger.info("Plan created successfully", plan_id=plan_id, steps=len(steps))
                 await self.publish_action("complete", f"Plan created with {len(steps)} steps")
@@ -2189,7 +2203,14 @@ Execute this step now. Make real file changes, not just descriptions."""
                             "description": s.get("description", ""),
                             "agent": s.get("agent"),
                             "files": s.get("files", []),
+                            "todos": s.get("todos", []),
+                            "changes": s.get("changes", []),
                             "status": "pending",
+                            "dependencies": [],
+                            "output": None,
+                            "error": None,
+                            "started_at": None,
+                            "completed_at": None,
                         }
                         for i, s in enumerate(new_steps)
                     ]
@@ -2215,6 +2236,21 @@ Execute this step now. Make real file changes, not just descriptions."""
                             "plan_content": self._format_plan_for_display(plan),
                             "plan_status": "PENDING",
                             "plan": plan,
+                            "agent": "wyld",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    # Send structured steps so frontend can render interactive step UI
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "step_update",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "plan_id": plan_id,
+                            "steps": steps,
+                            "current_step": 0,
+                            "modification": modification_type,
                             "agent": "wyld",
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         },
