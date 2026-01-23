@@ -85,6 +85,7 @@ class Tool:
     capability_category: CapabilityCategory | None = None
     allows_elevation: bool = True
     max_elevation_level: int | None = None
+    side_effects: bool = True
 
     def __post_init__(self) -> None:
         """Set default max elevation level if not specified."""
@@ -195,12 +196,19 @@ class ToolRegistry:
         self,
         max_permission_level: int | None = None,
         include_elevatable: bool = True,
+        read_only: bool = False,
     ) -> list[dict[str, Any]]:
-        """Get Claude API schemas for all accessible tools."""
-        return [
-            t.to_claude_schema()
-            for t in self.list_tools(max_permission_level, include_elevatable=include_elevatable)
-        ]
+        """Get Claude API schemas for all accessible tools.
+
+        Args:
+            max_permission_level: Filter by maximum permission level
+            include_elevatable: Include tools that can be accessed via elevation
+            read_only: If True, only include tools with side_effects=False
+        """
+        tools = self.list_tools(max_permission_level, include_elevatable=include_elevatable)
+        if read_only:
+            tools = [t for t in tools if not t.side_effects]
+        return [t.to_claude_schema() for t in tools]
 
     def check_permission(
         self,
@@ -341,6 +349,8 @@ class ToolRegistry:
                 kwargs["_agent_type"] = ctx["_agent_type"]
             if "_task_id" in sig.parameters and "_task_id" in ctx:
                 kwargs["_task_id"] = ctx["_task_id"]
+            if "_agent" in sig.parameters and "_agent" in ctx:
+                kwargs["_agent"] = ctx["_agent"]
 
             result = await tool.handler(**kwargs)
 
@@ -365,6 +375,7 @@ def tool(
     capability_category: CapabilityCategory | None = None,
     allows_elevation: bool = True,
     max_elevation_level: int | None = None,
+    side_effects: bool = True,
 ) -> Callable[[Callable[P, Awaitable[ToolResult]]], Callable[P, Awaitable[ToolResult]]]:
     """
     Decorator to create a tool from an async function.
@@ -381,6 +392,7 @@ def tool(
                 "required": ["path"]
             },
             capability_category=CapabilityCategory.FILE,
+            side_effects=False,
         )
         async def read_file(path: str) -> ToolResult:
             ...
@@ -394,6 +406,7 @@ def tool(
         capability_category: Category of capability for access control
         allows_elevation: Whether this tool can be accessed via elevation
         max_elevation_level: Maximum level this tool can be elevated to
+        side_effects: Whether this tool has side effects (False = safe to parallelize)
     """
 
     def decorator(
@@ -415,6 +428,7 @@ def tool(
             capability_category=capability_category,
             allows_elevation=allows_elevation,
             max_elevation_level=max_elevation_level,
+            side_effects=side_effects,
         )
 
         @wraps(func)

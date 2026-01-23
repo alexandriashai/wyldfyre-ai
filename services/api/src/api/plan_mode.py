@@ -22,6 +22,7 @@ logger = get_logger(__name__)
 
 class PlanStatus(str, Enum):
     """Status of a plan."""
+    EXPLORING = "exploring"    # Agent is exploring codebase (read-only tools only)
     DRAFTING = "drafting"      # Agent is creating the plan
     PENDING = "pending"        # Awaiting user approval
     APPROVED = "approved"      # User approved, ready to execute
@@ -89,6 +90,8 @@ class Plan:
     completed_at: Optional[datetime] = None
     current_step: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    exploration_notes: list[str] = field(default_factory=list)
+    files_explored: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,6 +108,8 @@ class Plan:
             "current_step": self.current_step,
             "progress": self.progress,
             "metadata": self.metadata,
+            "exploration_notes": self.exploration_notes,
+            "files_explored": self.files_explored,
         }
 
     @property
@@ -134,20 +139,66 @@ class PlanManager:
         title: str,
         description: str,
     ) -> Plan:
-        """Create a new plan."""
+        """Create a new plan (starts in EXPLORING phase)."""
         plan = Plan(
             id=str(uuid4()),
             conversation_id=conversation_id,
             user_id=user_id,
             title=title,
             description=description,
+            status=PlanStatus.EXPLORING,
         )
 
         self._active_plans[plan.id] = plan
         await self._save_plan(plan)
 
-        logger.info("Plan created", plan_id=plan.id, title=title)
+        logger.info("Plan created in exploring phase", plan_id=plan.id, title=title)
         return plan
+
+    async def start_exploration(self, plan_id: str) -> bool:
+        """Transition a plan to exploring phase."""
+        plan = await self.get_plan(plan_id)
+        if not plan:
+            return False
+
+        plan.status = PlanStatus.EXPLORING
+        await self._save_plan(plan)
+        logger.info("Plan exploration started", plan_id=plan_id)
+        return True
+
+    async def add_exploration_note(
+        self,
+        plan_id: str,
+        note: str,
+        file_path: str | None = None,
+    ) -> bool:
+        """Add an exploration note and optionally track a file explored."""
+        plan = await self.get_plan(plan_id)
+        if not plan:
+            return False
+
+        plan.exploration_notes.append(note)
+        if file_path and file_path not in plan.files_explored:
+            plan.files_explored.append(file_path)
+
+        await self._save_plan(plan)
+        return True
+
+    async def finish_exploration(self, plan_id: str) -> bool:
+        """Transition from exploring to drafting phase."""
+        plan = await self.get_plan(plan_id)
+        if not plan or plan.status != PlanStatus.EXPLORING:
+            return False
+
+        plan.status = PlanStatus.DRAFTING
+        await self._save_plan(plan)
+        logger.info(
+            "Plan exploration finished, now drafting",
+            plan_id=plan_id,
+            files_explored=len(plan.files_explored),
+            notes_count=len(plan.exploration_notes),
+        )
+        return True
 
     async def add_step(
         self,
@@ -378,6 +429,8 @@ class PlanManager:
                 created_at=datetime.fromisoformat(plan_data["created_at"]),
                 current_step=plan_data.get("current_step", 0),
                 metadata=plan_data.get("metadata", {}),
+                exploration_notes=plan_data.get("exploration_notes", []),
+                files_explored=plan_data.get("files_explored", []),
             )
 
             if plan_data.get("approved_at"):
@@ -442,6 +495,14 @@ def format_plan_for_display(plan: Plan) -> str:
         if step.error:
             lines.append(f"   ⚠️ Error: {step.error}")
         lines.append("")
+
+    if plan.status == PlanStatus.EXPLORING:
+        if plan.files_explored:
+            lines.append(f"**Files explored:** {len(plan.files_explored)}")
+        if plan.exploration_notes:
+            lines.append(f"**Notes collected:** {len(plan.exploration_notes)}")
+        lines.append("")
+        lines.append("_Agent is exploring the codebase with read-only tools..._")
 
     if plan.status == PlanStatus.PENDING:
         lines.extend([

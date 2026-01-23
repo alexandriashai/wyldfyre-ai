@@ -43,6 +43,10 @@ from .system_tools import (
     system_info,
 )
 
+from .subagent_tools import (
+    spawn_subagent,
+)
+
 from .browser_shared import (
     browser_status,
     screenshot_url,
@@ -72,6 +76,8 @@ __all__ = [
     "service_manage",
     "resource_monitor",
     "system_info",
+    # Subagent tools
+    "spawn_subagent",
     # Browser shared tools
     "browser_status",
     "screenshot_url",

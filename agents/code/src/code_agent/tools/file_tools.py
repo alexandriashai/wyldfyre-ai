@@ -62,6 +62,7 @@ def _validate_path(path: str) -> Path:
     },
     permission_level=0,
     capability_category=CapabilityCategory.FILE,
+    side_effects=False,
 )
 async def read_file(
     path: str,
@@ -181,6 +182,7 @@ async def write_file(
     },
     permission_level=0,
     capability_category=CapabilityCategory.FILE,
+    side_effects=False,
 )
 async def list_directory(
     path: str = ".",
@@ -263,6 +265,7 @@ async def list_directory(
     },
     permission_level=0,
     capability_category=CapabilityCategory.FILE,
+    side_effects=False,
 )
 async def search_files(
     pattern: str,

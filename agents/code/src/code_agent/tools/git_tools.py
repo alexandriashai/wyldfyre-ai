@@ -68,6 +68,7 @@ async def _run_git_command(
     },
     permission_level=0,
     capability_category=CapabilityCategory.GIT,
+    side_effects=False,
 )
 async def git_status(path: str = ".") -> ToolResult:
     """Get git status."""
@@ -146,6 +147,7 @@ async def git_status(path: str = ".") -> ToolResult:
             },
         },
     },
+    side_effects=False,
 )
 async def git_diff(
     path: str = ".",
@@ -199,6 +201,7 @@ async def git_diff(
             },
         },
     },
+    side_effects=False,
 )
 async def git_log(
     path: str = ".",

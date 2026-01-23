@@ -89,6 +89,8 @@ ACTION_MEMORY_STORE = "memory_store"
 ACTION_COMPLETE = "complete"
 ACTION_ERROR = "error"
 
+from .context_summarizer import ContextSummarizer
+from .parallel_executor import ParallelToolExecutor, ToolCallRequest, ToolCallResult
 from .tools import Tool, ToolRegistry, ToolResult
 
 logger = get_logger(__name__)
@@ -178,6 +180,7 @@ class BaseAgent(ABC):
         self._pubsub: PubSubManager | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._running = False
+        self._plan_exploring = False  # Read-only mode during plan exploration
 
         # Create permission context for this agent
         self._permission_context = PermissionContext(
@@ -192,8 +195,14 @@ class BaseAgent(ABC):
         # Initialize tool registry with permission context
         self._tool_registry = ToolRegistry(self._permission_context)
 
+        # Initialize parallel tool executor
+        self._parallel_executor = ParallelToolExecutor(self._tool_registry)
+
         # Initialize LLM client (supports Anthropic + OpenAI fallback)
         self._llm = LLMClient()
+
+        # Initialize context summarizer for long conversations
+        self._context_summarizer = ContextSummarizer(self._llm)
 
         # Register shared tools (available to all agents)
         self._register_shared_tools()
@@ -213,7 +222,7 @@ class BaseAgent(ABC):
         """
         Register shared tools available to all agents.
 
-        These include memory, collaboration, and system tools.
+        These include memory, collaboration, subagent, and system tools.
         Agents can override this to exclude specific shared tools.
         """
         from .shared_tools import (
@@ -227,6 +236,8 @@ class BaseAgent(ABC):
             notify_user,
             request_agent_help,
             broadcast_status,
+            # Subagent tools
+            spawn_subagent,
             # System tools
             get_system_info,
             check_service_health,
@@ -249,6 +260,9 @@ class BaseAgent(ABC):
         self._tool_registry.register(request_agent_help._tool)  # type: ignore[attr-defined]
         self._tool_registry.register(broadcast_status._tool)  # type: ignore[attr-defined]
 
+        # Register subagent tools
+        self._tool_registry.register(spawn_subagent._tool)  # type: ignore[attr-defined]
+
         # Register system tools (read-only monitoring)
         self._tool_registry.register(get_system_info._tool)  # type: ignore[attr-defined]
         self._tool_registry.register(check_service_health._tool)  # type: ignore[attr-defined]
@@ -263,7 +277,7 @@ class BaseAgent(ABC):
         logger.debug(
             "Registered shared tools",
             agent=self.config.name,
-            tool_count=16,
+            tool_count=17,
         )
 
     @property
@@ -295,6 +309,10 @@ class BaseAgent(ABC):
     def permission_level(self) -> PermissionLevel:
         """Get the agent's current effective permission level."""
         return self._permission_context.current_level
+
+    def set_plan_exploring(self, exploring: bool) -> None:
+        """Set whether the agent is in plan exploration mode (read-only tools only)."""
+        self._plan_exploring = exploring
 
     @abstractmethod
     def get_system_prompt(self) -> str:
@@ -919,8 +937,12 @@ class BaseAgent(ABC):
             ConversationMessage(role="user", content=user_message)
         )
 
-        # Get tool schemas
-        tools = self._tool_registry.get_claude_schemas(self.config.permission_level)
+        # Get tool schemas (read-only during plan exploration phase)
+        plan_read_only = getattr(self, "_plan_exploring", False)
+        tools = self._tool_registry.get_claude_schemas(
+            self.config.permission_level,
+            read_only=plan_read_only,
+        )
 
         iterations = 0
         while iterations < iteration_limit:
@@ -951,8 +973,8 @@ class BaseAgent(ABC):
                         )
                     )
 
-            # Build messages for API
-            messages = self._build_api_messages()
+            # Build messages for API (async for context summarization)
+            messages = await self._build_api_messages()
 
             # Publish API call action
             await self.publish_action(ACTION_API_CALL, "Calling LLM API...")
@@ -1014,99 +1036,43 @@ class BaseAgent(ABC):
                 }
 
             elif response.stop_reason == "tool_use":
-                # Execute tools
+                # Execute tools with parallel/sequential partitioning
                 tool_results = []
                 tool_step = 0
                 tools_success = 0
                 tools_failed = 0
 
-                for tool_call in response.tool_calls:
-                    tool_name = tool_call.name
-                    tool_input = tool_call.arguments
-                    tool_use_id = tool_call.id
-                    tool_step += 1
-
-                    # === BUILD phase: Tool preparation ===
-                    if self._memory:
-                        await self._memory.store_task_trace(
-                            task_id=task_id,
-                            phase=PAIPhase.BUILD,
-                            data={
-                                "agent_type": self.agent_type.value,
-                                "tool_name": tool_name,
-                                "step": tool_step,
-                                "iteration": iterations,
-                            },
-                        )
-
-                    # Publish tool call action to frontend
-                    await self.publish_action(
-                        ACTION_TOOL_CALL,
-                        f"Calling {tool_name}..."
+                # Partition into parallel (no side effects) and sequential groups
+                all_calls = [
+                    ToolCallRequest(
+                        name=tc.name,
+                        arguments=tc.arguments,
+                        tool_use_id=tc.id,
                     )
+                    for tc in response.tool_calls
+                ]
+                parallel_calls, sequential_calls = self._parallel_executor.partition(all_calls)
 
-                    # Publish tool call event to internal channel
-                    if self._pubsub:
-                        await self._pubsub.publish(
-                            "agent:tool_calls",
-                            ToolCall(
-                                agent_type=self.agent_type,
-                                task_id=task_id,
-                                tool_name=tool_name,
-                                tool_input=tool_input,
-                            ).model_dump_json(),
-                        )
+                # Helper to process a single tool call result
+                async def _process_tool_result(
+                    tool_name: str,
+                    tool_input: dict,
+                    tool_use_id: str,
+                    result: ToolResult,
+                ) -> dict:
+                    nonlocal tools_success, tools_failed
 
-                    # === Plugin pre-tool hook ===
-                    pre_hook_result = await self._trigger_pre_tool_hook(
-                        tool_name, tool_input, task_id
-                    )
-
-                    # Check if plugin blocked the tool
-                    if pre_hook_result.get("security_blocked"):
-                        logger.warning(
-                            "Tool blocked by security plugin",
-                            tool=tool_name,
-                            reason=pre_hook_result.get("block_reason"),
-                        )
-                        result = ToolResult(
-                            success=False,
-                            error=f"Blocked by security: {pre_hook_result.get('block_reason', 'Security violation')}",
-                            output=None,
-                        )
-                    else:
-                        # Execute tool with context (memory, agent type, task id)
-                        result = await self._tool_registry.execute(
-                            tool_name,
-                            tool_input,
-                            context={
-                                "task_id": task_id,
-                                "_memory": self._memory,
-                                "_agent_type": self.agent_type.value,
-                                "_task_id": task_id,
-                                "_agent": self,  # Pass agent for action publishing
-                            },
-                        )
-
-                        # === Plugin post-tool hook ===
-                        await self._trigger_post_tool_hook(
-                            tool_name, tool_input, result, task_id
-                        )
-
-                    # Track success/failure for EXECUTE phase
                     if result.success:
                         tools_success += 1
                     else:
                         tools_failed += 1
 
-                    # Track tool call with status
                     agent_tool_calls_total.labels(
                         agent_type=self.agent_type.value,
                         tool_name=tool_name,
                         status="success" if result.success else "error",
                     ).inc()
 
-                    # Publish tool result action to frontend
                     if result.success:
                         await self.publish_action(
                             ACTION_TOOL_RESULT,
@@ -1119,14 +1085,6 @@ class BaseAgent(ABC):
                             f"{tool_name} failed: {error_msg[:50]}"
                         )
 
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": str(result.output) if result.success else (result.error or "Tool execution failed"),
-                        "is_error": not result.success,
-                    })
-
-                    # Publish tool result event to internal channel
                     if self._pubsub:
                         await self._pubsub.publish(
                             "agent:tool_results",
@@ -1140,6 +1098,100 @@ class BaseAgent(ABC):
                                 duration_ms=0,
                             ).model_dump_json(),
                         )
+
+                    return {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": str(result.output) if result.success else (result.error or "Tool execution failed"),
+                        "is_error": not result.success,
+                    }
+
+                # Helper to execute a single tool with hooks
+                async def _execute_single_tool(call: ToolCallRequest) -> tuple[str, dict, str, ToolResult]:
+                    nonlocal tool_step
+                    tool_step += 1
+
+                    if self._memory:
+                        await self._memory.store_task_trace(
+                            task_id=task_id,
+                            phase=PAIPhase.BUILD,
+                            data={
+                                "agent_type": self.agent_type.value,
+                                "tool_name": call.name,
+                                "step": tool_step,
+                                "iteration": iterations,
+                            },
+                        )
+
+                    await self.publish_action(
+                        ACTION_TOOL_CALL,
+                        f"Calling {call.name}..."
+                    )
+
+                    if self._pubsub:
+                        await self._pubsub.publish(
+                            "agent:tool_calls",
+                            ToolCall(
+                                agent_type=self.agent_type,
+                                task_id=task_id,
+                                tool_name=call.name,
+                                tool_input=call.arguments,
+                            ).model_dump_json(),
+                        )
+
+                    pre_hook_result = await self._trigger_pre_tool_hook(
+                        call.name, call.arguments, task_id
+                    )
+
+                    if pre_hook_result.get("security_blocked"):
+                        logger.warning(
+                            "Tool blocked by security plugin",
+                            tool=call.name,
+                            reason=pre_hook_result.get("block_reason"),
+                        )
+                        result = ToolResult(
+                            success=False,
+                            error=f"Blocked by security: {pre_hook_result.get('block_reason', 'Security violation')}",
+                            output=None,
+                        )
+                    else:
+                        result = await self._tool_registry.execute(
+                            call.name,
+                            call.arguments,
+                            context={
+                                "task_id": task_id,
+                                "_memory": self._memory,
+                                "_agent_type": self.agent_type.value,
+                                "_task_id": task_id,
+                                "_agent": self,
+                            },
+                        )
+
+                        await self._trigger_post_tool_hook(
+                            call.name, call.arguments, result, task_id
+                        )
+
+                    return call.name, call.arguments, call.tool_use_id, result
+
+                # Execute parallel batch first (read-only tools)
+                if parallel_calls:
+                    await self.publish_action(
+                        ACTION_TOOL_CALL,
+                        f"Executing {len(parallel_calls)} read-only tools in parallel..."
+                    )
+
+                    parallel_tasks = [_execute_single_tool(c) for c in parallel_calls]
+                    parallel_results = await asyncio.gather(*parallel_tasks)
+
+                    for tool_name, tool_input, tool_use_id, result in parallel_results:
+                        tr = await _process_tool_result(tool_name, tool_input, tool_use_id, result)
+                        tool_results.append(tr)
+
+                # Execute sequential tools (with side effects)
+                for call in sequential_calls:
+                    tool_name, tool_input, tool_use_id, result = await _execute_single_tool(call)
+                    tr = await _process_tool_result(tool_name, tool_input, tool_use_id, result)
+                    tool_results.append(tr)
 
                 # === EXECUTE phase: Tool execution summary ===
                 if self._memory:
@@ -1244,33 +1296,62 @@ class BaseAgent(ABC):
         # If we couldn't find a safe point, start from beginning
         return 0
 
-    def _build_api_messages(self) -> list[dict[str, Any]]:
+    async def _build_api_messages(self) -> list[dict[str, Any]]:
         """Build messages list for Claude API.
 
-        Truncates conversation history if too long to prevent context overflow.
+        Uses context summarization when history exceeds threshold.
+        Falls back to truncation for safety.
         Ensures tool_use/tool_result pairs are never split.
         """
         messages = []
 
         # Limit conversation history to prevent context overflow
         history = self._state.conversation_history
-        max_history = 32
 
-        if len(history) > max_history:
-            # Find safe truncation point that doesn't break tool pairs
-            safe_start = self._find_safe_truncation_point(
-                history,
-                max_history,
-            )
+        # Try context summarization first (threshold: 24 messages)
+        if self._context_summarizer.should_summarize(len(history)):
+            summary, recent_history = await self._context_summarizer.summarize_history(history)
 
-            # Use history from safe_start to end (don't keep first 2 separately)
-            history = history[safe_start:]
-            logger.debug(
-                "Truncated conversation history",
-                original_length=len(self._state.conversation_history),
-                truncated_length=len(history),
-                safe_start_index=safe_start,
-            )
+            if summary:
+                # Inject summary as initial user/assistant exchange
+                messages.append({
+                    "role": "user",
+                    "content": "[Previous conversation summary follows]",
+                })
+                messages.append({
+                    "role": "assistant",
+                    "content": f"[Conversation Summary]\n{summary}\n\n[Continuing from here with full context above]",
+                })
+                history = recent_history
+                logger.debug(
+                    "Applied context summarization",
+                    original_length=len(self._state.conversation_history),
+                    recent_kept=len(recent_history),
+                )
+            else:
+                # Summarization returned empty, fall back to truncation
+                max_history = 32
+                if len(history) > max_history:
+                    safe_start = self._find_safe_truncation_point(
+                        history,
+                        max_history,
+                    )
+                    history = history[safe_start:]
+                    logger.debug(
+                        "Truncated conversation history (summarization empty)",
+                        original_length=len(self._state.conversation_history),
+                        truncated_length=len(history),
+                        safe_start_index=safe_start,
+                    )
+        else:
+            # Under threshold, still apply hard truncation if somehow exceeded
+            max_history = 32
+            if len(history) > max_history:
+                safe_start = self._find_safe_truncation_point(
+                    history,
+                    max_history,
+                )
+                history = history[safe_start:]
 
         for msg in history:
             if msg.role == "user":

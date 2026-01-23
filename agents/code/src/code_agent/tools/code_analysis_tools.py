@@ -101,6 +101,7 @@ async def _run_command(
     },
     permission_level=0,
     capability_category=CapabilityCategory.CODE,
+    side_effects=False,
 )
 async def code_search(
     pattern: str,
@@ -197,6 +198,7 @@ async def code_search(
     },
     permission_level=0,
     capability_category=CapabilityCategory.CODE,
+    side_effects=False,
 )
 async def find_definition(
     symbol: str,
@@ -327,6 +329,7 @@ async def find_definition(
     },
     permission_level=0,
     capability_category=CapabilityCategory.CODE,
+    side_effects=False,
 )
 async def find_references(
     symbol: str,
@@ -406,6 +409,7 @@ async def find_references(
     },
     permission_level=0,
     capability_category=CapabilityCategory.CODE,
+    side_effects=False,
 )
 async def get_python_imports(path: str) -> ToolResult:
     """Extract Python imports from a file or directory."""
@@ -490,6 +494,7 @@ async def get_python_imports(path: str) -> ToolResult:
     },
     permission_level=0,
     capability_category=CapabilityCategory.CODE,
+    side_effects=False,
 )
 async def get_package_dependencies(project_path: str) -> ToolResult:
     """Get project dependencies from package files."""
@@ -595,6 +600,7 @@ async def get_package_dependencies(project_path: str) -> ToolResult:
     },
     permission_level=0,
     capability_category=CapabilityCategory.CODE,
+    side_effects=False,
 )
 async def count_lines(
     path: str,

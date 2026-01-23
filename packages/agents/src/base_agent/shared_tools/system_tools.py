@@ -235,6 +235,7 @@ async def shell_execute(
     },
     permission_level=0,  # READ_ONLY
     capability_category=CapabilityCategory.SYSTEM,
+    side_effects=False,
 )
 async def process_list(
     filter_name: str | None = None,
@@ -666,6 +667,7 @@ async def service_manage(
     },
     permission_level=0,  # READ_ONLY
     capability_category=CapabilityCategory.SYSTEM,
+    side_effects=False,
 )
 async def system_info(
     include_env: bool = False,
@@ -754,6 +756,7 @@ async def system_info(
     },
     permission_level=0,  # READ_ONLY
     capability_category=CapabilityCategory.MONITORING,
+    side_effects=False,
 )
 async def resource_monitor(
     include_per_cpu: bool = False,
@@ -881,6 +884,7 @@ async def _check_tcp_port(host: str, port: int, timeout: float = 5.0) -> bool:
     },
     permission_level=0,  # READ_ONLY
     capability_category=CapabilityCategory.MONITORING,
+    side_effects=False,
 )
 async def check_service_health(
     services: list[str] | None = None,

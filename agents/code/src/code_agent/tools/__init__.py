@@ -9,6 +9,9 @@ from .file_tools import (
     search_files,
     write_file,
 )
+from .edit_tools import (
+    edit_file,
+)
 from .git_tools import (
     git_add,
     git_branch,
@@ -36,6 +39,8 @@ __all__ = [
     "list_directory",
     "search_files",
     "delete_file",
+    # Edit tools
+    "edit_file",
     # Git tools
     "git_status",
     "git_diff",

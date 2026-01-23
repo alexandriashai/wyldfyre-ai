@@ -42,6 +42,7 @@ async def _get_qdrant_store(collection: str | None = None) -> QdrantStore:
     - Pass project_id to include GLOBAL + that project's learnings
     - Pass domain_id to include GLOBAL + that domain's learnings
     - Learnings from other projects/domains are automatically excluded""",
+    side_effects=False,
     parameters={
         "type": "object",
         "properties": {
@@ -296,6 +297,7 @@ async def store_memory(
 @tool(
     name="list_memory_collections",
     description="List all available memory collections in the vector database.",
+    side_effects=False,
     parameters={
         "type": "object",
         "properties": {},
@@ -336,6 +338,7 @@ async def list_memory_collections() -> ToolResult:
 @tool(
     name="get_memory_stats",
     description="Get statistics about a memory collection (document count, etc.).",
+    side_effects=False,
     parameters={
         "type": "object",
         "properties": {

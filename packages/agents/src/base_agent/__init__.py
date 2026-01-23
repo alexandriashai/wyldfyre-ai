@@ -27,6 +27,9 @@ from .agent import (
     ACTION_WAITING,
     BaseAgent,
 )
+from .context_summarizer import ContextSummarizer
+from .parallel_executor import ParallelToolExecutor, ToolCallRequest, ToolCallResult
+from .subagent import Subagent, SubagentResult
 from .tools import CRITICAL_TOOLS, Tool, ToolRegistry, ToolResult, tool
 
 # Re-export permission types for convenience
@@ -44,6 +47,8 @@ from .shared_tools import (
     notify_user,
     request_agent_help,
     broadcast_status,
+    # Subagent tools
+    spawn_subagent,
     # System tools
     get_system_info,
     check_service_health,
@@ -78,10 +83,16 @@ __all__ = [
     # Classes
     "BaseAgent",
     "CapabilityCategory",
+    "ContextSummarizer",
     "CRITICAL_TOOLS",
+    "ParallelToolExecutor",
     "PermissionContext",
     "PermissionLevel",
+    "Subagent",
+    "SubagentResult",
     "Tool",
+    "ToolCallRequest",
+    "ToolCallResult",
     "ToolRegistry",
     "ToolResult",
     "tool",
@@ -95,6 +106,8 @@ __all__ = [
     "notify_user",
     "request_agent_help",
     "broadcast_status",
+    # Shared tools - Subagent
+    "spawn_subagent",
     # Shared tools - System
     "get_system_info",
     "check_service_health",

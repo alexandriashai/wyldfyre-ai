@@ -11,6 +11,7 @@ from base_agent.agent import AgentConfig
 from .tools import (
     # File tools
     delete_file,
+    edit_file,
     list_directory,
     read_file,
     search_files,
@@ -111,6 +112,7 @@ class CodeAgent(BaseAgent):
         # File tools
         self.register_tool(read_file._tool)
         self.register_tool(write_file._tool)
+        self.register_tool(edit_file._tool)
         self.register_tool(list_directory._tool)
         self.register_tool(search_files._tool)
         self.register_tool(delete_file._tool)
