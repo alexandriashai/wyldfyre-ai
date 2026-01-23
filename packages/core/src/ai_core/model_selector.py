@@ -14,9 +14,9 @@ from .llm_provider import LLMProviderType
 class ModelTier(str, Enum):
     """Model complexity tiers."""
 
-    FAST = "fast"          # haiku / gpt-4o-mini
-    BALANCED = "balanced"  # sonnet / gpt-4o
-    POWERFUL = "powerful"  # opus / o3
+    FAST = "fast"          # haiku / gpt-5-mini
+    BALANCED = "balanced"  # sonnet / gpt-5
+    POWERFUL = "powerful"  # opus / gpt-5.2
 
 
 # Model names for each provider at each tier
@@ -27,9 +27,9 @@ TIER_MODELS: dict[LLMProviderType, dict[ModelTier, str]] = {
         ModelTier.POWERFUL: "claude-opus-4-5-20251101",
     },
     LLMProviderType.OPENAI: {
-        ModelTier.FAST: "gpt-4o-mini",
-        ModelTier.BALANCED: "gpt-4o",
-        ModelTier.POWERFUL: "o3",
+        ModelTier.FAST: "gpt-5-mini",
+        ModelTier.BALANCED: "gpt-5",
+        ModelTier.POWERFUL: "gpt-5.2",
     },
 }
 

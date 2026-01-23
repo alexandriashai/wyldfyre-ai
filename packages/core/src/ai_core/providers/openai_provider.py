@@ -18,16 +18,16 @@ from ..llm_provider import (
 
 # Model mapping from Anthropic to OpenAI equivalents
 MODEL_MAP: dict[str, str] = {
-    "claude-opus-4-5-20251101": "gpt-4o",
-    "claude-opus-4-5": "gpt-4o",
-    "claude-sonnet-4-20250514": "gpt-4o",
-    "claude-sonnet-4": "gpt-4o",
-    "claude-3-5-haiku-20241022": "gpt-4o-mini",
-    "claude-3-5-haiku": "gpt-4o-mini",
-    "claude-haiku-4-20250514": "gpt-4o-mini",
+    "claude-opus-4-5-20251101": "gpt-5.2",
+    "claude-opus-4-5": "gpt-5.2",
+    "claude-sonnet-4-20250514": "gpt-5",
+    "claude-sonnet-4": "gpt-5",
+    "claude-3-5-haiku-20241022": "gpt-5-mini",
+    "claude-3-5-haiku": "gpt-5-mini",
+    "claude-haiku-4-20250514": "gpt-5-mini",
     # Legacy
-    "claude-3-opus-20240229": "gpt-4o",
-    "claude-3-5-sonnet-20241022": "gpt-4o",
+    "claude-3-opus-20240229": "gpt-5.2",
+    "claude-3-5-sonnet-20241022": "gpt-5",
 }
 
 
@@ -40,13 +40,28 @@ class OpenAIProvider(BaseLLMProvider):
         self._client = AsyncOpenAI(api_key=api_key)
 
     # Native OpenAI models that should pass through without mapping
-    _NATIVE_MODELS = {"gpt-4o", "gpt-4o-mini", "o3", "o3-mini", "o1", "o1-mini"}
+    _NATIVE_MODELS = {
+        "gpt-5.2", "gpt-5", "gpt-5-mini", "gpt-5-nano",
+        "gpt-4.1", "gpt-4.1-mini",
+        "gpt-4o", "gpt-4o-mini",
+        "o4-mini", "o3", "o3-mini", "o1", "o1-mini",
+    }
+
+    # Models that use max_completion_tokens instead of max_tokens
+    _COMPLETION_TOKEN_MODELS = {"gpt-5.2", "gpt-5", "gpt-5-mini", "gpt-5-nano"}
+
+    # Models that support the reasoning_effort parameter
+    _REASONING_EFFORT_MODELS = {"gpt-5.2", "gpt-5"}
 
     def _map_model(self, model: str) -> str:
         """Map model name to OpenAI equivalent. Native OpenAI names pass through."""
         if model in self._NATIVE_MODELS:
             return model
-        return MODEL_MAP.get(model, "gpt-4o")
+        return MODEL_MAP.get(model, "gpt-5")
+
+    def _uses_completion_tokens(self, model: str) -> bool:
+        """Check if model uses max_completion_tokens instead of max_tokens."""
+        return model.startswith("o") or model in self._COMPLETION_TOKEN_MODELS
 
     async def create_message(
         self,
@@ -55,6 +70,7 @@ class OpenAIProvider(BaseLLMProvider):
         system: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
     ) -> LLMResponse:
         """Create a message using OpenAI API."""
         openai_model = self._map_model(model)
@@ -73,18 +89,23 @@ class OpenAIProvider(BaseLLMProvider):
                 openai_messages.append(converted)
 
         # Build API call kwargs
-        # o-series models (o1, o3) use max_completion_tokens instead of max_tokens
-        token_param = "max_completion_tokens" if openai_model.startswith("o") else "max_tokens"
-        kwargs: dict[str, Any] = {
+        # o-series and GPT-5 series use max_completion_tokens instead of max_tokens
+        token_param = "max_completion_tokens" if self._uses_completion_tokens(openai_model) else "max_tokens"
+        api_kwargs: dict[str, Any] = {
             "model": openai_model,
             token_param: max_tokens,
             "messages": openai_messages,
         }
 
         if tools:
-            kwargs["tools"] = self.convert_tools(tools)
+            api_kwargs["tools"] = self.convert_tools(tools)
 
-        response = await self._client.chat.completions.create(**kwargs)
+        # Pass reasoning_effort for supported models
+        reasoning_effort = kwargs.get("reasoning_effort")
+        if reasoning_effort and openai_model in self._REASONING_EFFORT_MODELS:
+            api_kwargs["reasoning_effort"] = reasoning_effort
+
+        response = await self._client.chat.completions.create(**api_kwargs)
 
         # Normalize response
         choice = response.choices[0]

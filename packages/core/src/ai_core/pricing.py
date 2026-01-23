@@ -30,7 +30,7 @@ class ModelPricing(NamedTuple):
     provider: Provider = Provider.ANTHROPIC
 
 
-# Pricing as of January 2025 (per 1M tokens)
+# Pricing as of January 2026 (per 1M tokens)
 # https://www.anthropic.com/pricing
 # https://openai.com/api/pricing/
 MODEL_PRICING: dict[str, ModelPricing] = {
@@ -90,7 +90,48 @@ MODEL_PRICING: dict[str, ModelPricing] = {
         cached_input_cost=Decimal("0.30"),
         provider=Provider.ANTHROPIC,
     ),
-    # OpenAI Chat Models
+    # OpenAI GPT-5 Series (current)
+    "gpt-5.2": ModelPricing(
+        input_cost=Decimal("1.75"),
+        output_cost=Decimal("14.00"),
+        provider=Provider.OPENAI,
+    ),
+    "gpt-5": ModelPricing(
+        input_cost=Decimal("1.25"),
+        output_cost=Decimal("10.00"),
+        provider=Provider.OPENAI,
+    ),
+    "gpt-5-mini": ModelPricing(
+        input_cost=Decimal("0.25"),
+        output_cost=Decimal("2.00"),
+        provider=Provider.OPENAI,
+    ),
+    "gpt-5-nano": ModelPricing(
+        input_cost=Decimal("0.05"),
+        output_cost=Decimal("0.40"),
+        provider=Provider.OPENAI,
+    ),
+    # OpenAI GPT-4.1 Series
+    "gpt-4.1": ModelPricing(
+        input_cost=Decimal("2.00"),
+        output_cost=Decimal("8.00"),
+        cached_input_cost=Decimal("0.50"),
+        provider=Provider.OPENAI,
+    ),
+    "gpt-4.1-mini": ModelPricing(
+        input_cost=Decimal("0.40"),
+        output_cost=Decimal("1.60"),
+        cached_input_cost=Decimal("0.10"),
+        provider=Provider.OPENAI,
+    ),
+    # OpenAI o-Series (reasoning)
+    "o4-mini": ModelPricing(
+        input_cost=Decimal("1.10"),
+        output_cost=Decimal("4.40"),
+        cached_input_cost=Decimal("0.275"),
+        provider=Provider.OPENAI,
+    ),
+    # OpenAI Legacy Chat Models (kept for historical cost tracking)
     "gpt-4o": ModelPricing(
         input_cost=Decimal("2.50"),
         output_cost=Decimal("10.00"),

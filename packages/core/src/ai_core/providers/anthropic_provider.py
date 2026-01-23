@@ -30,6 +30,7 @@ class AnthropicProvider(BaseLLMProvider):
         system: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
     ) -> LLMResponse:
         """Create a message using Claude API."""
         kwargs: dict[str, Any] = {

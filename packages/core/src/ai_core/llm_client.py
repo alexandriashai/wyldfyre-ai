@@ -19,7 +19,7 @@ from .llm_provider import (
     LLMProviderType,
     LLMResponse,
 )
-from .model_selector import ModelTier, select_model
+from .model_selector import ModelTier, TIER_MODELS, select_model
 
 logger = get_logger(__name__)
 
@@ -225,6 +225,7 @@ class LLMClient:
         messages: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
         tier: ModelTier | None = None,
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
         """
         Create a message with retry and automatic fallback.
@@ -244,6 +245,9 @@ class LLMClient:
             tools: Tool definitions (in Anthropic schema format)
             tier: Explicit model tier override (FAST/BALANCED/POWERFUL).
                   Only used when model="auto".
+            reasoning_effort: Reasoning effort level for supported models
+                  (none/minimal/low/medium/high). Auto-set to "high" for
+                  POWERFUL tier on OpenAI if not specified.
 
         Returns:
             Normalized LLMResponse
@@ -262,8 +266,15 @@ class LLMClient:
             fallback_model = self._resolve_model(
                 model, self._fallback.provider_type, tier, max_tokens, tools, system
             )
+            # Auto-set reasoning_effort for POWERFUL tier on OpenAI
+            effective_effort = reasoning_effort
+            if (effective_effort is None
+                    and self._fallback.provider_type == LLMProviderType.OPENAI
+                    and fallback_model == TIER_MODELS[LLMProviderType.OPENAI][ModelTier.POWERFUL]):
+                effective_effort = "high"
             return await self._call_with_retry(
-                self._fallback, fallback_model, max_tokens, system, messages, tools
+                self._fallback, fallback_model, max_tokens, system, messages, tools,
+                reasoning_effort=effective_effort,
             )
 
         if not self._primary:
@@ -274,10 +285,18 @@ class LLMClient:
             model, self._primary.provider_type, tier, max_tokens, tools, system
         )
 
+        # Auto-set reasoning_effort for POWERFUL tier on OpenAI (when primary is OpenAI)
+        effective_effort = reasoning_effort
+        if (effective_effort is None
+                and self._primary.provider_type == LLMProviderType.OPENAI
+                and primary_model == TIER_MODELS[LLMProviderType.OPENAI][ModelTier.POWERFUL]):
+            effective_effort = "high"
+
         # Try primary provider with retry
         try:
             return await self._call_with_retry(
-                self._primary, primary_model, max_tokens, system, messages, tools
+                self._primary, primary_model, max_tokens, system, messages, tools,
+                reasoning_effort=effective_effort,
             )
         except Exception as e:
             # Only fall back for credit/rate errors, not arbitrary failures
@@ -306,8 +325,15 @@ class LLMClient:
                 fallback_model = self._resolve_model(
                     model, self._fallback.provider_type, tier, max_tokens, tools, system
                 )
+                # Auto-set reasoning_effort for POWERFUL tier on OpenAI
+                fallback_effort = reasoning_effort
+                if (fallback_effort is None
+                        and self._fallback.provider_type == LLMProviderType.OPENAI
+                        and fallback_model == TIER_MODELS[LLMProviderType.OPENAI][ModelTier.POWERFUL]):
+                    fallback_effort = "high"
                 return await self._call_with_retry(
-                    self._fallback, fallback_model, max_tokens, system, messages, tools
+                    self._fallback, fallback_model, max_tokens, system, messages, tools,
+                    reasoning_effort=fallback_effort,
                 )
             raise
 
@@ -319,6 +345,7 @@ class LLMClient:
         system: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
         """
         Call a provider with retry for transient errors.
@@ -331,12 +358,16 @@ class LLMClient:
 
         for attempt in range(MAX_RETRIES + 1):
             try:
+                kwargs: dict[str, Any] = {}
+                if reasoning_effort:
+                    kwargs["reasoning_effort"] = reasoning_effort
                 return await provider.create_message(
                     model=model,
                     max_tokens=max_tokens,
                     system=system,
                     messages=messages,
                     tools=tools,
+                    **kwargs,
                 )
             except Exception as e:
                 last_error = e

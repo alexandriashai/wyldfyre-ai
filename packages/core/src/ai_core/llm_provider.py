@@ -64,6 +64,7 @@ class BaseLLMProvider(ABC):
         system: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
     ) -> LLMResponse:
         """
         Create a message/completion.
@@ -74,6 +75,7 @@ class BaseLLMProvider(ABC):
             system: System prompt
             messages: Conversation messages
             tools: Tool definitions (in Anthropic schema format)
+            **kwargs: Provider-specific parameters (e.g., reasoning_effort)
 
         Returns:
             Normalized LLMResponse
