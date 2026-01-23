@@ -1071,8 +1071,8 @@ class SupervisorAgent(BaseAgent):
             if not user_message or len(user_message) < 3:
                 return
 
-            # Generate title using Claude (fast, small call)
-            response = await self._claude.messages.create(
+            # Generate title using LLM (fast, small call)
+            response = await self._llm.create_message(
                 model="claude-haiku-4-20250514",
                 max_tokens=30,
                 messages=[{
@@ -1081,7 +1081,7 @@ class SupervisorAgent(BaseAgent):
                 }],
             )
 
-            title = response.content[0].text.strip().strip('"\'') if response.content else None
+            title = response.text_content.strip().strip('"\'') if response.text_content else None
             if not title or len(title) < 2:
                 return
 
@@ -1719,56 +1719,63 @@ Execute this step now. Make real file changes, not just descriptions."""
             if self.is_task_cancelled():
                 return f"Step cancelled after {iteration} iterations. Actions: {'; '.join(actions_taken)}"
 
-            response = await self._claude.messages.create(
+            response = await self._llm.create_message(
                 model=self.config.model,
                 max_tokens=4096,
                 messages=messages,
                 tools=self.STEP_TOOLS,
             )
 
-            # Check if Claude wants to use tools
+            # Check if LLM wants to use tools
             if response.stop_reason == "tool_use":
                 # Process all tool calls in this response
                 tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        tool_name = block.name
-                        tool_input = block.input
+                for tool_call in response.tool_calls:
+                    tool_name = tool_call.name
+                    tool_input = tool_call.arguments
 
-                        # Execute the tool
-                        result, is_error = await self._run_step_tool(tool_name, tool_input, root_path)
-                        actions_taken.append(f"{tool_name}({tool_input.get('path', tool_input.get('pattern', ''))[:50]})")
+                    # Execute the tool
+                    result, is_error = await self._run_step_tool(tool_name, tool_input, root_path)
+                    actions_taken.append(f"{tool_name}({tool_input.get('path', tool_input.get('pattern', ''))[:50]})")
 
-                        # Publish action for real-time UI updates
-                        action_label = {
-                            "read_file": "file_read",
-                            "write_file": "file_write",
-                            "edit_file": "file_edit",
-                            "glob_files": "file_search",
-                            "grep_files": "file_search",
-                        }.get(tool_name, "executing")
+                    # Publish action for real-time UI updates
+                    action_label = {
+                        "read_file": "file_read",
+                        "write_file": "file_write",
+                        "edit_file": "file_edit",
+                        "glob_files": "file_search",
+                        "grep_files": "file_search",
+                    }.get(tool_name, "executing")
 
-                        short_path = tool_input.get("path", tool_input.get("pattern", ""))
-                        if "/" in short_path:
-                            short_path = short_path.split("/")[-1]
-                        await self.publish_action(action_label, f"{tool_name}: {short_path}")
+                    short_path = tool_input.get("path", tool_input.get("pattern", ""))
+                    if "/" in short_path:
+                        short_path = short_path.split("/")[-1]
+                    await self.publish_action(action_label, f"{tool_name}: {short_path}")
 
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result[:8000],  # Truncate large results
-                            "is_error": is_error,
-                        })
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_call.id,
+                        "content": result[:8000],  # Truncate large results
+                        "is_error": is_error,
+                    })
 
                 # Add assistant response and tool results to messages
-                messages.append({"role": "assistant", "content": response.content})
+                # Store in normalized dict format
+                assistant_content = []
+                if response.text_content:
+                    assistant_content.append({"type": "text", "text": response.text_content})
+                for tc in response.tool_calls:
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.arguments,
+                    })
+                messages.append({"role": "assistant", "content": assistant_content})
                 messages.append({"role": "user", "content": tool_results})
             else:
-                # Claude is done - extract final text response
-                final_text = ""
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        final_text += block.text
+                # LLM is done - extract final text response
+                final_text = response.text_content
 
                 # Store learning from this step execution
                 if self._memory and actions_taken:
@@ -2208,13 +2215,13 @@ and regenerate than to add a vague step without understanding the codebase.
 JSON response:"""
 
         try:
-            response = await self._claude.messages.create(
+            response = await self._llm.create_message(
                 model=self.config.model,
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}],
             )
 
-            text = response.content[0].text if response.content else "{}"
+            text = response.text_content or "{}"
 
             # Extract JSON from response
             start = text.find("{")
@@ -2255,7 +2262,7 @@ Key project directories: services/, packages/, agents/, config/, docs/, database
 Only output the JSON object, no other text."""
 
         try:
-            response = await self._claude.messages.create(
+            response = await self._llm.create_message(
                 model=self.config.model,
                 max_tokens=500,
                 messages=[{"role": "user", "content": strategy_prompt}],
@@ -2265,10 +2272,10 @@ Only output the JSON object, no other text."""
             from ai_core import get_cost_tracker
             asyncio.create_task(
                 get_cost_tracker().record_usage(
-                    model=self.config.model,
-                    input_tokens=response.usage.input_tokens,
-                    output_tokens=response.usage.output_tokens,
-                    cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                    model=response.model or self.config.model,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    cached_tokens=response.cached_tokens,
                     agent_type=self.agent_type,
                     agent_name="wyld",
                     user_id=self._state.current_user_id,
@@ -2276,7 +2283,7 @@ Only output the JSON object, no other text."""
                 )
             )
 
-            text = response.content[0].text if response.content else "{}"
+            text = response.text_content or "{}"
             # Extract JSON from response
             start = text.find("{")
             end = text.rfind("}") + 1
@@ -2401,7 +2408,7 @@ Rules:
 - Only output the JSON array, no other text."""
 
         try:
-            response = await self._claude.messages.create(
+            response = await self._llm.create_message(
                 model=self.config.model,
                 max_tokens=1500,
                 messages=[{"role": "user", "content": prompt}],
@@ -2411,10 +2418,10 @@ Rules:
             from ai_core import get_cost_tracker
             asyncio.create_task(
                 get_cost_tracker().record_usage(
-                    model=self.config.model,
-                    input_tokens=response.usage.input_tokens,
-                    output_tokens=response.usage.output_tokens,
-                    cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                    model=response.model or self.config.model,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    cached_tokens=response.cached_tokens,
                     agent_type=self.agent_type,
                     agent_name="wyld",
                     user_id=self._state.current_user_id,
@@ -2422,7 +2429,7 @@ Rules:
                 )
             )
 
-            text = response.content[0].text if response.content else "[]"
+            text = response.text_content or "[]"
             # Extract JSON array from response
             start = text.find("[")
             end = text.rfind("]") + 1

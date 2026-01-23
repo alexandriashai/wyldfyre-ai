@@ -14,12 +14,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from anthropic import AsyncAnthropic
-
 from ai_core import (
     AgentStatus,
     AgentType,
     CapabilityCategory,
+    LLMClient,
     PermissionContext,
     PermissionLevel,
     agent_active_tasks,
@@ -148,11 +147,8 @@ class BaseAgent(ABC):
         # Initialize tool registry with permission context
         self._tool_registry = ToolRegistry(self._permission_context)
 
-        # Initialize Claude client
-        settings = get_settings()
-        self._claude = AsyncAnthropic(
-            api_key=settings.api.anthropic_api_key.get_secret_value()
-        )
+        # Initialize LLM client (supports Anthropic + OpenAI fallback)
+        self._llm = LLMClient()
 
         # Register shared tools (available to all agents)
         self._register_shared_tools()
@@ -573,10 +569,10 @@ class BaseAgent(ABC):
             messages = self._build_api_messages()
 
             # Publish API call action
-            await self.publish_action(ACTION_API_CALL, "Calling Claude API...")
+            await self.publish_action(ACTION_API_CALL, "Calling LLM API...")
 
-            # Call Claude
-            response = await self._claude.messages.create(
+            # Call LLM (handles provider fallback automatically)
+            response = await self._llm.create_message(
                 model=self.config.model,
                 max_tokens=self.config.max_tokens,
                 system=self.get_system_prompt(),
@@ -588,29 +584,23 @@ class BaseAgent(ABC):
             claude_api_tokens_total.labels(
                 agent_type=self.agent_type.value,
                 token_type="input",
-            ).inc(response.usage.input_tokens)
+            ).inc(response.input_tokens)
             claude_api_tokens_total.labels(
                 agent_type=self.agent_type.value,
                 token_type="output",
-            ).inc(response.usage.output_tokens)
+            ).inc(response.output_tokens)
 
             # Publish API response action
-            total_tokens = response.usage.input_tokens + response.usage.output_tokens
+            total_tokens = response.input_tokens + response.output_tokens
             await self.publish_action(
                 ACTION_API_RESPONSE,
-                f"Received response ({total_tokens:,} tokens)"
+                f"Received response ({total_tokens:,} tokens, {response.provider.value})"
             )
 
             # Check stop reason
             if response.stop_reason == "end_turn":
-                # Extract final response
-                text_content = ""
-                for block in response.content:
-                    if block.type == "text":
-                        text_content += block.text
-
                 return {
-                    "response": text_content,
+                    "response": response.text_content,
                     "iterations": iterations,
                 }
 
@@ -618,88 +608,98 @@ class BaseAgent(ABC):
                 # Execute tools
                 tool_results = []
 
-                for block in response.content:
-                    if block.type == "tool_use":
-                        tool_name = block.name
-                        tool_input = block.input
-                        tool_use_id = block.id
+                for tool_call in response.tool_calls:
+                    tool_name = tool_call.name
+                    tool_input = tool_call.arguments
+                    tool_use_id = tool_call.id
 
-                        # Publish tool call action to frontend
+                    # Publish tool call action to frontend
+                    await self.publish_action(
+                        ACTION_TOOL_CALL,
+                        f"Calling {tool_name}..."
+                    )
+
+                    # Publish tool call event to internal channel
+                    if self._pubsub:
+                        await self._pubsub.publish(
+                            "agent:tool_calls",
+                            ToolCall(
+                                agent_type=self.agent_type,
+                                task_id=task_id,
+                                tool_name=tool_name,
+                                tool_input=tool_input,
+                            ).model_dump_json(),
+                        )
+
+                    # Execute tool with context (memory, agent type, task id)
+                    result = await self._tool_registry.execute(
+                        tool_name,
+                        tool_input,
+                        context={
+                            "task_id": task_id,
+                            "_memory": self._memory,
+                            "_agent_type": self.agent_type.value,
+                            "_task_id": task_id,
+                            "_agent": self,  # Pass agent for action publishing
+                        },
+                    )
+
+                    # Track tool call with status
+                    agent_tool_calls_total.labels(
+                        agent_type=self.agent_type.value,
+                        tool_name=tool_name,
+                        status="success" if result.success else "error",
+                    ).inc()
+
+                    # Publish tool result action to frontend
+                    if result.success:
                         await self.publish_action(
-                            ACTION_TOOL_CALL,
-                            f"Calling {tool_name}..."
+                            ACTION_TOOL_RESULT,
+                            f"{tool_name} completed successfully"
+                        )
+                    else:
+                        error_msg = result.error or "Unknown error"
+                        await self.publish_action(
+                            ACTION_TOOL_ERROR,
+                            f"{tool_name} failed: {error_msg[:50]}"
                         )
 
-                        # Publish tool call event to internal channel
-                        if self._pubsub:
-                            await self._pubsub.publish(
-                                "agent:tool_calls",
-                                ToolCall(
-                                    agent_type=self.agent_type,
-                                    task_id=task_id,
-                                    tool_name=tool_name,
-                                    tool_input=tool_input,
-                                ).model_dump_json(),
-                            )
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": str(result.output) if result.success else (result.error or "Tool execution failed"),
+                        "is_error": not result.success,
+                    })
 
-                        # Execute tool with context (memory, agent type, task id)
-                        result = await self._tool_registry.execute(
-                            tool_name,
-                            tool_input,
-                            context={
-                                "task_id": task_id,
-                                "_memory": self._memory,
-                                "_agent_type": self.agent_type.value,
-                                "_task_id": task_id,
-                                "_agent": self,  # Pass agent for action publishing
-                            },
+                    # Publish tool result event to internal channel
+                    if self._pubsub:
+                        await self._pubsub.publish(
+                            "agent:tool_results",
+                            ToolResultMessage(
+                                agent_type=self.agent_type,
+                                task_id=task_id,
+                                tool_name=tool_name,
+                                success=result.success,
+                                output=result.output,
+                                error=result.error,
+                                duration_ms=0,
+                            ).model_dump_json(),
                         )
-
-                        # Track tool call with status
-                        agent_tool_calls_total.labels(
-                            agent_type=self.agent_type.value,
-                            tool_name=tool_name,
-                            status="success" if result.success else "error",
-                        ).inc()
-
-                        # Publish tool result action to frontend
-                        if result.success:
-                            await self.publish_action(
-                                ACTION_TOOL_RESULT,
-                                f"{tool_name} completed successfully"
-                            )
-                        else:
-                            error_msg = result.error or "Unknown error"
-                            await self.publish_action(
-                                ACTION_TOOL_ERROR,
-                                f"{tool_name} failed: {error_msg[:50]}"
-                            )
-
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": str(result.output) if result.success else (result.error or "Tool execution failed"),
-                            "is_error": not result.success,
-                        })
-
-                        # Publish tool result event to internal channel
-                        if self._pubsub:
-                            await self._pubsub.publish(
-                                "agent:tool_results",
-                                ToolResultMessage(
-                                    agent_type=self.agent_type,
-                                    task_id=task_id,
-                                    tool_name=tool_name,
-                                    success=result.success,
-                                    output=result.output,
-                                    error=result.error,
-                                    duration_ms=0,
-                                ).model_dump_json(),
-                            )
 
                 # Add assistant response and tool results to history
+                # Store in normalized dict format (Anthropic-compatible)
+                assistant_content = []
+                if response.text_content:
+                    assistant_content.append({"type": "text", "text": response.text_content})
+                for tc in response.tool_calls:
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.arguments,
+                    })
                 self._state.conversation_history.append(
-                    ConversationMessage(role="assistant", content=response.content)
+                    ConversationMessage(role="assistant", content=assistant_content)
                 )
                 self._state.conversation_history.append(
                     ConversationMessage(role="user", content=tool_results)
@@ -727,7 +727,8 @@ class BaseAgent(ABC):
         if isinstance(msg.content, str):
             return False
         return any(
-            getattr(block, "type", None) == "tool_use"
+            (isinstance(block, dict) and block.get("type") == "tool_use")
+            or getattr(block, "type", None) == "tool_use"
             for block in msg.content
         )
 
@@ -814,18 +815,22 @@ class BaseAgent(ABC):
                     # Plain string from loaded conversation history
                     messages.append({"role": "assistant", "content": msg.content})
                 else:
-                    # Convert content blocks from current conversation
+                    # Content blocks (already in normalized dict format)
                     content = []
                     for block in msg.content:
-                        if block.type == "text":
-                            content.append({"type": "text", "text": block.text})
-                        elif block.type == "tool_use":
-                            content.append({
-                                "type": "tool_use",
-                                "id": block.id,
-                                "name": block.name,
-                                "input": block.input,
-                            })
+                        if isinstance(block, dict):
+                            content.append(block)
+                        else:
+                            block_type = getattr(block, "type", None)
+                            if block_type == "text":
+                                content.append({"type": "text", "text": block.text})
+                            elif block_type == "tool_use":
+                                content.append({
+                                    "type": "tool_use",
+                                    "id": block.id,
+                                    "name": block.name,
+                                    "input": block.input,
+                                })
                     messages.append({"role": "assistant", "content": content})
 
         return messages

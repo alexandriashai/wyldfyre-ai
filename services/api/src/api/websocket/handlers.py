@@ -906,3 +906,20 @@ class AgentResponseHandler:
                 conversation_id=data.get("conversation_id"),
                 current_step=data.get("current_step"),
             )
+
+        elif response_type == "conversation_renamed":
+            # Conversation title was auto-generated
+            await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "conversation_renamed",
+                    "conversation_id": data.get("conversation_id"),
+                    "title": data.get("title"),
+                },
+            )
+            logger.info(
+                "Conversation renamed",
+                user_id=user_id,
+                conversation_id=data.get("conversation_id"),
+                title=data.get("title"),
+            )

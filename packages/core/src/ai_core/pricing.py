@@ -84,6 +84,17 @@ MODEL_PRICING: dict[str, ModelPricing] = {
         cached_input_cost=Decimal("0.30"),
         provider=Provider.ANTHROPIC,
     ),
+    # OpenAI Chat Models
+    "gpt-4o": ModelPricing(
+        input_cost=Decimal("2.50"),
+        output_cost=Decimal("10.00"),
+        provider=Provider.OPENAI,
+    ),
+    "gpt-4o-mini": ModelPricing(
+        input_cost=Decimal("0.15"),
+        output_cost=Decimal("0.60"),
+        provider=Provider.OPENAI,
+    ),
     # OpenAI Embedding Models
     "text-embedding-3-small": ModelPricing(
         input_cost=Decimal("0.02"),

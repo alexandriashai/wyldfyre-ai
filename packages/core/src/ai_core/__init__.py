@@ -119,6 +119,13 @@ from .plugins import (
     get_plugin_registry,
     init_plugins,
 )
+from .llm_provider import (
+    LLMProviderType,
+    LLMResponse,
+    LLMToolCall,
+    LLMToolResult,
+)
+from .llm_client import LLMClient
 from .mcp_client import (
     MCPClient,
     MCPToolResult,
@@ -298,6 +305,12 @@ __all__ = [
     "MCPServerConfig",
     "get_plugin_registry",
     "init_plugins",
+    # LLM Provider
+    "LLMClient",
+    "LLMProviderType",
+    "LLMResponse",
+    "LLMToolCall",
+    "LLMToolResult",
     # MCP Client
     "MCPClient",
     "MCPToolResult",
