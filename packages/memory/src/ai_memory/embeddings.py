@@ -8,12 +8,25 @@ import numpy as np
 from openai import AsyncOpenAI
 
 from ai_core import (
+    CircuitBreakerConfig,
     EmbeddingError,
     circuit_breaker,
     embedding_generation_duration_seconds,
     get_cost_tracker,
     get_logger,
     get_settings,
+)
+
+# Lenient circuit breaker config for embeddings — this is critical infrastructure
+# so we tolerate more transient failures before tripping
+_EMBEDDINGS_CB_CONFIG = CircuitBreakerConfig(
+    failure_threshold=15,       # More failures before opening
+    success_threshold=1,        # Single success in half-open is enough to close
+    timeout=45.0,               # Initial timeout before half-open
+    half_open_max_calls=3,
+    half_open_failure_threshold=2,
+    max_timeout=180.0,          # Cap backoff at 3 minutes
+    backoff_multiplier=1.5,
 )
 
 from .embedding_cache import EmbeddingCache
@@ -62,7 +75,7 @@ class EmbeddingService:
         """Get cache statistics if caching is enabled."""
         return self._cache.stats if self._cache else None
 
-    @circuit_breaker("openai-embeddings")
+    @circuit_breaker("openai-embeddings", config=_EMBEDDINGS_CB_CONFIG)
     async def generate(self, text: str) -> list[float]:
         """
         Generate embedding for a single text with caching.
@@ -118,7 +131,7 @@ class EmbeddingService:
                 cause=e,
             )
 
-    @circuit_breaker("openai-embeddings")
+    @circuit_breaker("openai-embeddings", config=_EMBEDDINGS_CB_CONFIG)
     async def generate_batch(
         self,
         texts: Sequence[str],

@@ -14,7 +14,9 @@ from .circuit_breaker import (
     CircuitBreakerConfig,
     CircuitOpenError,
     circuit_breaker,
+    get_all_breaker_status,
     get_circuit_breaker,
+    reset_circuit_breaker,
 )
 from .cost_tracker import (
     CostTracker,
@@ -235,7 +237,9 @@ __all__ = [
     "CircuitBreakerConfig",
     "CircuitOpenError",
     "circuit_breaker",
+    "get_all_breaker_status",
     "get_circuit_breaker",
+    "reset_circuit_breaker",
     # Pricing & Cost Tracking
     "Provider",
     "UsageCost",

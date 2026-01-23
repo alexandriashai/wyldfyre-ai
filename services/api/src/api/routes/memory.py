@@ -13,7 +13,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from ai_core import get_logger
+from ai_core import (
+    CircuitOpenError,
+    get_all_breaker_status,
+    get_logger,
+    reset_circuit_breaker,
+)
 from ai_memory import LearningScope, PAIPhase, QdrantStore
 
 from ..dependencies import CurrentUserDep, RedisDep
@@ -135,6 +140,15 @@ async def search_memory(
             "count": len(filtered_results),
         }
 
+    except CircuitOpenError as e:
+        logger.warning("Memory search blocked by circuit breaker", error=str(e))
+        return {
+            "query": query,
+            "results": [],
+            "count": 0,
+            "error": "Embedding service temporarily unavailable (circuit breaker open). Will auto-recover shortly.",
+            "circuit_breaker": True,
+        }
     except Exception as e:
         logger.error("Memory search failed", error=str(e))
         return {
@@ -143,6 +157,25 @@ async def search_memory(
             "count": 0,
             "error": str(e),
         }
+
+
+@router.get("/circuit-breaker")
+async def circuit_breaker_status(current_user: CurrentUserDep) -> dict[str, Any]:
+    """Get circuit breaker status for memory-related services."""
+    return {"breakers": get_all_breaker_status()}
+
+
+@router.post("/circuit-breaker/reset")
+async def circuit_breaker_reset(
+    current_user: CurrentUserDep,
+    name: str = Query("openai-embeddings", description="Circuit breaker name to reset"),
+) -> dict[str, Any]:
+    """Reset a circuit breaker to restore service."""
+    success = reset_circuit_breaker(name)
+    if success:
+        logger.info("Circuit breaker reset via API", name=name, user=current_user.id)
+        return {"status": "reset", "name": name}
+    return {"status": "not_found", "name": name}
 
 
 @router.get("/learnings")
