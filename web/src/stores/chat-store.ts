@@ -25,6 +25,7 @@ interface Conversation {
   plan_content?: string | null;
   plan_status?: string | null;
   plan_approved_at?: string | null;
+  message_count?: number;
 }
 
 type PlanStatus = "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null;

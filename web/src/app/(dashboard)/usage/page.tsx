@@ -283,10 +283,10 @@ export default function UsagePage() {
                   />
                   <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${v}`} />
                   <Tooltip
-                    formatter={(value: number, name: string) => [
+                    formatter={((value: number, name: string) => [
                       `$${value.toFixed(4)}`,
                       name === "movingAvg" ? "7-day avg" : "Daily cost",
-                    ]}
+                    ]) as any}
                   />
                   <Line
                     type="monotone"
@@ -321,7 +321,7 @@ export default function UsagePage() {
                   <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
                   <XAxis dataKey="date" tick={{ fontSize: 9 }} interval={1} />
                   <YAxis tick={{ fontSize: 9 }} tickFormatter={(v) => formatTokens(v)} />
-                  <Tooltip formatter={(value: number) => formatTokens(value)} />
+                  <Tooltip formatter={((value: number) => formatTokens(value)) as any} />
                   <Bar dataKey="inputTokens" stackId="tokens" fill="#8b5cf6" name="Input" />
                   <Bar dataKey="outputTokens" stackId="tokens" fill="#f59e0b" name="Output" />
                   <Bar dataKey="cachedTokens" stackId="tokens" fill="#10b981" name="Cached" />
@@ -351,14 +351,14 @@ export default function UsagePage() {
                       innerRadius={40}
                       outerRadius={70}
                       dataKey="value"
-                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
                       labelLine={false}
                     >
                       {agentDonutData.map((_, index) => (
                         <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
                       ))}
                     </Pie>
-                    <Tooltip formatter={(value: number) => formatCost(value)} />
+                    <Tooltip formatter={((value: number) => formatCost(value)) as any} />
                   </PieChart>
                 </ResponsiveContainer>
               ) : (

@@ -1108,6 +1108,9 @@ export interface DailyUsagePoint {
   cost: number;
   tokens: number;
   requests: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cached_tokens?: number;
 }
 
 export interface UsageHistory {

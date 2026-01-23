@@ -254,6 +254,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         pinnedFiles: state.pinnedFiles,
         recentFiles: state.recentFiles,
         showHiddenFiles: state.showHiddenFiles,
+        expandedPaths: state.expandedPaths,
       }),
       storage: {
         getItem: (name) => {

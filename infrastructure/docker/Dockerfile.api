@@ -61,8 +61,8 @@ COPY alembic.ini alembic.ini
 # Reinstall editable packages to update links to new source location
 RUN pip install -e packages/core -e packages/messaging -e packages/memory -e database -e services/api --no-deps
 
-# Set ownership
-RUN chown -R appuser:appuser /app
+# Set ownership and ensure files are readable
+RUN chmod -R a+r /app && chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser

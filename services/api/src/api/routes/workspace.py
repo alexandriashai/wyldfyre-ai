@@ -326,7 +326,7 @@ async def list_files(
     return FileTreeResponse(root=path or ".", nodes=nodes)
 
 
-@router.get("/files/content")
+@router.get("/files/content", response_model=None)
 async def read_file_content(
     project_id: str,
     current_user: CurrentUserDep,

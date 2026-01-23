@@ -244,7 +244,7 @@ export function ConversationSidebar({
         {items.map((conv) => {
           const isPinned = pinnedConversations.has(conv.id);
           const isSelected = selectedIds.has(conv.id);
-          const projectColor = getProjectColor(conv.project_id);
+          const projectColor = getProjectColor(conv.project_id ?? null);
 
           return (
             <div
@@ -285,7 +285,7 @@ export function ConversationSidebar({
                 </p>
                 <p className="text-[10px] text-muted-foreground truncate">
                   {formatRelativeTime(conv.updated_at || conv.created_at)}
-                  {conv.message_count > 0 && ` · ${conv.message_count} msgs`}
+                  {(conv.message_count ?? 0) > 0 && ` · ${conv.message_count} msgs`}
                 </p>
               </div>
 
