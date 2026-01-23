@@ -22,7 +22,7 @@ from .model_selector import ModelTier, select_model
 logger = get_logger(__name__)
 
 # Error patterns that trigger fallback
-FALLBACK_STATUS_CODES = {402, 429, 529}
+FALLBACK_STATUS_CODES = {400, 402, 429, 529}
 FALLBACK_ERROR_KEYWORDS = [
     "credit",
     "insufficient_quota",
@@ -61,7 +61,7 @@ class LLMClient:
 
     def __init__(self):
         settings = get_settings()
-        self._provider_mode = os.environ.get("AI_PROVIDER", "anthropic").lower()
+        self._provider_mode = os.environ.get("AI_PROVIDER", "auto").lower()
         self._primary: BaseLLMProvider | None = None
         self._fallback: BaseLLMProvider | None = None
         self._using_fallback = False
