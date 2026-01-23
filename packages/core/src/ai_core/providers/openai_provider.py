@@ -73,9 +73,11 @@ class OpenAIProvider(BaseLLMProvider):
                 openai_messages.append(converted)
 
         # Build API call kwargs
+        # o-series models (o1, o3) use max_completion_tokens instead of max_tokens
+        token_param = "max_completion_tokens" if openai_model.startswith("o") else "max_tokens"
         kwargs: dict[str, Any] = {
             "model": openai_model,
-            "max_tokens": max_tokens,
+            token_param: max_tokens,
             "messages": openai_messages,
         }
 
