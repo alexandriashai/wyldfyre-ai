@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useAuthStore } from "@/stores/auth-store";
 import { useProjectStore } from "@/stores/project-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
@@ -46,14 +46,7 @@ export function WorkspaceToolbar() {
   const [isDeploying, setIsDeploying] = useState(false);
   const [showGitPopover, setShowGitPopover] = useState(false);
 
-  // Fetch git status when project changes
-  useEffect(() => {
-    if (token && activeProjectId) {
-      fetchGitStatus();
-    }
-  }, [token, activeProjectId]);
-
-  const fetchGitStatus = async () => {
+  const fetchGitStatus = useCallback(async () => {
     if (!token || !activeProjectId) return;
     try {
       const status = await workspaceApi.getGitStatus(token, activeProjectId);
@@ -62,7 +55,14 @@ export function WorkspaceToolbar() {
       // Git might not be initialized
       setGitStatus(null);
     }
-  };
+  }, [token, activeProjectId, setGitStatus]);
+
+  // Fetch git status when project changes
+  useEffect(() => {
+    if (token && activeProjectId) {
+      fetchGitStatus();
+    }
+  }, [token, activeProjectId, fetchGitStatus]);
 
   const handleDeploy = async () => {
     if (!token || !activeProjectId || isDeploying) return;

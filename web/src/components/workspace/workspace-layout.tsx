@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useRef } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useAuthStore } from "@/stores/auth-store";
 import { useProjectStore } from "@/stores/project-store";
@@ -103,6 +103,9 @@ export function WorkspaceLayout() {
     }
   }, [token, activeProjectId, openFiles, openFile, setActiveFile, addRecentFile, setMobileActiveTab]);
 
+  // Track in-progress saves to prevent race conditions
+  const savingRef = useRef<Set<string>>(new Set());
+
   // Auto-save debounce
   useEffect(() => {
     if (!autoSave || !token || !activeProjectId) return;
@@ -112,11 +115,16 @@ export function WorkspaceLayout() {
 
     const timer = setTimeout(async () => {
       for (const file of dirtyFiles) {
+        // Skip files already being saved
+        if (savingRef.current.has(file.path)) continue;
+        savingRef.current.add(file.path);
         try {
           await workspaceApi.writeFileContent(token, activeProjectId, file.path, file.content);
           markFileSaved(file.path);
         } catch (err) {
           console.error("Auto-save failed:", err);
+        } finally {
+          savingRef.current.delete(file.path);
         }
       }
     }, 10000); // 10 second debounce

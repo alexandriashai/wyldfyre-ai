@@ -561,9 +561,9 @@ async def search_files(
     """Search across project files using grep."""
     project = await get_project_with_root(project_id, current_user, db)
 
-    # Use grep for searching
+    # Use grep for searching (--null separates filename with NUL byte for safe parsing)
     cmd = [
-        "grep", "-rn", "--include", glob_pattern,
+        "grep", "-rn", "--null", "--include", glob_pattern,
         "-B", "1", "-A", "1",
         "--max-count", "10",  # Max matches per file
         q, project.root_path,
@@ -587,7 +587,8 @@ async def search_files(
     except (asyncio.TimeoutError, FileNotFoundError):
         return FileSearchResponse(query=q, matches=[], total_matches=0, files_searched=0)
 
-    # Parse grep output
+    # Parse grep output (--null produces "filename\0linenum:content" for matches
+    # and "filename\0linenum-content" for context lines)
     matches: list[FileSearchResult] = []
     files_seen: set[str] = set()
     current_match: dict | None = None
@@ -599,20 +600,25 @@ async def search_files(
                 current_match = None
             continue
 
-        # Parse "file:line:content" format
-        parts = line.split(":", 2)
-        if len(parts) >= 3:
-            filepath, line_num_str, content = parts[0], parts[1], parts[2]
-            try:
-                line_num = int(line_num_str)
-            except ValueError:
-                # Context line (uses - separator)
-                parts2 = line.split("-", 2)
-                if len(parts2) >= 3 and current_match:
-                    current_match["context_after"].append(parts2[2])
-                continue
+        # Split on NUL byte to safely extract filename
+        if "\x00" in line:
+            filepath, rest = line.split("\x00", 1)
+        else:
+            # Fallback for lines without NUL (shouldn't happen with --null)
+            continue
 
-            rel_path = os.path.relpath(filepath, project.root_path)
+        # Parse "linenum:content" (match) or "linenum-content" (context)
+        # Match lines use ":" separator, context lines use "-"
+        match_sep = re.match(r'^(\d+)([:=-])(.*)', rest, re.DOTALL)
+        if not match_sep:
+            continue
+
+        line_num_str, separator, content = match_sep.group(1), match_sep.group(2), match_sep.group(3)
+        line_num = int(line_num_str)
+        rel_path = os.path.relpath(filepath, project.root_path)
+
+        if separator == ":":
+            # This is a match line
             files_seen.add(rel_path)
 
             if current_match:
@@ -628,6 +634,12 @@ async def search_files(
 
             if len(matches) >= max_results:
                 break
+        elif separator == "-" and current_match:
+            # Context line — determine if before or after current match
+            if line_num < current_match["line_number"]:
+                current_match["context_before"].append(content)
+            else:
+                current_match["context_after"].append(content)
 
     if current_match:
         matches.append(FileSearchResult(**current_match))
@@ -641,6 +653,27 @@ async def search_files(
 
 
 # --- Git Endpoints ---
+
+
+@router.post("/git/init")
+async def git_init(
+    project_id: str,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, str]:
+    """Initialize a git repository in the project root."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    git_dir = os.path.join(project.root_path, ".git")
+    if os.path.isdir(git_dir):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Git is already initialized in this project",
+        )
+
+    await run_git_command(project.root_path, "init")
+    logger.info("Git initialized", project_id=project_id, root_path=project.root_path)
+    return {"message": "Git repository initialized"}
 
 
 @router.get("/git/status", response_model=GitStatusResponse)
@@ -990,7 +1023,7 @@ async def deploy_project(
                     detail="Domain has no web_root configured for local_sync deploy",
                 )
 
-            cmd = ["rsync", "-av"] + exclude_args
+            cmd = ["rsync", "-av", "--mkpath"] + exclude_args
             if domain.deploy_delete_enabled:
                 cmd.append("--delete")
             cmd.extend([
@@ -1008,6 +1041,21 @@ async def deploy_project(
             if proc.returncode != 0:
                 raise Exception(f"rsync failed: {stderr.decode()}")
 
+            # Reload nginx if config may have changed (opt-in via domain setting)
+            if getattr(domain, 'reload_nginx_on_deploy', False):
+                nginx_proc = await asyncio.create_subprocess_exec(
+                    "nginx", "-t",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, nginx_err = await nginx_proc.communicate()
+                if nginx_proc.returncode == 0:
+                    await asyncio.create_subprocess_exec(
+                        "nginx", "-s", "reload",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+
         elif deploy_method == "ssh_rsync":
             if not domain.deploy_ssh_host or not domain.deploy_ssh_path:
                 raise HTTPException(
@@ -1016,18 +1064,34 @@ async def deploy_project(
                 )
 
             # Validate SSH host format
-            if not re.match(r'^[\w.-]+@[\w.-]+$', domain.deploy_ssh_host):
+            if not re.match(r'^[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+$', domain.deploy_ssh_host):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid SSH host format. Expected: user@hostname",
                 )
 
-            ssh_cmd = "ssh"
-            if domain.deploy_ssh_credential_id:
-                # Look up credential path (simplified - would need credential lookup)
-                ssh_cmd = f"ssh -i /etc/wyld/ssh_keys/{domain.deploy_ssh_credential_id}"
+            # Validate SSH path - reject shell metacharacters
+            if re.search(r'[;&|$`\\]', domain.deploy_ssh_path):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid characters in SSH path",
+                )
 
-            cmd = ["rsync", "-avz", "-e", ssh_cmd] + exclude_args
+            ssh_args = ["ssh"]
+            if domain.deploy_ssh_credential_id:
+                ssh_args.extend(["-i", f"/etc/wyld/ssh_keys/{domain.deploy_ssh_credential_id}"])
+            ssh_cmd = " ".join(ssh_args)
+
+            # Ensure remote directory exists
+            mkdir_cmd = ssh_args + [domain.deploy_ssh_host, "mkdir", "-p", domain.deploy_ssh_path]
+            mkdir_proc = await asyncio.create_subprocess_exec(
+                *mkdir_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await mkdir_proc.communicate()
+
+            cmd = ["rsync", "-avz", "--mkpath", "-e", ssh_cmd] + exclude_args
             if domain.deploy_delete_enabled:
                 cmd.append("--delete")
             cmd.extend([
@@ -1151,6 +1215,13 @@ async def rollback_deploy(
     project = await get_project_with_root(project_id, current_user, db)
 
     target = request.commit_hash if request and request.commit_hash else "HEAD"
+
+    # Validate commit hash format to prevent command injection
+    if target != "HEAD" and not re.match(r'^[0-9a-f]{7,40}$', target):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid commit hash format",
+        )
 
     try:
         await run_git_command(project.root_path, "revert", "--no-edit", target)

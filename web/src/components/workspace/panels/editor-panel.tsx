@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { Button } from "@/components/ui/button";
@@ -30,9 +31,20 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
 
   const activeFile = openFiles.find((f) => f.path === activeFilePath);
 
-  // Detect if we're in dark mode
-  const isDark = typeof window !== "undefined" &&
-    document.documentElement.classList.contains("dark");
+  // Detect theme after mount to avoid SSR hydration mismatch
+  const [editorTheme, setEditorTheme] = useState("vs-dark");
+  useEffect(() => {
+    const isDark = document.documentElement.classList.contains("dark");
+    setEditorTheme(isDark ? "vs-dark" : "vs");
+
+    // Watch for theme changes
+    const observer = new MutationObserver(() => {
+      const dark = document.documentElement.classList.contains("dark");
+      setEditorTheme(dark ? "vs-dark" : "vs");
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
 
   if (openFiles.length === 0) {
     return (
@@ -116,7 +128,7 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
             height="100%"
             language={activeFile.language || "plaintext"}
             value={activeFile.content}
-            theme={isDark ? "vs-dark" : "light"}
+            theme={editorTheme}
             onChange={(value) => {
               if (value !== undefined) {
                 updateFileContent(activeFile.path, value);

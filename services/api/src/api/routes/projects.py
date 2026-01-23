@@ -2,6 +2,10 @@
 Project management routes.
 """
 
+import asyncio
+import os
+import subprocess
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,10 +86,21 @@ async def create_project(
     """
     Create a new project.
     """
+    # If root_path provided, create directory
+    if request.root_path:
+        try:
+            os.makedirs(request.root_path, exist_ok=True)
+        except OSError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot create root_path directory: {e}",
+            )
+
     project = Project(
         name=request.name,
         description=request.description,
         agent_context=request.agent_context,
+        root_path=request.root_path,
         color=request.color,
         icon=request.icon,
         user_id=current_user.sub,
@@ -95,11 +110,26 @@ async def create_project(
     await db.flush()
     await db.refresh(project)
 
+    # Auto-initialize git if root_path is set and .git doesn't exist
+    if request.root_path and not os.path.isdir(os.path.join(request.root_path, ".git")):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "init",
+                cwd=request.root_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+        except (FileNotFoundError, OSError):
+            # Git not available — non-fatal, user can init manually
+            logger.warning("Git auto-init failed", root_path=request.root_path)
+
     logger.info(
         "Project created",
         project_id=project.id,
         user_id=current_user.sub,
         name=request.name,
+        root_path=request.root_path,
     )
 
     return ProjectResponse.model_validate(project)

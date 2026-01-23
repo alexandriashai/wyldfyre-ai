@@ -140,7 +140,17 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       recentFiles: [],
 
       // Actions
-      setActiveProject: (id) => set({ activeProjectId: id }),
+      setActiveProject: (id) => set({
+        activeProjectId: id,
+        openFiles: [],
+        activeFilePath: null,
+        fileTree: [],
+        expandedPaths: new Set<string>(),
+        gitStatus: null,
+        searchQuery: "",
+        isSearchOpen: false,
+        deployStatus: { isDeploying: false, stage: null, progress: 0, error: null },
+      }),
       setActiveDomain: (id) => set({ activeDomainId: id }),
 
       setFileTree: (tree) => set({ fileTree: tree }),
