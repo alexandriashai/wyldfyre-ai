@@ -405,7 +405,7 @@ def tool(
             tool_params = _generate_parameters_from_signature(func)
 
         # Store tool metadata on function
-        func._tool = Tool(
+        func._tool = Tool(  # type: ignore[attr-defined]
             name=name,
             description=description,
             parameters=tool_params,
@@ -421,7 +421,7 @@ def tool(
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> ToolResult:
             return await func(*args, **kwargs)
 
-        wrapper._tool = func._tool
+        wrapper._tool = func._tool  # type: ignore[attr-defined]
         return wrapper
 
     return decorator

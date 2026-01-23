@@ -7,8 +7,9 @@ to prevent race conditions across multiple processes/containers.
 
 import asyncio
 import uuid
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Any
 
 from .client import RedisClient
 
@@ -101,7 +102,7 @@ class DistributedLock:
         """
         result = await self.redis.eval(script, 1, self.key, self._token)
         self._token = None
-        return result == 1
+        return bool(result == 1)
 
     @asynccontextmanager
     async def acquire(
@@ -186,7 +187,7 @@ class DistributedLock:
         end
         """
         result = await self.redis.eval(script, 1, self.key, self._token, new_ttl)
-        return result == 1
+        return bool(result == 1)
 
     async def is_locked(self) -> bool:
         """Check if the lock is currently held by anyone."""
@@ -220,7 +221,7 @@ class AgentStatusLock:
             max_retries=20,
         )
 
-    def acquire(self, **kwargs):
+    def acquire(self, **kwargs: Any) -> AbstractAsyncContextManager[None]:
         """Acquire the status lock."""
         return self._lock.acquire(**kwargs)
 
@@ -245,6 +246,6 @@ class TaskLock:
             max_retries=10,  # Don't wait too long for tasks
         )
 
-    def acquire(self, **kwargs):
+    def acquire(self, **kwargs: Any) -> AbstractAsyncContextManager[None]:
         """Acquire the task lock."""
         return self._lock.acquire(**kwargs)

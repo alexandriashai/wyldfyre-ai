@@ -196,7 +196,7 @@ class PluginIntegration:
             try:
                 event = HookEvent(event)
             except ValueError:
-                logger.warning("Unknown hook event", event=event)
+                logger.warning("Unknown hook event", hook_event=event)
                 return context
 
         return await self._registry.trigger_hook(event, context)

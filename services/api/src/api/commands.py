@@ -10,7 +10,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from ai_core import get_logger
-from ai_messaging import RedisClient
+from ai_messaging import PubSubManager, RedisClient
 
 from .plan_mode import Plan, PlanManager, PlanStatus, format_plan_for_display
 
@@ -187,72 +187,117 @@ class CommandHandler:
         """Enter planning mode or manage existing plan."""
         conversation_id = context.get("conversation_id")
         user_id = context.get("user_id")
+        project_id = context.get("project_id")
 
         # Check for existing plan
         existing_plan = await self.plan_manager.get_active_plan(conversation_id)
 
         # Handle plan subcommands
+        subcommands = {"approve", "reject", "cancel", "status", "pause", "resume"}
+
         if args:
             args_lower = args.lower().strip()
 
-            # Approve existing plan
-            if args_lower == "approve" and existing_plan:
-                await self.plan_manager.approve_plan(existing_plan.id)
-                return {
-                    "type": "command_result",
-                    "command": "plan",
-                    "content": f"✅ Plan approved! Starting execution...\n\n{format_plan_for_display(existing_plan)}",
-                    "action": "plan_approved",
-                    "plan_id": existing_plan.id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+            # Check if this is a subcommand that requires an existing plan
+            if args_lower in subcommands:
+                if not existing_plan:
+                    return {
+                        "type": "command_error",
+                        "command": "plan",
+                        "error": f"No active plan to {args_lower}. Use `/plan [description]` to create one.",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
 
-            # Reject existing plan
-            if args_lower in ("reject", "cancel") and existing_plan:
-                await self.plan_manager.reject_plan(existing_plan.id)
-                return {
-                    "type": "command_result",
-                    "command": "plan",
-                    "content": "❌ Plan cancelled. What would you like to do instead?",
-                    "action": "plan_rejected",
-                    "plan_id": existing_plan.id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+                # Approve existing plan
+                if args_lower == "approve":
+                    await self.plan_manager.approve_plan(existing_plan.id)
 
-            # Show current plan status
-            if args_lower == "status" and existing_plan:
-                return {
-                    "type": "command_result",
-                    "command": "plan",
-                    "content": format_plan_for_display(existing_plan),
-                    "action": "plan_status",
-                    "plan": existing_plan.to_dict(),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+                    # Trigger execution via supervisor
+                    pubsub = PubSubManager(self.redis)
+                    await pubsub.start()
+                    try:
+                        await pubsub.publish(
+                            "agent:supervisor:tasks",
+                            {
+                                "type": "task_request",
+                                "task_type": "execute_plan",
+                                "user_id": user_id,
+                                "payload": {
+                                    "plan_id": existing_plan.id,
+                                    "conversation_id": conversation_id,
+                                    "user_id": user_id,
+                                    "project_id": context.get("project_id"),
+                                    "root_path": context.get("root_path"),
+                                    "agent_context": context.get("agent_context"),
+                                },
+                            },
+                        )
+                        logger.info(
+                            "Plan execution triggered",
+                            plan_id=existing_plan.id,
+                            conversation_id=conversation_id,
+                        )
+                    finally:
+                        await pubsub.stop()
 
-            # Pause execution
-            if args_lower == "pause" and existing_plan:
-                await self.plan_manager.pause_execution(existing_plan.id)
-                return {
-                    "type": "command_result",
-                    "command": "plan",
-                    "content": "⏸️ Plan execution paused. Use `/plan resume` to continue.",
-                    "action": "plan_paused",
-                    "plan_id": existing_plan.id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+                    return {
+                        "type": "command_result",
+                        "command": "plan",
+                        "content": f"✅ Plan approved! Starting execution...\n\n{format_plan_for_display(existing_plan)}",
+                        "action": "plan_approved",
+                        "plan_id": existing_plan.id,
+                        "plan_status": "APPROVED",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
 
-            # Resume execution
-            if args_lower == "resume" and existing_plan:
-                await self.plan_manager.resume_execution(existing_plan.id)
-                return {
-                    "type": "command_result",
-                    "command": "plan",
-                    "content": "▶️ Plan execution resumed.",
-                    "action": "plan_resumed",
-                    "plan_id": existing_plan.id,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+                # Reject existing plan
+                if args_lower in ("reject", "cancel"):
+                    await self.plan_manager.reject_plan(existing_plan.id)
+                    return {
+                        "type": "command_result",
+                        "command": "plan",
+                        "content": "❌ Plan cancelled. What would you like to do instead?",
+                        "action": "plan_rejected",
+                        "plan_id": existing_plan.id,
+                        "plan_content": "",  # Clear the plan panel
+                        "plan_status": "REJECTED",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+
+                # Show current plan status
+                if args_lower == "status":
+                    return {
+                        "type": "command_result",
+                        "command": "plan",
+                        "content": format_plan_for_display(existing_plan),
+                        "action": "plan_status",
+                        "plan": existing_plan.to_dict(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+
+                # Pause execution
+                if args_lower == "pause":
+                    await self.plan_manager.pause_execution(existing_plan.id)
+                    return {
+                        "type": "command_result",
+                        "command": "plan",
+                        "content": "⏸️ Plan execution paused. Use `/plan resume` to continue.",
+                        "action": "plan_paused",
+                        "plan_id": existing_plan.id,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+
+                # Resume execution
+                if args_lower == "resume":
+                    await self.plan_manager.resume_execution(existing_plan.id)
+                    return {
+                        "type": "command_result",
+                        "command": "plan",
+                        "content": "▶️ Plan execution resumed.",
+                        "action": "plan_resumed",
+                        "plan_id": existing_plan.id,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
 
         # If there's an existing pending plan, show it
         if existing_plan and existing_plan.status == PlanStatus.PENDING:
@@ -265,7 +310,7 @@ class CommandHandler:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-        # Create new plan
+        # Create new plan with intelligent exploration
         if args:
             plan = await self.plan_manager.create_plan(
                 conversation_id=conversation_id,
@@ -274,13 +319,47 @@ class CommandHandler:
                 description=args,
             )
 
+            # Delegate to supervisor for intelligent exploration and planning
+            from ai_messaging import TaskRequest
+            pubsub = PubSubManager(self.redis)
+            await pubsub.start()
+
+            try:
+                task_request = TaskRequest(
+                    task_type="create_plan",
+                    user_id=user_id,
+                    payload={
+                        "plan_id": plan.id,
+                        "description": args,
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "project_id": project_id,
+                        "root_path": context.get("root_path"),
+                        "agent_context": context.get("agent_context"),
+                        "project_name": context.get("project_name"),
+                    },
+                )
+                await pubsub.publish(
+                    "agent:supervisor:tasks",
+                    task_request.model_dump_json(),
+                )
+                logger.info(
+                    "Published plan creation task",
+                    plan_id=plan.id,
+                    task_id=task_request.id,
+                )
+            finally:
+                await pubsub.stop()
+
+            # Return initial response - supervisor will send updates via WebSocket
             return {
                 "type": "command_result",
                 "command": "plan",
-                "content": f"📋 **Entering Planning Mode**\n\nI'll analyze your request and create a structured plan:\n\n> {args}\n\nPlease wait while I break this down into steps...",
-                "action": "enter_plan_mode",
+                "content": f"Creating intelligent plan for: **{args[:50]}{'...' if len(args) > 50 else ''}**\n\n*Exploring codebase...*",
+                "plan_content": f"## Creating Plan: {args[:50]}...\n\n*Analyzing codebase...*",
+                "plan_status": "DRAFT",
+                "action": "plan_creating",
                 "plan_id": plan.id,
-                "plan_description": args,
                 "conversation_id": conversation_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }

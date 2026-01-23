@@ -9,7 +9,23 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { Search, Brain, Database, FileText, Loader2 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Search, Brain, Database, FileText, Loader2, Pencil, Trash2 } from "lucide-react";
 
 interface SearchResult {
   id: string;
@@ -24,6 +40,7 @@ interface SearchResult {
 interface Learning {
   id: string;
   phase: string;
+  category?: string;
   content: string;
   outcome: string;
   created_at: string;
@@ -56,6 +73,14 @@ export default function MemoryPage() {
   const [isSearching, setIsSearching] = useState(false);
   const [isLoadingLearnings, setIsLoadingLearnings] = useState(false);
   const [isLoadingStats, setIsLoadingStats] = useState(true);
+
+  // Edit state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+  const [editPhase, setEditPhase] = useState("");
+  const [editCategory, setEditCategory] = useState("");
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (token) {
@@ -105,6 +130,46 @@ export default function MemoryPage() {
   const handlePhaseFilter = (phase: string | null) => {
     setSelectedPhase(phase);
     fetchLearnings(phase || undefined);
+  };
+
+  const handleEditStart = (item: { id: string; content: string; phase?: string; category?: string }) => {
+    setEditingId(item.id);
+    setEditContent(item.content);
+    setEditPhase(item.phase || "");
+    setEditCategory(item.category || "");
+  };
+
+  const handleEditSave = async () => {
+    if (!token || !editingId) return;
+    setIsUpdating(true);
+    try {
+      await memoryApi.update(token, editingId, {
+        content: editContent || undefined,
+        phase: editPhase || undefined,
+        category: editCategory || undefined,
+      });
+      // Refresh data
+      fetchLearnings(selectedPhase || undefined);
+      if (searchQuery) handleSearch();
+      setEditingId(null);
+    } catch (error) {
+      console.error("Failed to update memory:", error);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!token) return;
+    try {
+      await memoryApi.delete(token, id);
+      setLearnings((prev) => prev.filter((l) => l.id !== id));
+      setSearchResults((prev) => prev.filter((r) => r.id !== id));
+      setDeletingId(null);
+      fetchStats();
+    } catch (error) {
+      console.error("Failed to delete memory:", error);
+    }
   };
 
   return (
@@ -216,14 +281,47 @@ export default function MemoryPage() {
             ) : (
               <div className="space-y-4">
                 {searchResults.map((result) => (
-                  <Card key={result.id}>
+                  <Card key={result.id} className="group">
                     <CardContent className="pt-4">
                       <div className="flex justify-between items-start mb-2">
-                        <Badge variant="outline">
-                          Score: {(result.score * 100).toFixed(1)}%
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          {result.category && (
+                            <Badge variant="secondary">{result.category}</Badge>
+                          )}
+                          {result.phase && (
+                            <Badge variant="outline">{result.phase}</Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline">
+                            {(result.score * 100).toFixed(1)}%
+                          </Badge>
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6"
+                              onClick={() => handleEditStart(result)}
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 text-destructive"
+                              onClick={() => setDeletingId(result.id)}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        </div>
                       </div>
                       <p className="text-sm">{result.content}</p>
+                      {result.created_at && (
+                        <p className="text-xs text-muted-foreground mt-2">
+                          {new Date(result.created_at).toLocaleString()}
+                        </p>
+                      )}
                     </CardContent>
                   </Card>
                 ))}
@@ -266,15 +364,40 @@ export default function MemoryPage() {
             ) : (
               <div className="space-y-4">
                 {learnings.map((learning) => (
-                  <Card key={learning.id}>
+                  <Card key={learning.id} className="group">
                     <CardHeader className="pb-2">
                       <div className="flex items-center justify-between">
-                        <Badge>{learning.phase}</Badge>
-                        <Badge
-                          variant={learning.outcome === "success" ? "default" : "destructive"}
-                        >
-                          {learning.outcome}
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          {learning.phase && <Badge>{learning.phase}</Badge>}
+                          {learning.category && (
+                            <Badge variant="secondary">{learning.category}</Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant={learning.outcome === "success" ? "default" : "destructive"}
+                          >
+                            {learning.outcome}
+                          </Badge>
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6"
+                              onClick={() => handleEditStart(learning)}
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 text-destructive"
+                              onClick={() => setDeletingId(learning.id)}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        </div>
                       </div>
                     </CardHeader>
                     <CardContent>
@@ -290,6 +413,81 @@ export default function MemoryPage() {
           </ScrollArea>
         </TabsContent>
       </Tabs>
+
+      {/* Edit Dialog */}
+      <Dialog open={!!editingId} onOpenChange={() => setEditingId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Memory</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label>Content</Label>
+              <Textarea
+                value={editContent}
+                onChange={(e) => setEditContent(e.target.value)}
+                rows={4}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label>Phase</Label>
+                <Select value={editPhase} onValueChange={setEditPhase}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select phase" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {phases.map((p) => (
+                      <SelectItem key={p.value} value={p.value}>
+                        {p.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <Label>Category</Label>
+                <Input
+                  value={editCategory}
+                  onChange={(e) => setEditCategory(e.target.value)}
+                  placeholder="e.g., discovery, pattern"
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingId(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleEditSave} disabled={isUpdating}>
+              {isUpdating ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation */}
+      <Dialog open={!!deletingId} onOpenChange={() => setDeletingId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Memory?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This will permanently delete this memory. This action cannot be undone.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeletingId(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deletingId && handleDelete(deletingId)}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

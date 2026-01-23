@@ -38,6 +38,7 @@ import {
   FolderKanban,
   Loader2,
   Globe,
+  DollarSign,
 } from "lucide-react";
 import { projectsApi, ProjectWithStats } from "@/lib/api";
 
@@ -290,21 +291,25 @@ export default function ProjectsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                    <div className="flex items-center gap-1">
-                      <MessageSquare className="h-4 w-4" />
+                    <div className="flex items-center gap-1" title="Conversations">
+                      <MessageSquare className="h-3.5 w-3.5" />
                       <span>{stats?.conversation_count || 0}</span>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <ClipboardList className="h-4 w-4" />
+                    <div className="flex items-center gap-1" title="Tasks">
+                      <ClipboardList className="h-3.5 w-3.5" />
                       <span>{stats?.task_count || 0}</span>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <Globe className="h-4 w-4" />
+                    <div className="flex items-center gap-1" title="Domains">
+                      <Globe className="h-3.5 w-3.5" />
                       <span>{stats?.domain_count || 0}</span>
+                    </div>
+                    <div className="flex items-center gap-1 ml-auto" title="Total Spend">
+                      <DollarSign className="h-3.5 w-3.5" />
+                      <span>{stats?.total_cost ? stats.total_cost.toFixed(2) : "0.00"}</span>
                     </div>
                   </div>
                   <p className="text-xs text-muted-foreground mt-2">
-                    Created {formatRelativeTime(project.created_at)}
+                    Updated {formatRelativeTime(project.updated_at)}
                   </p>
                 </CardContent>
               </Card>

@@ -366,7 +366,6 @@ async def get_memory_stats(collection: str | None = None) -> ToolResult:
             stats = {
                 "collection": collection_name,
                 "points_count": info.points_count,
-                "vectors_count": info.vectors_count,
                 "indexed_vectors_count": info.indexed_vectors_count,
                 "status": info.status.value if info.status else "unknown",
             }

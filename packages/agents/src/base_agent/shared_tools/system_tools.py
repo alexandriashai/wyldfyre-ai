@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 from pathlib import Path
+from typing import Any
 
 from ai_core import CapabilityCategory, get_logger
 from base_agent import ToolResult, tool
@@ -268,7 +269,7 @@ async def process_list(
             return ToolResult.ok([], count=0)
 
         header = lines[0]
-        processes = []
+        processes: list[dict[str, Any]] = []
 
         for line in lines[1:]:
             if len(processes) >= limit:
@@ -673,7 +674,7 @@ async def system_info(
     try:
         import platform
 
-        info = {
+        info: dict[str, Any] = {
             "os": {
                 "system": platform.system(),
                 "release": platform.release(),
@@ -759,7 +760,7 @@ async def resource_monitor(
 ) -> ToolResult:
     """Get current resource usage snapshot."""
     try:
-        metrics = {}
+        metrics: dict[str, Any] = {}
 
         # CPU usage (using /proc/stat)
         code, stdout, _ = await _run_command("top -bn1 | head -5")
@@ -899,8 +900,8 @@ async def check_service_health(
                 "check_type": "tcp",
             },
             "postgres": {
-                "host": settings.postgres.host,
-                "port": settings.postgres.port,
+                "host": settings.database.host,
+                "port": settings.database.port,
                 "check_type": "tcp",
             },
             "qdrant": {

@@ -214,6 +214,7 @@ async def list_learnings(
                     "id": r["id"],
                     "content": r.get("text", ""),
                     "phase": r.get("metadata", {}).get("phase"),
+                    "category": r.get("metadata", {}).get("category"),
                     "outcome": r.get("metadata", {}).get("outcome", "success"),
                     "agent": r.get("metadata", {}).get("agent"),
                     "scope": r.get("metadata", {}).get("scope", "global"),
@@ -235,6 +236,122 @@ async def list_learnings(
             "count": 0,
             "error": str(e),
         }
+
+
+class UpdateLearningRequest(BaseModel):
+    """Request body for updating a learning."""
+
+    content: str | None = None
+    phase: PAIPhase | None = None
+    category: str | None = None
+    confidence: float | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@router.get("/learnings/{learning_id}")
+async def get_learning(
+    learning_id: str,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """Get a single learning by ID."""
+    try:
+        qdrant = await get_qdrant_store()
+        result = await qdrant.get(learning_id)
+        await qdrant.disconnect()
+
+        if not result:
+            return {"error": "Learning not found", "id": learning_id}
+
+        return {
+            "id": result["id"],
+            "content": result.get("text", ""),
+            "phase": result.get("metadata", {}).get("phase"),
+            "category": result.get("metadata", {}).get("category"),
+            "confidence": result.get("metadata", {}).get("confidence"),
+            "agent": result.get("metadata", {}).get("agent_type"),
+            "scope": result.get("metadata", {}).get("scope", "global"),
+            "created_at": result.get("metadata", {}).get("created_at"),
+            "updated_at": result.get("metadata", {}).get("updated_at"),
+            "metadata": result.get("metadata", {}),
+        }
+
+    except Exception as e:
+        logger.error("Failed to get learning", id=learning_id, error=str(e))
+        return {"error": str(e), "id": learning_id}
+
+
+@router.put("/learnings/{learning_id}")
+async def update_learning(
+    learning_id: str,
+    body: UpdateLearningRequest,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """
+    Update an existing learning.
+
+    Only re-embeds if content changes. Metadata fields are merged with existing.
+    """
+    try:
+        qdrant = await get_qdrant_store()
+
+        # Build metadata updates
+        meta_updates: dict[str, Any] = {}
+        if body.phase is not None:
+            meta_updates["phase"] = body.phase.value
+        if body.category is not None:
+            meta_updates["category"] = body.category
+        if body.confidence is not None:
+            meta_updates["confidence"] = body.confidence
+        if body.metadata:
+            meta_updates.update(body.metadata)
+
+        # Add updated_at timestamp
+        meta_updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        result = await qdrant.update(
+            id=learning_id,
+            text=body.content,
+            metadata=meta_updates if meta_updates else None,
+        )
+
+        await qdrant.disconnect()
+
+        if not result:
+            return {"error": "Learning not found", "id": learning_id}
+
+        return {
+            "id": result["id"],
+            "content": result.get("text", ""),
+            "phase": result.get("metadata", {}).get("phase"),
+            "category": result.get("metadata", {}).get("category"),
+            "confidence": result.get("metadata", {}).get("confidence"),
+            "updated_at": result.get("metadata", {}).get("updated_at"),
+            "message": "Learning updated successfully",
+        }
+
+    except Exception as e:
+        logger.error("Failed to update learning", id=learning_id, error=str(e))
+        return {"error": str(e), "id": learning_id}
+
+
+@router.delete("/learnings/{learning_id}")
+async def delete_learning(
+    learning_id: str,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """Delete a learning by ID."""
+    try:
+        qdrant = await get_qdrant_store()
+        success = await qdrant.delete(learning_id)
+        await qdrant.disconnect()
+
+        if success:
+            return {"message": "Learning deleted", "id": learning_id}
+        return {"error": "Failed to delete learning", "id": learning_id}
+
+    except Exception as e:
+        logger.error("Failed to delete learning", id=learning_id, error=str(e))
+        return {"error": str(e), "id": learning_id}
 
 
 @router.get("/stats")

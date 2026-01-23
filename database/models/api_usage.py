@@ -15,6 +15,7 @@ from ai_core import AgentType
 from .base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
+    from .project import Project
     from .task import Task
     from .user import User
 
@@ -108,6 +109,14 @@ class APIUsage(Base, UUIDMixin, TimestampMixin):
     )
     user: Mapped["User | None"] = relationship("User")
 
+    # Project association for per-project cost tracking
+    project_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        index=True,
+    )
+    project: Mapped["Project | None"] = relationship("Project")
+
     correlation_id: Mapped[str | None] = mapped_column(String(36), index=True)
 
     # Request metadata
@@ -124,6 +133,8 @@ class APIUsage(Base, UUIDMixin, TimestampMixin):
         Index("ix_api_usage_user_date", "user_id", "created_at"),
         # Model-specific analysis
         Index("ix_api_usage_model_date", "model", "created_at"),
+        # Per-project queries
+        Index("ix_api_usage_project_date", "project_id", "created_at"),
     )
 
     def __repr__(self) -> str:

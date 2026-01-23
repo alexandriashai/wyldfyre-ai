@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_core import get_logger
 from ai_db import Task
-from database.models import Conversation, Domain, Project, ProjectStatus
+from database.models import APIUsage, Conversation, Domain, Project, ProjectStatus
 
 from ..database import get_db_session
 from ..dependencies import CurrentUserDep
@@ -18,6 +18,9 @@ from ..schemas.project import (
     ProjectDomainInfo,
     ProjectListResponse,
     ProjectResponse,
+    ProjectSpendByAgent,
+    ProjectSpendByModel,
+    ProjectSpendResponse,
     ProjectUpdate,
     ProjectWithStatsResponse,
 )
@@ -143,6 +146,14 @@ async def get_project(
     )
     domain_count = domain_count_result.scalar() or 0
 
+    # Get total cost from API usage
+    cost_result = await db.execute(
+        select(func.coalesce(func.sum(APIUsage.cost_total), 0)).where(
+            APIUsage.project_id == project_id
+        )
+    )
+    total_cost = float(cost_result.scalar() or 0)
+
     return ProjectWithStatsResponse(
         id=project.id,
         name=project.name,
@@ -157,7 +168,7 @@ async def get_project(
         conversation_count=conversation_count,
         task_count=task_count,
         domain_count=domain_count,
-        total_cost=0.0,  # TODO: Calculate from API usage
+        total_cost=total_cost,
     )
 
 
@@ -297,4 +308,102 @@ async def get_project_context(
         description=project.description,
         agent_context=project.agent_context,
         domains=domain_infos,
+    )
+
+
+@router.get("/{project_id}/spend", response_model=ProjectSpendResponse)
+async def get_project_spend(
+    project_id: str,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> ProjectSpendResponse:
+    """
+    Get detailed spending breakdown for a project.
+
+    Returns total cost, token usage, and breakdowns by model and agent type.
+    """
+    # Verify project exists and user has access
+    result = await db.execute(
+        select(Project).where(
+            Project.id == project_id,
+            Project.user_id == current_user.sub,
+        )
+    )
+    project = result.scalar_one_or_none()
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {project_id} not found",
+        )
+
+    # Get total spend
+    total_result = await db.execute(
+        select(
+            func.coalesce(func.sum(APIUsage.cost_total), 0).label("total_cost"),
+            func.coalesce(
+                func.sum(APIUsage.input_tokens + APIUsage.output_tokens + APIUsage.cached_tokens),
+                0,
+            ).label("total_tokens"),
+            func.count(APIUsage.id).label("request_count"),
+        ).where(APIUsage.project_id == project_id)
+    )
+    total_row = total_result.first()
+
+    # Breakdown by model
+    model_result = await db.execute(
+        select(
+            APIUsage.model,
+            func.sum(APIUsage.cost_total).label("cost"),
+            func.sum(
+                APIUsage.input_tokens + APIUsage.output_tokens + APIUsage.cached_tokens
+            ).label("tokens"),
+            func.count(APIUsage.id).label("requests"),
+        )
+        .where(APIUsage.project_id == project_id)
+        .group_by(APIUsage.model)
+        .order_by(func.sum(APIUsage.cost_total).desc())
+    )
+    by_model = [
+        ProjectSpendByModel(
+            model=r.model,
+            cost=float(r.cost),
+            tokens=r.tokens,
+            requests=r.requests,
+        )
+        for r in model_result
+    ]
+
+    # Breakdown by agent
+    agent_result = await db.execute(
+        select(
+            APIUsage.agent_type,
+            func.sum(APIUsage.cost_total).label("cost"),
+            func.sum(
+                APIUsage.input_tokens + APIUsage.output_tokens + APIUsage.cached_tokens
+            ).label("tokens"),
+            func.count(APIUsage.id).label("requests"),
+        )
+        .where(APIUsage.project_id == project_id)
+        .group_by(APIUsage.agent_type)
+        .order_by(func.sum(APIUsage.cost_total).desc())
+    )
+    by_agent = [
+        ProjectSpendByAgent(
+            agent_type=r.agent_type.value if r.agent_type else "unknown",
+            cost=float(r.cost),
+            tokens=r.tokens,
+            requests=r.requests,
+        )
+        for r in agent_result
+    ]
+
+    return ProjectSpendResponse(
+        project_id=project.id,
+        project_name=project.name,
+        total_cost=float(total_row.total_cost) if total_row else 0.0,
+        total_tokens=total_row.total_tokens if total_row else 0,
+        total_requests=total_row.request_count if total_row else 0,
+        by_model=by_model,
+        by_agent=by_agent,
     )

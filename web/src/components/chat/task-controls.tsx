@@ -26,7 +26,7 @@ interface TaskControlsProps {
 
 export function TaskControls({ className }: TaskControlsProps) {
   const { isSending } = useChatStore();
-  const { agents } = useAgentStore();
+  const { agents, actionLog } = useAgentStore();
   const { pauseTask, resumeTask, cancelTask, addMessageWhileBusy } = useChat();
 
   const [isPaused, setIsPaused] = useState(false);
@@ -36,6 +36,10 @@ export function TaskControls({ className }: TaskControlsProps) {
   // Check if any agent is busy
   const busyAgents = agents.filter((agent) => agent.status === "busy");
   const isAgentWorking = busyAgents.length > 0 || isSending;
+
+  // Get the latest action description
+  const latestAction = actionLog.length > 0 ? actionLog[actionLog.length - 1] : null;
+  const statusText = latestAction?.description || "Working...";
 
   if (!isAgentWorking) {
     return null;
@@ -71,8 +75,8 @@ export function TaskControls({ className }: TaskControlsProps) {
         className
       )}
     >
-      <span className="text-xs text-muted-foreground mr-1 sm:mr-2">
-        Agent working...
+      <span className="text-xs text-muted-foreground mr-1 sm:mr-2 truncate max-w-[120px] sm:max-w-[200px] md:max-w-none">
+        {statusText}
       </span>
 
       {/* Pause/Resume button */}

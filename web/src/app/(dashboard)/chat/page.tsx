@@ -9,7 +9,6 @@ import { MessageInput } from "@/components/chat/message-input";
 import { AgentStatus } from "@/components/chat/agent-status";
 import { TaskControls } from "@/components/chat/task-controls";
 import { PlanPanel } from "@/components/chat/plan-panel";
-import { ConversationSidebar } from "@/components/chat/conversation-sidebar";
 import { Loader2 } from "lucide-react";
 
 export default function ChatPage() {
@@ -24,7 +23,6 @@ export default function ChatPage() {
   } = useChatStore();
   const { selectedProject } = useProjectStore();
   const [isInitializing, setIsInitializing] = useState(true);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     const initializeChat = async () => {
@@ -79,23 +77,12 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex h-full w-full min-h-0 overflow-hidden">
-      {/* Conversation Sidebar - hidden on mobile, visible on md+ */}
-      <div className="hidden md:block h-full">
-        <ConversationSidebar
-          isCollapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
-      </div>
-
-      {/* Main Chat Area */}
-      <div className="flex flex-col flex-1 h-full min-w-0 overflow-hidden">
-        <AgentStatus />
-        <TaskControls />
-        {currentPlan && <PlanPanel />}
-        <MessageList />
-        <MessageInput />
-      </div>
+    <div className="flex flex-col h-full w-full min-h-0 overflow-hidden">
+      <AgentStatus />
+      <TaskControls />
+      {currentPlan && <PlanPanel />}
+      <MessageList />
+      <MessageInput />
     </div>
   );
 }

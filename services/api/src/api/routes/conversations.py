@@ -18,7 +18,7 @@ from database.models import Conversation, ConversationStatus, PlanStatus
 from ai_messaging import RedisClient
 
 from ..database import get_db_session
-from ..dependencies import CurrentUserDep, get_redis
+from ..dependencies import CurrentUserDep, RedisDep, get_redis
 from ..schemas.conversation import (
     ConversationCreate,
     ConversationListResponse,
@@ -394,6 +394,7 @@ async def update_conversation_plan(
 async def approve_conversation_plan(
     conversation_id: str,
     current_user: CurrentUserDep,
+    redis: RedisDep,
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """
@@ -431,11 +432,47 @@ async def approve_conversation_plan(
         user_id=current_user.sub,
     )
 
+    # Get active plan from Redis and trigger execution
+    from ..plan_mode import PlanManager
+    from ai_messaging import PubSubManager
+
+    plan_manager = PlanManager(redis)
+    plan = await plan_manager.get_active_plan(conversation_id)
+
+    if plan:
+        # Mark plan as approved
+        await plan_manager.approve_plan(plan.id)
+
+        # Trigger execution via supervisor
+        pubsub = PubSubManager(redis)
+        await pubsub.start()
+        try:
+            await pubsub.publish(
+                "agent:supervisor:tasks",
+                {
+                    "type": "task_request",
+                    "task_type": "execute_plan",
+                    "user_id": current_user.sub,
+                    "payload": {
+                        "plan_id": plan.id,
+                        "conversation_id": conversation_id,
+                        "user_id": current_user.sub,
+                    },
+                },
+            )
+            logger.info(
+                "Plan execution triggered",
+                plan_id=plan.id,
+                conversation_id=conversation_id,
+            )
+        finally:
+            await pubsub.stop()
+
     return {
         "conversation_id": conversation_id,
         "plan_status": "approved",
         "plan_approved_at": conversation.plan_approved_at.isoformat(),
-        "message": "Plan approved",
+        "message": "Plan approved and execution started",
     }
 
 

@@ -271,7 +271,7 @@ networks:
   ai-data:
     driver: bridge
     name: ai-data
-    internal: true
+    # Note: internal: false to allow host access for supervisor (runs outside Docker)
 
 # =============================================================================
 # Volumes

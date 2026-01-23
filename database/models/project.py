@@ -42,6 +42,9 @@ class Project(Base, UUIDMixin, TimestampMixin):
     # Agent context - instructions and context for AI agents working on this project
     agent_context: Mapped[str | None] = mapped_column(Text)
 
+    # Project root path - filesystem location of the project's codebase
+    root_path: Mapped[str | None] = mapped_column(String(500))
+
     # Status
     status: Mapped[ProjectStatus] = mapped_column(
         Enum(ProjectStatus),

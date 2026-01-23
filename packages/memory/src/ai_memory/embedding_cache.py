@@ -3,7 +3,7 @@ Redis-backed embedding cache to reduce API calls and latency.
 """
 import hashlib
 import json
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from ai_core import get_logger
 
@@ -67,7 +67,7 @@ class EmbeddingCache:
             cached = await self._redis.get(key)
             if cached:
                 self._hits += 1
-                return json.loads(cached)
+                return cast(list[float], json.loads(cached))
         except Exception as e:
             logger.warning(f"Cache get failed: {e}")
 
@@ -190,7 +190,7 @@ class EmbeddingCache:
             if keys:
                 deleted = await self._redis.delete(*keys)
                 logger.info(f"Cleared {deleted} cached embeddings")
-                return deleted
+                return cast(int, deleted)
         except Exception as e:
             logger.warning(f"Cache clear failed: {e}")
         return 0

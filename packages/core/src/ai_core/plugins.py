@@ -55,7 +55,7 @@ class PluginTool:
     handler: str  # module:function path
     parameters: dict[str, Any]
     permission_level: int = 0
-    _callable: Optional[Callable] = field(default=None, repr=False)
+    _callable: Optional[Callable[..., Any]] = field(default=None, repr=False)
 
 
 @dataclass
@@ -64,7 +64,7 @@ class PluginHook:
     event: HookEvent
     handler: str  # module:function path
     priority: int = 50  # 0-100, higher = runs first
-    _callable: Optional[Callable] = field(default=None, repr=False)
+    _callable: Optional[Callable[..., Any]] = field(default=None, repr=False)
 
 
 @dataclass
@@ -124,7 +124,7 @@ class PluginRegistry:
         Returns:
             List of discovered plugin names
         """
-        discovered = []
+        discovered: list[str] = []
 
         if not self.plugins_dir.exists():
             logger.warning("Plugins directory does not exist", path=str(self.plugins_dir))
@@ -182,7 +182,7 @@ class PluginRegistry:
                     priority=hook_data.get("priority", 50),
                 ))
             except ValueError:
-                logger.warning("Unknown hook event", event=hook_data.get("event"))
+                logger.warning("Unknown hook event", hook_event=hook_data.get("event"))
 
         # Parse MCP servers
         mcp_servers = []
@@ -240,7 +240,7 @@ class PluginRegistry:
                 self.hooks[hook.event].append(hook)
                 # Sort by priority (higher first)
                 self.hooks[hook.event].sort(key=lambda h: h.priority, reverse=True)
-                logger.debug("Registered hook", plugin=name, event=hook.event.value)
+                logger.debug("Registered hook", plugin=name, hook_event=hook.event.value)
 
             # Register MCP servers
             for mcp in plugin.mcp_servers:
@@ -258,7 +258,7 @@ class PluginRegistry:
             logger.error("Failed to load plugin", name=name, error=str(e))
             return False
 
-    def _load_handler(self, plugin_path: Path, handler_path: str) -> Callable:
+    def _load_handler(self, plugin_path: Path, handler_path: str) -> Callable[..., Any]:
         """
         Load a handler function from a module path.
 
@@ -398,7 +398,7 @@ class PluginRegistry:
             except Exception as e:
                 logger.error(
                     "Hook execution failed",
-                    event=event.value,
+                    hook_event=event.value,
                     handler=hook.handler,
                     error=str(e),
                 )

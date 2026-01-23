@@ -153,7 +153,7 @@ class SecurityValidator:
                 self._config = SecurityConfig.get_defaults()
         
         self._violations: list[SecurityViolation] = []
-        self._compiled_patterns: list[tuple[re.Pattern, str, ThreatLevel]] = []
+        self._compiled_patterns: list[tuple[re.Pattern[str], str, ThreatLevel]] = []
         self._compile_patterns()
         
         logger.info("Security validator initialized",

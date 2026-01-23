@@ -124,12 +124,22 @@ function ErrorFallback({
           An unexpected error occurred. You can try again or reload the page.
         </p>
 
-        {/* Error details (dev only) */}
-        {isDev && error && (
+        {/* Error details - show in all environments for debugging */}
+        {error && (
           <div className="mb-6 p-4 bg-red-500/10 rounded-lg border border-red-500/20">
             <p className="text-sm font-mono text-red-400 break-all">
               {error.name}: {error.message}
             </p>
+            {error.stack && (
+              <details className="mt-2" open>
+                <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-400">
+                  Stack Trace
+                </summary>
+                <pre className="mt-2 text-xs text-gray-500 overflow-auto max-h-60 whitespace-pre-wrap">
+                  {error.stack}
+                </pre>
+              </details>
+            )}
             {errorInfo?.componentStack && (
               <details className="mt-2">
                 <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-400">

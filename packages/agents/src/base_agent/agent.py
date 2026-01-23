@@ -138,6 +138,7 @@ class AgentState:
     # Context for action publishing
     current_user_id: str | None = None
     current_conversation_id: str | None = None
+    current_project_id: str | None = None
     # Task control
     task_control: TaskControlState = TaskControlState.RUNNING
     # Pending messages queue (for interrupts while agent is working)
@@ -240,27 +241,27 @@ class BaseAgent(ABC):
         )
 
         # Register memory tools (access Tool object via _tool attribute from decorator)
-        self._tool_registry.register(search_memory._tool)
-        self._tool_registry.register(store_memory._tool)
-        self._tool_registry.register(list_memory_collections._tool)
-        self._tool_registry.register(get_memory_stats._tool)
-        self._tool_registry.register(delete_memory._tool)
+        self._tool_registry.register(search_memory._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(store_memory._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(list_memory_collections._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(get_memory_stats._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(delete_memory._tool)  # type: ignore[attr-defined]
 
         # Register collaboration tools
-        self._tool_registry.register(notify_user._tool)
-        self._tool_registry.register(request_agent_help._tool)
-        self._tool_registry.register(broadcast_status._tool)
+        self._tool_registry.register(notify_user._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(request_agent_help._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(broadcast_status._tool)  # type: ignore[attr-defined]
 
         # Register system tools (read-only monitoring)
-        self._tool_registry.register(get_system_info._tool)
-        self._tool_registry.register(check_service_health._tool)
-        self._tool_registry.register(resource_monitor._tool)
+        self._tool_registry.register(get_system_info._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(check_service_health._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(resource_monitor._tool)  # type: ignore[attr-defined]
 
         # Register system tools (execution - permission level 2+)
-        self._tool_registry.register(shell_execute._tool)
-        self._tool_registry.register(process_list._tool)
-        self._tool_registry.register(process_kill._tool)
-        self._tool_registry.register(service_manage._tool)
+        self._tool_registry.register(shell_execute._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(process_list._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(process_kill._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(service_manage._tool)  # type: ignore[attr-defined]
 
         logger.debug(
             "Registered shared tools",

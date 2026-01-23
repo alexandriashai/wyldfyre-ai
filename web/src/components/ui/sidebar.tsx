@@ -1,9 +1,12 @@
 "use client";
 
+import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { cn, getStatusBgColor } from "@/lib/utils";
-import { useAgentStore } from "@/stores/agent-store";
+import { cn } from "@/lib/utils";
+import { useChatStore } from "@/stores/chat-store";
+import { useAuthStore } from "@/stores/auth-store";
+import { useProjectStore } from "@/stores/project-store";
 import { ProjectSelector } from "@/components/projects/project-selector";
 import {
   MessageSquare,
@@ -16,6 +19,10 @@ import {
   X,
   BarChart3,
   FolderKanban,
+  Plus,
+  Trash2,
+  MoreVertical,
+  Pencil,
 } from "lucide-react";
 import { Button } from "./button";
 import { ScrollArea } from "./scroll-area";
@@ -25,6 +32,22 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "./tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "./dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./alert-dialog";
 
 interface SidebarProps {
   isCollapsed: boolean;
@@ -43,29 +66,103 @@ const navItems = [
   { href: "/settings", icon: Settings, label: "Settings" },
 ];
 
-const agentNames = [
-  { name: "supervisor", label: "Supervisor" },
-  { name: "code_agent", label: "Code" },
-  { name: "data_agent", label: "Data" },
-  { name: "infra_agent", label: "Infra" },
-  { name: "research_agent", label: "Research" },
-  { name: "qa_agent", label: "QA" },
-];
-
 export function Sidebar({ isCollapsed, onToggle, isMobileOpen, onMobileToggle }: SidebarProps) {
   const pathname = usePathname();
-  const { agents } = useAgentStore();
-
-  const getAgentStatus = (name: string) => {
-    const agent = agents.find((a) => a.name === name);
-    return agent?.status || "unknown";
-  };
+  const { token } = useAuthStore();
+  const {
+    conversations,
+    currentConversation,
+    selectConversation,
+    createConversation,
+    updateConversation,
+    deleteConversation,
+    isLoading,
+  } = useChatStore();
+  const { selectedProject } = useProjectStore();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [conversationToDelete, setConversationToDelete] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   // Close mobile menu when navigating
   const handleNavClick = () => {
     if (onMobileToggle && isMobileOpen) {
       onMobileToggle();
     }
+  };
+
+  const handleCreateConversation = async () => {
+    if (!token) return;
+    try {
+      await createConversation(token, "New Chat", selectedProject?.id);
+    } catch (error) {
+      console.error("Failed to create conversation:", error);
+    }
+  };
+
+  const handleSelectConversation = async (id: string) => {
+    if (!token || id === currentConversation?.id) return;
+    try {
+      await selectConversation(token, id);
+    } catch (error) {
+      console.error("Failed to select conversation:", error);
+    }
+  };
+
+  const handleDeleteClick = (id: string) => {
+    setConversationToDelete(id);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!token || !conversationToDelete) return;
+    try {
+      await deleteConversation(token, conversationToDelete);
+      setDeleteDialogOpen(false);
+      setConversationToDelete(null);
+    } catch (error) {
+      console.error("Failed to delete conversation:", error);
+    }
+  };
+
+  const handleRenameStart = (conv: { id: string; title: string }) => {
+    setRenamingId(conv.id);
+    setRenameValue(conv.title);
+  };
+
+  const handleRenameSubmit = async () => {
+    if (!token || !renamingId || !renameValue.trim()) {
+      setRenamingId(null);
+      return;
+    }
+    try {
+      await updateConversation(token, renamingId, { title: renameValue.trim() });
+    } catch (error) {
+      console.error("Failed to rename conversation:", error);
+    }
+    setRenamingId(null);
+  };
+
+  useEffect(() => {
+    if (renamingId && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingId]);
+
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) {
+      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    } else if (diffDays === 1) {
+      return "Yesterday";
+    } else if (diffDays < 7) {
+      return date.toLocaleDateString([], { weekday: "short" });
+    }
+    return date.toLocaleDateString([], { month: "short", day: "numeric" });
   };
 
   return (
@@ -108,7 +205,7 @@ export function Sidebar({ isCollapsed, onToggle, isMobileOpen, onMobileToggle }:
       </div>
 
       {/* Navigation */}
-      <ScrollArea className="flex-1 px-2 py-4">
+      <div className="px-2 py-4">
         <nav className="space-y-1">
           {navItems.map((item) => {
             const isActive = pathname.startsWith(item.href);
@@ -156,60 +253,170 @@ export function Sidebar({ isCollapsed, onToggle, isMobileOpen, onMobileToggle }:
             );
           })}
         </nav>
+      </div>
 
-        <Separator className="my-4" />
-
-        {/* Agent Status */}
-        <div className={cn("px-2", isCollapsed && !isMobileOpen && "px-0")}>
-          {(!isCollapsed || isMobileOpen) && (
-            <p className="mb-2 px-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              Agents
-            </p>
-          )}
-          <div className="space-y-1">
-            {agentNames.map((agent) => {
-              const status = getAgentStatus(agent.name);
-
-              // Desktop collapsed view
-              if (isCollapsed && !isMobileOpen) {
-                return (
-                  <Tooltip key={agent.name} delayDuration={0}>
-                    <TooltipTrigger asChild>
-                      <div className="flex h-8 w-8 items-center justify-center mx-auto">
-                        <div
-                          className={cn(
-                            "h-2 w-2 rounded-full",
-                            getStatusBgColor(status)
-                          )}
-                        />
+      {/* Conversations List */}
+      <div className="flex flex-col border-t min-h-0 flex-1">
+        {(!isCollapsed || isMobileOpen) ? (
+          <>
+            <div className="flex items-center justify-between px-3 py-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Chats
+              </p>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6"
+                onClick={handleCreateConversation}
+                disabled={isLoading}
+                title="New conversation"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <ScrollArea className="flex-1">
+              <div className="px-2 pb-2 space-y-0.5">
+                {conversations.length === 0 ? (
+                  <p className="text-xs text-muted-foreground text-center py-3">
+                    No conversations yet.
+                  </p>
+                ) : (
+                  conversations.map((conv) => (
+                    <div
+                      key={conv.id}
+                      className={cn(
+                        "group flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer hover:bg-muted transition-colors",
+                        currentConversation?.id === conv.id && "bg-muted"
+                      )}
+                      onClick={() => renamingId !== conv.id && handleSelectConversation(conv.id)}
+                    >
+                      <MessageSquare className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                      <div className="flex-1 min-w-0">
+                        {renamingId === conv.id ? (
+                          <input
+                            ref={renameInputRef}
+                            type="text"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onBlur={handleRenameSubmit}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleRenameSubmit();
+                              if (e.key === "Escape") setRenamingId(null);
+                            }}
+                            className="text-xs font-medium w-full bg-background border rounded px-1 py-0.5 outline-none focus:ring-1 focus:ring-primary"
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        ) : (
+                          <>
+                            <p className="text-xs font-medium truncate">{conv.title}</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              {formatDate(conv.updated_at)}
+                            </p>
+                          </>
+                        )}
                       </div>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">
-                      {agent.label}: {status}
-                    </TooltipContent>
-                  </Tooltip>
-                );
-              }
-
-              // Desktop expanded or mobile view
-              return (
-                <div
-                  key={agent.name}
-                  className="flex items-center gap-2 px-3 py-1.5 text-sm"
+                      {renamingId !== conv.id && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <MoreVertical className="h-3 w-3" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              className="text-xs"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRenameStart(conv);
+                              }}
+                            >
+                              <Pencil className="h-3.5 w-3.5 mr-2" />
+                              Rename
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-destructive focus:text-destructive text-xs"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteClick(conv.id);
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5 mr-2" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </ScrollArea>
+          </>
+        ) : (
+          <div className="flex flex-col items-center py-2 gap-1">
+            <Tooltip delayDuration={0}>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={handleCreateConversation}
+                  disabled={isLoading}
                 >
-                  <div
-                    className={cn(
-                      "h-2 w-2 rounded-full",
-                      getStatusBgColor(status)
-                    )}
-                  />
-                  <span className="text-muted-foreground">{agent.label}</span>
-                </div>
-              );
-            })}
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">New Chat</TooltipContent>
+            </Tooltip>
+            <ScrollArea className="flex-1 w-full">
+              <div className="flex flex-col items-center gap-1">
+                {conversations.map((conv) => (
+                  <Tooltip key={conv.id} delayDuration={0}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant={currentConversation?.id === conv.id ? "secondary" : "ghost"}
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => handleSelectConversation(conv.id)}
+                      >
+                        <MessageSquare className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">{conv.title}</TooltipContent>
+                  </Tooltip>
+                ))}
+              </div>
+            </ScrollArea>
           </div>
-        </div>
-      </ScrollArea>
+        )}
+      </div>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Conversation?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. The conversation and all its messages
+              will be permanently deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Collapse Toggle - desktop only */}
       <div className="border-t p-2 hidden md:block">

@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiofiles
 
@@ -237,11 +237,11 @@ class PAIMemory:
             True if access allowed, False otherwise
         """
         if isinstance(learning, dict):
-            required_level = learning.get("permission_level", 1)
-            sensitivity = learning.get("sensitivity", "internal")
-            allowed = learning.get("allowed_agents", [])
-            created_by = learning.get("created_by_agent", "")
-            category = learning.get("category", "")
+            required_level: int = learning.get("permission_level", 1)
+            sensitivity: str = learning.get("sensitivity", "internal")
+            allowed: list[str] = learning.get("allowed_agents", [])
+            created_by: str = learning.get("created_by_agent", "")
+            category: str = learning.get("category", "")
         else:
             required_level = learning.permission_level
             sensitivity = learning.sensitivity
@@ -297,7 +297,7 @@ class PAIMemory:
         """Get data from HOT tier."""
         data = await self._redis.get(f"pai:hot:{key}")
         if data:
-            return json.loads(data)
+            return cast(dict[str, Any], json.loads(data))
         return None
 
     async def store_task_trace(
@@ -376,7 +376,7 @@ class PAIMemory:
                         and existing.get("agent_type") == learning.agent_type
                         and existing.get("category") == learning.category
                     ):
-                        existing_id = result.get("id", "unknown")
+                        existing_id: str = str(result.get("id", "unknown"))
                         logger.info(
                             f"Duplicate learning detected (score={score:.3f}), skipping: {learning.content[:50]}..."
                         )
@@ -415,6 +415,71 @@ class PAIMemory:
             tier="warm", operation="store", status="success"
         ).inc()
         return doc_id
+
+    async def update_learning(
+        self,
+        id: str,
+        content: str | None = None,
+        phase: PAIPhase | None = None,
+        category: str | None = None,
+        confidence: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Update an existing learning in WARM tier.
+
+        Only re-embeds if content changes. Metadata fields are merged.
+
+        Args:
+            id: Learning document ID
+            content: New content text (None = keep existing)
+            phase: New phase (None = keep existing)
+            category: New category (None = keep existing)
+            confidence: New confidence score (None = keep existing)
+            metadata: Additional metadata to merge (None = keep existing)
+
+        Returns:
+            Updated document dict, or None if not found
+        """
+        if not self._qdrant:
+            logger.warning("Qdrant not configured, cannot update")
+            return None
+
+        # Build metadata updates
+        meta_updates: dict[str, Any] = {}
+        if phase is not None:
+            meta_updates["phase"] = phase.value
+        if category is not None:
+            meta_updates["category"] = category
+        if confidence is not None:
+            meta_updates["confidence"] = confidence
+        if metadata:
+            meta_updates.update(metadata)
+
+        # Add updated_at timestamp
+        meta_updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        result = await self._qdrant.update(
+            id=id,
+            text=content,
+            metadata=meta_updates if meta_updates else None,
+        )
+
+        if result:
+            memory_operations_total.labels(
+                tier="warm", operation="update", status="success"
+            ).inc()
+            logger.info("Learning updated", id=id)
+        else:
+            logger.warning("Learning not found for update", id=id)
+
+        return result
+
+    async def get_learning(self, id: str) -> dict[str, Any] | None:
+        """Get a single learning by ID."""
+        if not self._qdrant:
+            return None
+        return await self._qdrant.get(id)
 
     async def search_learnings(
         self,
@@ -591,7 +656,7 @@ class PAIMemory:
 
         async with aiofiles.open(filepath, "r") as f:
             content = await f.read()
-            return json.loads(content)
+            return cast(dict[str, Any], json.loads(content))
 
     async def list_cold_learnings(
         self,

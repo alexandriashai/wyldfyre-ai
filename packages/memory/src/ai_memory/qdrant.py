@@ -257,11 +257,12 @@ class QdrantStore:
             )
             if results:
                 point = results[0]
+                payload = point.payload or {}
                 return {
                     "id": str(point.id),
-                    "text": point.payload.get("text", ""),
+                    "text": payload.get("text", ""),
                     "metadata": {
-                        k: v for k, v in point.payload.items() if k != "text"
+                        k: v for k, v in payload.items() if k != "text"
                     },
                 }
             return None
@@ -269,10 +270,86 @@ class QdrantStore:
             logger.error("Get failed", id=id, error=str(e))
             return None
 
+    async def update(
+        self,
+        id: str,
+        text: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Update an existing document. Only re-embeds if text changes.
+
+        Args:
+            id: Document ID to update
+            text: New text content (None = keep existing)
+            metadata: Fields to merge into existing metadata (None = keep existing)
+
+        Returns:
+            Updated document dict, or None if not found
+        """
+        try:
+            # Fetch existing
+            existing = await self.get(id)
+            if not existing:
+                return None
+
+            existing_text = existing.get("text", "")
+            existing_metadata = existing.get("metadata", {})
+
+            # Merge metadata
+            merged_metadata = {**existing_metadata}
+            if metadata:
+                merged_metadata.update(metadata)
+
+            # Determine if we need to re-embed
+            new_text = text if text is not None else existing_text
+            content_changed = text is not None and text != existing_text
+
+            with memory_operation_duration_seconds.labels(
+                tier="warm", operation="update"
+            ).time():
+                if content_changed:
+                    # Re-embed with new text
+                    embedding = await self._embedding_service.generate(new_text)
+                    await self.client.upsert(
+                        collection_name=self._collection_name,
+                        points=[
+                            models.PointStruct(
+                                id=id,
+                                vector=embedding,
+                                payload={"text": new_text, **merged_metadata},
+                            )
+                        ],
+                    )
+                else:
+                    # Metadata-only update, preserve existing vector
+                    await self.client.set_payload(
+                        collection_name=self._collection_name,
+                        payload={"text": new_text, **merged_metadata},
+                        points=[id],
+                    )
+
+            memory_operations_total.labels(
+                tier="warm", operation="update", status="success"
+            ).inc()
+
+            return {
+                "id": id,
+                "text": new_text,
+                "metadata": merged_metadata,
+            }
+
+        except Exception as e:
+            memory_operations_total.labels(
+                tier="warm", operation="update", status="error"
+            ).inc()
+            logger.error("Update failed", id=id, error=str(e))
+            raise StorageError(f"Failed to update document: {e}", cause=e)
+
     async def count(self) -> int:
         """Get total document count."""
         info = await self.client.get_collection(self._collection_name)
-        return info.points_count
+        return info.points_count or 0
 
     async def scroll(
         self,
@@ -325,15 +402,15 @@ class QdrantStore:
             documents = [
                 {
                     "id": str(point.id),
-                    "text": point.payload.get("text", ""),
+                    "text": point.payload.get("text", "") if point.payload else "",
                     "metadata": {
-                        k: v for k, v in point.payload.items() if k != "text"
+                        k: v for k, v in (point.payload or {}).items() if k != "text"
                     },
                 }
                 for point in results
             ]
 
-            return documents, next_offset
+            return documents, str(next_offset) if next_offset else None
 
         except Exception as e:
             logger.error("Scroll failed", error=str(e))

@@ -219,7 +219,7 @@ async def broadcast_status(
     try:
         pubsub, redis = await _get_pubsub()
 
-        message = {
+        message: dict[str, Any] = {
             "type": "status",
             "agent": agent,
             "status": status,

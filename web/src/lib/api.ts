@@ -565,11 +565,60 @@ export const memoryApi = {
       learnings: Array<{
         id: string;
         phase: string;
+        category?: string;
         content: string;
         outcome: string;
         created_at: string;
       }>;
     }>(response);
+  },
+
+  async get(token: string, id: string) {
+    const response = await fetch(`${API_BASE_URL}/api/memory/learnings/${id}`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{
+      id: string;
+      content: string;
+      phase?: string;
+      category?: string;
+      confidence?: number;
+      created_at?: string;
+      updated_at?: string;
+      metadata?: Record<string, unknown>;
+    }>(response);
+  },
+
+  async update(token: string, id: string, data: {
+    content?: string;
+    phase?: string;
+    category?: string;
+    confidence?: number;
+    metadata?: Record<string, unknown>;
+  }) {
+    const response = await fetch(`${API_BASE_URL}/api/memory/learnings/${id}`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{
+      id: string;
+      content: string;
+      phase?: string;
+      category?: string;
+      confidence?: number;
+      updated_at?: string;
+      message?: string;
+    }>(response);
+  },
+
+  async delete(token: string, id: string) {
+    const response = await fetch(`${API_BASE_URL}/api/memory/learnings/${id}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string; id: string }>(response);
   },
 };
 

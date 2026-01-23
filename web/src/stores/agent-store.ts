@@ -224,6 +224,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     timestamp?: string
   ) => {
     const state = get();
+
+    // Deduplicate: check if exact same action already in recent log
+    const isDuplicate = state.actionLog.slice(-5).some(
+      (a) => a.agent === agent && a.action === action && a.description === description
+    );
+    if (isDuplicate) {
+      console.log("[AgentStore] Skipping duplicate action:", action, description);
+      return;
+    }
+
     const newAction: AgentAction = {
       id: crypto.randomUUID(),
       agent,

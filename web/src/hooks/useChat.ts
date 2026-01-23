@@ -8,8 +8,23 @@ import { useAuthStore } from "@/stores/auth-store";
 // Use wss:// for secure connection, endpoint is /ws/chat
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "wss://api.wyldfyre.ai";
 
+interface PlanStep {
+  id: string;
+  order: number;
+  title: string;
+  description: string;
+  status: "pending" | "in_progress" | "completed" | "failed" | "skipped";
+  agent?: string;
+  files?: string[];
+  output?: string;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
 interface ChatMessage {
-  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "task_control_ack" | "message_queued";
+  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed";
+  title?: string;
   conversation_id?: string;
   message_id?: string;
   content?: string;
@@ -28,6 +43,11 @@ interface ChatMessage {
   memory_tags?: string[];
   plan_content?: string;
   plan_status?: string;
+  // Step update fields
+  plan_id?: string;
+  steps?: PlanStep[];
+  current_step?: number;
+  modification?: string;
 }
 
 export function useChat() {
@@ -49,6 +69,7 @@ export function useChat() {
     clearStreamingMessage,
     setIsSending,
     updatePlan,
+    updateSteps,
   } = useChatStore();
   const { updateAgentStatus, addAgentAction, clearAgentActions } = useAgentStore();
 
@@ -140,7 +161,8 @@ export function useChat() {
 
         case "command_result":
           // Command executed successfully - add result as system message
-          if (data.content) {
+          // Skip adding message if it's a plan_creating action (supervisor will send plan_update)
+          if (data.content && data.action !== "plan_creating") {
             addMessage({
               id: crypto.randomUUID(),
               role: "assistant",
@@ -148,6 +170,21 @@ export function useChat() {
               agent: "system",
               created_at: data.timestamp || new Date().toISOString(),
             });
+            // Command completed, clear sending state
+            setIsSending(false);
+          }
+          // If command result includes plan data, update the plan panel
+          // Empty string or null clears the plan (e.g., on rejection)
+          if (data.plan_content !== undefined) {
+            if (data.plan_content === "" || data.plan_content === null) {
+              // Clear the plan panel
+              useChatStore.getState().clearPlan();
+            } else {
+              updatePlan(
+                data.plan_content,
+                data.plan_status as "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null
+              );
+            }
           }
           break;
 
@@ -170,12 +207,26 @@ export function useChat() {
           break;
 
         case "plan_update":
-          // Plan content or status updated
+          // Plan content or status updated - update the plan panel only (not chat)
+          // The plan panel component handles displaying and approving/rejecting
           if (data.plan_content !== undefined) {
             updatePlan(
               data.plan_content,
               data.plan_status as "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null
             );
+            // Plan update received, clear sending state
+            setIsSending(false);
+          }
+          break;
+
+        case "step_update":
+          // Plan step progress update (todo-style checkboxes)
+          if (data.steps) {
+            updateSteps(data.steps, data.current_step || 0);
+            // Log modification type if present
+            if (data.modification) {
+              console.log(`[Plan] Modified: ${data.modification}`);
+            }
           }
           break;
 
@@ -189,13 +240,20 @@ export function useChat() {
           console.log("Message queued:", data.content);
           break;
 
+        case "conversation_renamed":
+          // Server generated a title for the conversation
+          if (data.conversation_id && data.title) {
+            useChatStore.getState().renameConversationLocal(data.conversation_id, data.title);
+          }
+          break;
+
         default:
           console.log("Unknown message type:", data.type);
       }
     } catch (e) {
       console.error("Failed to parse WebSocket message:", e);
     }
-  }, [addMessage, updateStreamingMessage, clearStreamingMessage, setIsSending, updateAgentStatus, addAgentAction, clearAgentActions, updatePlan]);
+  }, [addMessage, updateStreamingMessage, clearStreamingMessage, setIsSending, updateAgentStatus, addAgentAction, clearAgentActions, updatePlan, updateSteps]);
 
   const connect = useCallback(() => {
     const wsUrl = getWsUrl();
@@ -283,10 +341,11 @@ export function useChat() {
       addMessage(userMessage);
       setIsSending(true);
 
-      // Send to server
+      // Send to server (include project_id for agent context)
       socketRef.current.send(JSON.stringify({
         type: "chat",
         conversation_id: currentConversation.id,
+        project_id: currentConversation.project_id || undefined,
         content,
       }));
     },

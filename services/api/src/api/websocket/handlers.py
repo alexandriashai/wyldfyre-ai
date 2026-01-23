@@ -9,8 +9,10 @@ from uuid import uuid4
 
 from ai_core import get_logger
 from ai_messaging import PubSubManager, RedisClient
+from sqlalchemy import select
 
 from ..commands import CommandHandler, extract_hashtags
+from ..database import db_session_context
 from .manager import Connection, ConnectionManager
 
 logger = get_logger(__name__)
@@ -30,6 +32,61 @@ class MessageHandler:
         self.redis = redis
         self.pubsub = PubSubManager(redis)
         self.command_handler = CommandHandler(redis)
+
+    async def _resolve_project_context(self, project_id: str | None) -> dict[str, Any]:
+        """
+        Resolve project context including root path from project and domains.
+
+        Returns dict with:
+        - project_id: str
+        - project_name: str
+        - root_path: str (project root_path or primary domain web_root)
+        - agent_context: str (custom instructions)
+        """
+        if not project_id:
+            return {}
+
+        try:
+            from database.models import Project, Domain
+
+            async with db_session_context() as session:
+                # Get project with domains
+                result = await session.execute(
+                    select(Project).where(Project.id == project_id)
+                )
+                project = result.scalar_one_or_none()
+
+                if not project:
+                    return {"project_id": project_id}
+
+                context: dict[str, Any] = {
+                    "project_id": project_id,
+                    "project_name": project.name,
+                    "agent_context": project.agent_context,
+                }
+
+                # Priority: project.root_path > primary domain web_root > first domain web_root
+                if project.root_path:
+                    context["root_path"] = project.root_path
+                else:
+                    # Check domains for web_root
+                    domain_result = await session.execute(
+                        select(Domain)
+                        .where(Domain.project_id == project_id)
+                        .order_by(Domain.is_primary.desc())
+                    )
+                    domains = domain_result.scalars().all()
+
+                    for domain in domains:
+                        if domain.web_root:
+                            context["root_path"] = domain.web_root
+                            context["domain_name"] = domain.domain_name
+                            break
+
+                return context
+        except Exception as e:
+            logger.debug("Failed to resolve project context", project_id=project_id, error=str(e))
+            return {"project_id": project_id}
 
     async def handle_message(
         self,
@@ -110,6 +167,9 @@ class MessageHandler:
         if self.command_handler.is_command(content):
             await self._handle_command(connection, content, conversation_id, project_id)
             return
+
+        # Resolve project context (root_path, agent_context, domain info)
+        project_context = await self._resolve_project_context(project_id)
 
         # Extract hashtags for memory tagging
         hashtags = extract_hashtags(content)
@@ -194,8 +254,117 @@ class MessageHandler:
             },
         )
 
+        # Check if there's an active/executing plan for this conversation
+        active_plan_id = await self.redis.get(f"conversation:{conversation_id}:active_plan")
+        plan_is_executing = False
+        plan_is_paused = False
+        plan_is_pending = False
+
+        if active_plan_id:
+            plan_data = await self.redis.get(f"plan:{active_plan_id}")
+            if plan_data:
+                import json as json_module
+                plan = json_module.loads(plan_data)
+                plan_status = plan.get("status")
+                plan_is_executing = plan_status in ("executing", "approved")
+                plan_is_paused = plan_status == "paused"
+                plan_is_pending = plan_status == "pending"
+
         # Route to supervisor agent
         correlation_id = str(uuid4())
+
+        # Handle resume command for paused plans
+        content_lower = content.lower().strip()
+        if plan_is_paused and content_lower in ("resume", "continue", "go", "start"):
+            # Resume the paused plan
+            await self.pubsub.publish(
+                channel="agent:supervisor:tasks",
+                message={
+                    "type": "task_request",
+                    "task_type": "execute_plan",
+                    "correlation_id": correlation_id,
+                    "user_id": connection.user_id,
+                    "payload": {
+                        "plan_id": active_plan_id,
+                        "conversation_id": conversation_id,
+                        "user_id": connection.user_id,
+                        "project_id": project_context.get("project_id"),
+                        "root_path": project_context.get("root_path"),
+                        "agent_context": project_context.get("agent_context"),
+                    },
+                    "metadata": {
+                        "timestamp": timestamp,
+                        "project_id": project_id,
+                    },
+                },
+            )
+            logger.info(
+                "Resuming paused plan",
+                plan_id=active_plan_id,
+                user_id=connection.user_id,
+            )
+            # Send acknowledgment
+            await self.manager.send_personal(
+                connection.user_id,
+                {
+                    "type": "message",
+                    "conversation_id": conversation_id,
+                    "content": "▶️ Resuming plan execution...",
+                    "agent": "wyld",
+                    "timestamp": timestamp,
+                },
+            )
+            return
+
+        # If plan is pending/executing/paused, route messages as plan modifications.
+        # When plan is PENDING (just generated, awaiting approval), any chat message
+        # is treated as a refinement request — like Claude CLI plan mode where the
+        # user iterates on the plan before approving.
+        if plan_is_pending or plan_is_executing or plan_is_paused:
+            # For pending plans: ALL messages are plan modifications (iterative refinement)
+            # For executing/paused: only if message looks like a modification
+            should_route_as_modification = plan_is_pending
+
+            if not should_route_as_modification:
+                modification_keywords = [
+                    "add", "also", "include", "skip", "remove", "delete",
+                    "change", "modify", "update", "reorder", "move", "first",
+                    "before", "after", "instead", "don't", "stop", "cancel step"
+                ]
+                should_route_as_modification = any(kw in content_lower for kw in modification_keywords)
+
+            if should_route_as_modification:
+                # Send as modify_plan task for Claude to analyze intent
+                await self.pubsub.publish(
+                    channel="agent:supervisor:tasks",
+                    message={
+                        "type": "task_request",
+                        "task_type": "modify_plan",
+                        "correlation_id": correlation_id,
+                        "user_id": connection.user_id,
+                        "payload": {
+                            "plan_id": active_plan_id,
+                            "conversation_id": conversation_id,
+                            "message": content,
+                            "plan_status": "pending" if plan_is_pending else "executing",
+                            "project_id": project_context.get("project_id"),
+                            "root_path": project_context.get("root_path"),
+                            "agent_context": project_context.get("agent_context"),
+                        },
+                        "metadata": {
+                            "timestamp": timestamp,
+                            "project_id": project_id,
+                        },
+                    },
+                )
+                logger.info(
+                    "Message routed as plan modification",
+                    message_id=message_id,
+                    plan_id=active_plan_id,
+                    plan_status="pending" if plan_is_pending else "executing",
+                    user_id=connection.user_id,
+                )
+                return
 
         await self.pubsub.publish(
             channel="agent:supervisor:tasks",
@@ -209,6 +378,10 @@ class MessageHandler:
                     "message_id": message_id,
                     "content": content,
                     "memory_tags": memory_tags,
+                    "project_id": project_context.get("project_id"),
+                    "project_name": project_context.get("project_name"),
+                    "root_path": project_context.get("root_path"),
+                    "agent_context": project_context.get("agent_context"),
                 },
                 "metadata": {
                     "timestamp": timestamp,
@@ -242,13 +415,49 @@ class MessageHandler:
             conversation_id=conversation_id,
         )
 
+        # Resolve project context including root_path
+        project_context = await self._resolve_project_context(project_id)
+
         context = {
             "user_id": connection.user_id,
             "conversation_id": conversation_id,
             "project_id": project_id,
+            "root_path": project_context.get("root_path"),
+            "agent_context": project_context.get("agent_context"),
+            "project_name": project_context.get("project_name"),
         }
 
         result = await self.command_handler.handle(command, args, context)
+
+        # Store command result as a message in Redis (for persistence)
+        # Skip for plan_creating action since supervisor will send the final result
+        if result.get("content") and result.get("action") != "plan_creating":
+            timestamp = result.get("timestamp") or datetime.now(timezone.utc).isoformat()
+            message_id = f"cmd-{uuid4()}"
+
+            # Store message in Redis
+            msg_key = f"message:{message_id}"
+            await self.redis.hset(
+                msg_key,
+                mapping={
+                    "id": message_id,
+                    "conversation_id": conversation_id,
+                    "user_id": connection.user_id,
+                    "role": "assistant",
+                    "content": result.get("content", ""),
+                    "agent": "system",
+                    "timestamp": timestamp,
+                },
+            )
+
+            # Add to conversation message list
+            conv_msgs_key = f"conversation:{conversation_id}:messages"
+            await self.redis.lpush(conv_msgs_key, message_id)
+
+            # Update conversation
+            conv_key = f"conversation:{conversation_id}"
+            await self.redis.hset(conv_key, "updated_at", timestamp)
+            await self.redis.hincrby(conv_key, "message_count", 1)
 
         # Send command result to user
         await self.manager.send_personal(
@@ -259,40 +468,15 @@ class MessageHandler:
             },
         )
 
-        # If entering plan mode, route to supervisor to generate plan steps
-        if result.get("action") == "enter_plan_mode":
-            plan_id = result.get("plan_id")
-            plan_description = result.get("plan_description")
+        # Log command result for debugging
+        logger.info(
+            "Command result",
+            action=result.get("action"),
+            command=result.get("command"),
+        )
 
-            if plan_id and plan_description:
-                correlation_id = str(uuid4())
-                timestamp = datetime.now(timezone.utc).isoformat()
-
-                await self.pubsub.publish(
-                    channel="agent:supervisor:tasks",
-                    message={
-                        "type": "task_request",
-                        "task_type": "create_plan",
-                        "correlation_id": correlation_id,
-                        "user_id": connection.user_id,
-                        "payload": {
-                            "conversation_id": conversation_id,
-                            "plan_id": plan_id,
-                            "description": plan_description,
-                        },
-                        "metadata": {
-                            "timestamp": timestamp,
-                            "project_id": project_id,
-                        },
-                    },
-                )
-
-                logger.info(
-                    "Plan creation routed to supervisor",
-                    plan_id=plan_id,
-                    correlation_id=correlation_id,
-                    user_id=connection.user_id,
-                )
+        # Plan mode is handled by the command result message sent above
+        # The frontend will display the plan panel based on plan_content/plan_status
 
     async def _handle_ping(
         self,
@@ -495,6 +679,7 @@ class AgentResponseHandler:
 
         finally:
             await pubsub.unsubscribe("agent:responses")
+            await pubsub.aclose()  # Close connection to prevent memory leak
             logger.info("Agent response handler stopped")
 
     async def stop(self) -> None:
@@ -627,22 +812,66 @@ class AgentResponseHandler:
 
         elif response_type == "plan_update":
             # Plan content update (Claude CLI style)
+            conversation_id = data.get("conversation_id")
+            plan_content = data.get("plan_content")
+            plan_status_str = data.get("plan_status")
+            timestamp = data.get("timestamp") or datetime.now(timezone.utc).isoformat()
+
+            # Save plan to database (required for approve/reject to work)
+            if conversation_id and plan_content:
+                try:
+                    # Import here to avoid circular imports
+                    from database.models import Conversation, PlanStatus
+
+                    async with db_session_context() as db:
+                        result = await db.execute(
+                            select(Conversation).where(Conversation.id == conversation_id)
+                        )
+                        conversation = result.scalar_one_or_none()
+
+                        if conversation:
+                            conversation.plan_content = plan_content
+                            if plan_status_str:
+                                try:
+                                    conversation.plan_status = PlanStatus(plan_status_str.lower())
+                                except ValueError:
+                                    conversation.plan_status = PlanStatus.PENDING
+                            else:
+                                conversation.plan_status = PlanStatus.PENDING
+
+                            logger.info(
+                                "Plan saved to database",
+                                conversation_id=conversation_id,
+                                plan_status=conversation.plan_status.value,
+                            )
+                        else:
+                            logger.warning(
+                                "Conversation not found for plan update",
+                                conversation_id=conversation_id,
+                            )
+                except Exception as e:
+                    logger.error(
+                        "Failed to save plan to database",
+                        conversation_id=conversation_id,
+                        error=str(e),
+                    )
+
             await self.manager.send_personal(
                 user_id,
                 {
                     "type": "plan_update",
-                    "conversation_id": data.get("conversation_id"),
-                    "plan_content": data.get("plan_content"),
-                    "plan_status": data.get("plan_status"),
+                    "conversation_id": conversation_id,
+                    "plan_content": plan_content,
+                    "plan_status": plan_status_str,
                     "agent": data.get("agent"),
-                    "timestamp": data.get("timestamp"),
+                    "timestamp": timestamp,
                 },
             )
             logger.debug(
                 "Plan update sent to user",
                 user_id=user_id,
-                conversation_id=data.get("conversation_id"),
-                plan_status=data.get("plan_status"),
+                conversation_id=conversation_id,
+                plan_status=plan_status_str,
             )
 
         elif response_type == "plan_status":
@@ -655,4 +884,25 @@ class AgentResponseHandler:
                     "plan_status": data.get("plan_status"),
                     "timestamp": data.get("timestamp"),
                 },
+            )
+
+        elif response_type == "step_update":
+            # Plan step progress update (todo-style checkboxes)
+            await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "step_update",
+                    "conversation_id": data.get("conversation_id"),
+                    "plan_id": data.get("plan_id"),
+                    "steps": data.get("steps", []),
+                    "current_step": data.get("current_step", 0),
+                    "agent": data.get("agent"),
+                    "timestamp": data.get("timestamp"),
+                },
+            )
+            logger.debug(
+                "Step update sent to user",
+                user_id=user_id,
+                conversation_id=data.get("conversation_id"),
+                current_step=data.get("current_step"),
             )

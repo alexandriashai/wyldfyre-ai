@@ -11,6 +11,7 @@ class TaskStatus(str, Enum):
     """Task execution status."""
     PENDING = "pending"
     QUEUED = "queued"
+    RUNNING = "running"  # Alias for backwards compatibility
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -62,6 +63,7 @@ class MessageType(str, Enum):
 class DomainStatus(str, Enum):
     """Domain provisioning status."""
     PENDING = "pending"
+    PROVISIONING = "provisioning"  # Domain is being provisioned
     DNS_CONFIGURED = "dns_configured"
     SSL_PENDING = "ssl_pending"
     ACTIVE = "active"

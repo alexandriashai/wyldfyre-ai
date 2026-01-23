@@ -15,16 +15,27 @@ export function PWAUpdatePrompt() {
       return;
     }
 
+    let refreshing = false;
+    let registration: ServiceWorkerRegistration | null = null;
+
+    const handleControllerChange = () => {
+      if (refreshing) return;
+      refreshing = true;
+      window.location.reload();
+    };
+
     // Check for waiting service worker on load
-    navigator.serviceWorker.ready.then((registration) => {
-      if (registration.waiting) {
-        setWaitingWorker(registration.waiting);
+    navigator.serviceWorker.ready.then((reg) => {
+      registration = reg;
+
+      if (reg.waiting) {
+        setWaitingWorker(reg.waiting);
         setShowUpdate(true);
       }
 
       // Listen for new service worker
-      registration.addEventListener("updatefound", () => {
-        const newWorker = registration.installing;
+      reg.addEventListener("updatefound", () => {
+        const newWorker = reg.installing;
         if (newWorker) {
           newWorker.addEventListener("statechange", () => {
             if (
@@ -40,12 +51,11 @@ export function PWAUpdatePrompt() {
     });
 
     // Handle controller change (after skipWaiting)
-    let refreshing = false;
-    navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (refreshing) return;
-      refreshing = true;
-      window.location.reload();
-    });
+    navigator.serviceWorker.addEventListener("controllerchange", handleControllerChange);
+
+    return () => {
+      navigator.serviceWorker.removeEventListener("controllerchange", handleControllerChange);
+    };
   }, []);
 
   const handleUpdate = () => {

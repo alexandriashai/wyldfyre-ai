@@ -6,7 +6,12 @@ Handles multi-agent orchestration and escalation.
 """
 
 import asyncio
+import os
+import re
+from pathlib import Path
 from typing import Any
+
+import aiofiles
 
 from ai_core import (
     AgentStatus,
@@ -39,6 +44,232 @@ from base_agent.shared_tools import get_memory_tools
 from .router import RoutingDecision, RoutingStrategy, TaskRouter
 
 logger = get_logger(__name__)
+
+
+# ============================================================
+# Exploration Helper Functions for Plan Mode
+# ============================================================
+
+async def _glob_files(pattern: str, base_path: str = "/home/wyld-core", max_results: int = 50) -> list[dict[str, str]]:
+    """Find files matching glob pattern."""
+    base = Path(base_path)
+    results: list[dict[str, str]] = []
+    try:
+        # Handle both "**/*.py" and "*.py" patterns
+        search_pattern = pattern.lstrip("**/")
+        for path in base.rglob(search_pattern):
+            if len(results) >= max_results:
+                break
+            # Skip hidden directories and common excludes
+            if path.is_file() and not any(p.startswith(".") for p in path.parts):
+                if not any(excl in str(path) for excl in ["node_modules", "__pycache__", ".git", "venv"]):
+                    results.append({
+                        "path": str(path),
+                        "name": path.name,
+                        "relative": str(path.relative_to(base))
+                    })
+    except Exception as e:
+        logger.debug("Glob search error", pattern=pattern, error=str(e))
+    return results
+
+
+async def _grep_content(pattern: str, path: str = "/home/wyld-core", max_results: int = 30) -> list[dict[str, Any]]:
+    """Search for pattern in files."""
+    base = Path(path)
+    results: list[dict[str, Any]] = []
+    try:
+        regex = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        # If pattern is invalid regex, treat it as literal search
+        regex = re.compile(re.escape(pattern), re.IGNORECASE)
+
+    extensions = [".py", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml", ".json", ".md"]
+
+    for ext in extensions:
+        if len(results) >= max_results:
+            break
+        for file_path in base.rglob(f"*{ext}"):
+            if len(results) >= max_results:
+                break
+            # Skip common excludes
+            if any(excl in str(file_path) for excl in ["node_modules", "__pycache__", ".git", "venv"]):
+                continue
+            try:
+                async with aiofiles.open(file_path, "r", errors="ignore") as f:
+                    content = await f.read()
+                    for i, line in enumerate(content.split("\n"), 1):
+                        if regex.search(line):
+                            results.append({
+                                "file": str(file_path),
+                                "line": i,
+                                "content": line.strip()[:200]
+                            })
+                            if len(results) >= max_results:
+                                break
+            except Exception:
+                continue
+    return results
+
+
+async def _read_file(path: str, max_lines: int = 200) -> str:
+    """Read file contents."""
+    try:
+        async with aiofiles.open(path, "r", errors="ignore") as f:
+            lines = await f.readlines()
+            return "".join(lines[:max_lines])
+    except Exception as e:
+        return f"Error reading file: {e}"
+
+
+# Safety: paths that should never be written to
+WRITE_BLOCKED_PATTERNS = [
+    ".env", "credentials", "secret", ".git/", "node_modules/",
+    "__pycache__/", ".venv/", "id_rsa", ".pem", ".key",
+]
+
+
+async def _write_file(path: str, content: str, allowed_base: str = "/home/wyld-core") -> str:
+    """
+    Write content to a file with safety checks.
+
+    Enforces:
+    - No writing to sensitive paths (.env, credentials, keys)
+    - Only writes within allowed_base path
+    - Creates parent directories if needed
+    """
+    # Safety: must be within allowed base
+    if not path.startswith(allowed_base):
+        return f"Error: Cannot write outside {allowed_base}"
+
+    # Safety: block sensitive paths
+    path_lower = path.lower()
+    for blocked in WRITE_BLOCKED_PATTERNS:
+        if blocked in path_lower:
+            return f"Error: Cannot write to protected path containing '{blocked}'"
+
+    try:
+        file_path = Path(path)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(path, "w") as f:
+            await f.write(content)
+        return f"Successfully wrote {len(content)} bytes to {path}"
+    except Exception as e:
+        return f"Error writing file: {e}"
+
+
+async def _edit_file(path: str, old_text: str, new_text: str, allowed_base: str = "/home/wyld-core") -> str:
+    """
+    Replace specific text in a file (safer than full overwrite).
+
+    Enforces same safety checks as _write_file.
+    """
+    if not path.startswith(allowed_base):
+        return f"Error: Cannot edit outside {allowed_base}"
+
+    path_lower = path.lower()
+    for blocked in WRITE_BLOCKED_PATTERNS:
+        if blocked in path_lower:
+            return f"Error: Cannot edit protected path containing '{blocked}'"
+
+    try:
+        async with aiofiles.open(path, "r") as f:
+            content = await f.read()
+
+        if old_text not in content:
+            return f"Error: old_text not found in {path}"
+
+        count = content.count(old_text)
+        new_content = content.replace(old_text, new_text, 1)
+
+        async with aiofiles.open(path, "w") as f:
+            await f.write(new_content)
+
+        return f"Replaced text in {path} (1 of {count} occurrences)"
+    except Exception as e:
+        return f"Error editing file: {e}"
+
+
+async def _run_command(command: str, cwd: str = "/home/wyld-core", timeout: int = 120) -> str:
+    """
+    Execute a shell command and return its output.
+
+    Safety: blocks dangerous commands but allows git, npm, docker, builds, etc.
+    """
+    import asyncio as _asyncio
+
+    # Block dangerous commands
+    dangerous = ["rm -rf /", "mkfs", "dd if=", ":(){", "fork bomb", "shutdown", "reboot"]
+    cmd_lower = command.lower()
+    for d in dangerous:
+        if d in cmd_lower:
+            return f"Error: Blocked dangerous command pattern: {d}"
+
+    try:
+        proc = await _asyncio.create_subprocess_shell(
+            command,
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+        stdout, stderr = await _asyncio.wait_for(proc.communicate(), timeout=timeout)
+
+        output = ""
+        if stdout:
+            output += stdout.decode("utf-8", errors="replace")
+        if stderr:
+            output += ("\n[stderr]\n" + stderr.decode("utf-8", errors="replace")) if output else stderr.decode("utf-8", errors="replace")
+
+        if proc.returncode != 0:
+            output = f"[exit code {proc.returncode}]\n{output}"
+
+        return output[:8000] if output else f"Command completed (exit code {proc.returncode})"
+    except _asyncio.TimeoutError:
+        return f"Error: Command timed out after {timeout}s"
+    except Exception as e:
+        return f"Error running command: {e}"
+
+
+async def _list_directory(path: str) -> str:
+    """List files and directories at a path."""
+    from pathlib import Path as _Path
+
+    target = _Path(path)
+    if not target.exists():
+        return f"Error: Path does not exist: {path}"
+    if not target.is_dir():
+        return f"Error: Not a directory: {path}"
+
+    try:
+        entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        lines = []
+        for entry in entries[:100]:  # Limit to 100 entries
+            if entry.name.startswith(".") and entry.name not in (".env", ".gitignore"):
+                continue
+            prefix = "📁 " if entry.is_dir() else "📄 "
+            lines.append(f"{prefix}{entry.name}")
+        return "\n".join(lines) if lines else "(empty directory)"
+    except Exception as e:
+        return f"Error listing directory: {e}"
+
+
+def _load_telos_context() -> str:
+    """Load TELOS mission and values for agent context."""
+    telos_dir = Path("/home/wyld-core/pai/TELOS")
+    context_parts = []
+
+    for filename in ["mission.md", "values.md"]:
+        filepath = telos_dir / filename
+        if filepath.exists():
+            try:
+                content = filepath.read_text()
+                context_parts.append(content.strip())
+            except Exception:
+                pass
+
+    if context_parts:
+        return "## TELOS Framework (Mission & Values)\n\n" + "\n\n---\n\n".join(context_parts)
+    return ""
+
 
 SUPERVISOR_SYSTEM_PROMPT = """You are Wyld, the Supervisor agent for Wyld Fyre AI Infrastructure.
 
@@ -176,6 +407,7 @@ class SupervisorAgent(BaseAgent):
         self.register_tool(self._create_list_pending_elevations_tool())
         self.register_tool(self._create_approve_elevation_tool())
         self.register_tool(self._create_deny_elevation_tool())
+        self.register_tool(self._create_restart_agent_tool())
 
     def _create_route_task_tool(self) -> Tool:
         """Create the route_task tool."""
@@ -276,10 +508,23 @@ class SupervisorAgent(BaseAgent):
 
             # Publish to agent's task queue
             if supervisor._pubsub:
-                await supervisor._pubsub.publish(
-                    f"agent:{agent_type}:tasks",
+                channel = f"agent:{agent_type}:tasks"
+                subscriber_count = await supervisor._pubsub.publish(
+                    channel,
                     request.model_dump_json(),
                 )
+
+                # If no subscribers, the target agent isn't running
+                if subscriber_count == 0:
+                    logger.warning(
+                        "No subscribers for agent channel",
+                        target_agent=agent_type,
+                        channel=channel,
+                    )
+                    return ToolResult.fail(
+                        f"Agent '{agent_type}' is not running. "
+                        f"Use restart_agent to start it, or handle this task directly."
+                    )
 
             logger.info(
                 "Delegated task",
@@ -323,6 +568,121 @@ class SupervisorAgent(BaseAgent):
                 )
 
         return delegate_task._tool
+
+    def _create_restart_agent_tool(self) -> Tool:
+        """Create the restart_agent tool."""
+        supervisor = self
+
+        AGENT_MODULES = {
+            "code": "code_agent",
+            "data": "data_agent",
+            "infra": "infra_agent",
+            "research": "research_agent",
+            "qa": "qa_agent",
+        }
+
+        @tool(
+            name="restart_agent",
+            description="Start or restart a stopped agent. Use this when delegation fails because an agent is not running.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "agent_type": {
+                        "type": "string",
+                        "enum": ["code", "data", "infra", "research", "qa"],
+                        "description": "The type of agent to restart",
+                    },
+                },
+                "required": ["agent_type"],
+            },
+        )
+        async def restart_agent(agent_type: str) -> ToolResult:
+            import subprocess
+            import signal
+
+            module_name = AGENT_MODULES.get(agent_type)
+            if not module_name:
+                return ToolResult.fail(f"Unknown agent type: {agent_type}")
+
+            agent_src_path = f"/home/wyld-core/services/agents/{module_name}/src"
+            python_path = ":".join([
+                agent_src_path,
+                "/home/wyld-core/packages/core/src",
+                "/home/wyld-core/packages/messaging/src",
+                "/home/wyld-core/packages/memory/src",
+                "/home/wyld-core/packages/agents/src",
+            ])
+
+            await supervisor.publish_action(
+                "tool_call",
+                f"Starting {agent_type} agent..."
+            )
+
+            # Kill existing process if running
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-f", f"python3 -m {module_name}"],
+                    capture_output=True, text=True,
+                )
+                if result.stdout.strip():
+                    for pid in result.stdout.strip().split("\n"):
+                        try:
+                            os.kill(int(pid), signal.SIGTERM)
+                        except (ProcessLookupError, ValueError):
+                            pass
+                    await asyncio.sleep(2)
+            except Exception:
+                pass
+
+            # Build environment from current process env
+            import os
+            env = os.environ.copy()
+            env["PYTHONPATH"] = python_path
+            env["REDIS_HOST"] = "localhost"
+            env["QDRANT_HOST"] = "localhost"
+            env["POSTGRES_HOST"] = "localhost"
+
+            # Start the agent
+            log_path = f"/var/log/ai-{agent_type}-agent.log"
+            try:
+                log_file = open(log_path, "w")
+                proc = subprocess.Popen(
+                    ["python3", "-m", module_name],
+                    env=env,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    cwd="/home/wyld-core",
+                    start_new_session=True,
+                )
+
+                # Wait briefly to check if it started
+                await asyncio.sleep(3)
+
+                if proc.poll() is not None:
+                    log_file.close()
+                    with open(log_path, "r") as f:
+                        error_output = f.read()[-500:]
+                    return ToolResult.fail(
+                        f"Agent {agent_type} failed to start: {error_output}"
+                    )
+
+                logger.info(
+                    "Agent started",
+                    agent_type=agent_type,
+                    pid=proc.pid,
+                )
+
+                return ToolResult.ok({
+                    "status": "started",
+                    "agent_type": agent_type,
+                    "pid": proc.pid,
+                    "log_file": log_path,
+                })
+
+            except Exception as e:
+                return ToolResult.fail(f"Failed to start agent {agent_type}: {e}")
+
+        return restart_agent._tool
 
     def _create_check_agent_status_tool(self) -> Tool:
         """Create the check_agent_status tool."""
@@ -660,20 +1020,118 @@ class SupervisorAgent(BaseAgent):
         """
         Process a task request.
 
-        Override to handle special task types like create_plan.
+        Override to handle special task types like create_plan and execute_plan.
         """
         # Handle plan creation specially
         if request.task_type == "create_plan":
             return await self._handle_create_plan(request)
 
+        # Handle plan execution
+        if request.task_type == "execute_plan":
+            return await self._handle_execute_plan(request)
+
+        # Handle plan modification
+        if request.task_type == "modify_plan":
+            return await self._handle_modify_plan(request)
+
         # Otherwise use default processing
-        return await super().process_task(request)
+        response = await super().process_task(request)
+
+        # Auto-generate conversation title after first chat message
+        if request.task_type == "chat" and response.status == TaskStatus.COMPLETED:
+            conversation_id = request.payload.get("conversation_id")
+            if conversation_id:
+                await self._maybe_generate_title(request, conversation_id)
+
+        return response
+
+    async def _maybe_generate_title(self, request: TaskRequest, conversation_id: str) -> None:
+        """
+        Generate a conversation title from the first user message.
+
+        Only generates if the conversation title is still a default name.
+        """
+        try:
+            # Check current title in Redis
+            conv_key = f"conversation:{conversation_id}"
+            current_title = await self._redis.hget(conv_key, "title")
+
+            # Only generate if title is default
+            default_titles = {"New Chat", "Chat with Wyld", "New Conversation", None, ""}
+            if current_title and current_title not in default_titles:
+                return
+
+            # Check message count — only do this for the first message
+            msg_count = await self._redis.hget(conv_key, "message_count")
+            if msg_count and int(msg_count) > 2:
+                return
+
+            # Get the user message content
+            user_message = request.payload.get("content", "")
+            if not user_message or len(user_message) < 3:
+                return
+
+            # Generate title using Claude (fast, small call)
+            response = await self._claude.messages.create(
+                model="claude-haiku-4-20250514",
+                max_tokens=30,
+                messages=[{
+                    "role": "user",
+                    "content": f"Generate a short title (3-6 words, no quotes) for a conversation that starts with this message:\n\n{user_message[:200]}"
+                }],
+            )
+
+            title = response.content[0].text.strip().strip('"\'') if response.content else None
+            if not title or len(title) < 2:
+                return
+
+            # Truncate to reasonable length
+            title = title[:60]
+
+            # Update in Redis
+            await self._redis.hset(conv_key, "title", title)
+
+            # Update in database
+            try:
+                from database import db_session_context
+                from database.models import Conversation
+                from sqlalchemy import update
+
+                async with db_session_context() as session:
+                    await session.execute(
+                        update(Conversation)
+                        .where(Conversation.id == conversation_id)
+                        .values(title=title)
+                    )
+                    await session.commit()
+            except Exception as db_err:
+                logger.debug("Failed to update title in DB", error=str(db_err))
+
+            # Notify frontend
+            user_id = request.user_id or request.payload.get("user_id")
+            if self._pubsub and user_id:
+                await self._pubsub.publish(
+                    "agent:responses",
+                    {
+                        "type": "conversation_renamed",
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
+                        "title": title,
+                    },
+                )
+
+            logger.info("Generated conversation title", conversation_id=conversation_id[:8], title=title)
+
+        except Exception as e:
+            # Non-critical — don't fail the task if title generation fails
+            logger.debug("Title generation failed", error=str(e))
 
     async def _handle_create_plan(self, request: TaskRequest) -> TaskResponse:
         """
-        Handle plan creation by generating steps with Claude.
+        Handle plan creation with Explore → Plan phases.
 
-        This generates a structured plan and updates it in Redis.
+        This first explores the codebase to gather context, then generates
+        intelligent plan steps based on actual files and patterns found.
         """
         import json
         from datetime import datetime, timezone
@@ -682,63 +1140,38 @@ class SupervisorAgent(BaseAgent):
         description = request.payload.get("description", "")
         conversation_id = request.payload.get("conversation_id")
         user_id = request.user_id or request.payload.get("user_id")
+        project_id = request.payload.get("project_id") or request.metadata.get("project_id")
+        root_path = request.payload.get("root_path") or "/home/wyld-core"
+        agent_context = request.payload.get("agent_context") or ""
+        project_name = request.payload.get("project_name") or ""
 
         # Set state context for publish_action to work
         self._state.current_user_id = user_id
         self._state.current_conversation_id = conversation_id
+        self._state.current_project_id = project_id
 
         logger.info(
-            "Creating plan",
+            "Creating plan with exploration",
             plan_id=plan_id,
             description=description[:50],
+            root_path=root_path,
+            project_name=project_name,
         )
 
-        # Publish thinking action
-        await self.publish_action("thinking", "Analyzing task and creating plan...")
-
         try:
-            # Generate plan steps with Claude
-            plan_prompt = f"""Analyze the following task and create a structured implementation plan.
-
-Task: {description}
-
-Create a plan with 3-7 clear, actionable steps. For each step, provide:
-1. A concise title (5-10 words)
-2. A description of what needs to be done
-3. Which agent should handle it (code, data, infra, research, or qa)
-
-Respond with a JSON array of steps in this exact format:
-```json
-[
-  {{"title": "Step title", "description": "What to do", "agent": "agent_name"}},
-  ...
-]
-```
-
-Only output the JSON array, no other text."""
-
-            # Call Claude to generate plan
-            response = await self._claude.messages.create(
-                model=self.config.model,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": plan_prompt}],
+            # ========== EXPLORE PHASE ==========
+            logger.info(
+                "Publishing explore action",
+                user_id=user_id,
+                conversation_id=conversation_id,
+                state_user_id=self._state.current_user_id,
             )
+            await self.publish_action("exploring", f"Exploring {project_name or 'codebase'}...")
+            exploration = await self._explore_for_plan(description, base_path=root_path)
 
-            # Parse the response
-            response_text = response.content[0].text if response.content else ""
-
-            # Extract JSON from response (handle markdown code blocks)
-            json_match = response_text
-            if "```json" in response_text:
-                start = response_text.find("```json") + 7
-                end = response_text.find("```", start)
-                json_match = response_text[start:end].strip()
-            elif "```" in response_text:
-                start = response_text.find("```") + 3
-                end = response_text.find("```", start)
-                json_match = response_text[start:end].strip()
-
-            steps = json.loads(json_match)
+            # ========== PLAN PHASE ==========
+            await self.publish_action("planning", "Creating implementation plan...")
+            steps = await self._generate_plan_from_exploration(description, exploration, base_path=root_path)
 
             # Update plan in Redis with steps
             plan_key = f"plan:{plan_id}"
@@ -756,6 +1189,7 @@ Only output the JSON array, no other text."""
                         "title": s.get("title", f"Step {i + 1}"),
                         "description": s.get("description", ""),
                         "agent": s.get("agent"),
+                        "files": s.get("files", []),
                         "status": "pending",
                         "dependencies": [],
                         "output": None,
@@ -766,6 +1200,9 @@ Only output the JSON array, no other text."""
                     for i, s in enumerate(steps)
                 ]
                 plan["status"] = "pending"
+                plan["root_path"] = root_path
+                plan["agent_context"] = agent_context
+                plan["project_name"] = project_name
 
                 await self._redis.set(plan_key, json.dumps(plan))
 
@@ -779,7 +1216,7 @@ Only output the JSON array, no other text."""
                             "conversation_id": conversation_id,
                             "plan_id": plan_id,
                             "plan_content": self._format_plan_for_display(plan),
-                            "plan_status": "pending",
+                            "plan_status": "PENDING",  # Frontend expects uppercase
                             "plan": plan,
                             "agent": "wyld",
                             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -788,6 +1225,30 @@ Only output the JSON array, no other text."""
 
                 logger.info("Plan created successfully", plan_id=plan_id, steps=len(steps))
                 await self.publish_action("complete", f"Plan created with {len(steps)} steps")
+
+                # Store plan creation in memory (PLAN phase)
+                if self._memory:
+                    try:
+                        from ai_memory import Learning, LearningScope, PAIPhase
+
+                        step_titles = [s.get("title", f"Step {i+1}") for i, s in enumerate(steps)]
+                        learning = Learning(
+                            content=f"Created plan: {description[:100]}\nSteps: {', '.join(step_titles)}",
+                            phase=PAIPhase.PLAN,
+                            category="plan_creation",
+                            scope=LearningScope.PROJECT,
+                            created_by_agent="supervisor",
+                            metadata={
+                                "plan_id": plan_id,
+                                "description": description[:200],
+                                "steps_count": len(steps),
+                                "conversation_id": conversation_id,
+                                "project_name": project_name,
+                            },
+                        )
+                        await self._memory.store_learning(learning)
+                    except Exception as mem_err:
+                        logger.warning("Failed to store plan creation in memory", error=str(mem_err))
 
                 return TaskResponse(
                     task_id=request.id,
@@ -809,14 +1270,6 @@ Only output the JSON array, no other text."""
                     agent_type=self.agent_type,
                 )
 
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse plan steps", error=str(e))
-            return TaskResponse(
-                task_id=request.id,
-                status=TaskStatus.FAILED,
-                error=f"Failed to generate plan: {str(e)}",
-                agent_type=self.agent_type,
-            )
         except Exception as e:
             logger.error("Plan creation failed", error=str(e))
             return TaskResponse(
@@ -829,6 +1282,1180 @@ Only output the JSON array, no other text."""
             # Clear state context
             self._state.current_user_id = None
             self._state.current_conversation_id = None
+            self._state.current_project_id = None
+
+    async def _handle_execute_plan(self, request: TaskRequest) -> TaskResponse:
+        """
+        Execute an approved plan by working through its steps.
+
+        Each step is executed in order, with real-time status updates
+        sent to the frontend to show progress.
+        """
+        import json
+        import asyncio
+        from datetime import datetime, timezone
+
+        plan_id = request.payload.get("plan_id")
+        conversation_id = request.payload.get("conversation_id")
+        user_id = request.user_id or request.payload.get("user_id")
+        # root_path from request payload (set by WebSocket handler)
+        request_root_path = request.payload.get("root_path")
+
+        # Set state context for publish_action to work
+        self._state.current_user_id = user_id
+        self._state.current_conversation_id = conversation_id
+
+        logger.info(
+            "Executing plan",
+            plan_id=plan_id,
+            conversation_id=conversation_id,
+        )
+
+        try:
+            # Load plan from Redis
+            plan_key = f"plan:{plan_id}"
+            plan_data = await self._redis.get(plan_key)
+
+            if not plan_data:
+                return TaskResponse(
+                    task_id=request.id,
+                    status=TaskStatus.FAILED,
+                    error=f"Plan {plan_id} not found",
+                    agent_type=self.agent_type,
+                )
+
+            plan = json.loads(plan_data)
+            steps = plan.get("steps", [])
+
+            # Resolve root_path: request > plan > default
+            root_path = request_root_path or plan.get("root_path") or "/home/wyld-core"
+            plan["root_path"] = root_path  # Ensure it's in plan for step execution
+            logger.info("Plan execution root_path", root_path=root_path)
+
+            if not steps:
+                return TaskResponse(
+                    task_id=request.id,
+                    status=TaskStatus.FAILED,
+                    error="Plan has no steps",
+                    agent_type=self.agent_type,
+                )
+
+            # Update plan status to executing
+            plan["status"] = "executing"
+            await self._redis.set(plan_key, json.dumps(plan))
+
+            # Send initial execution status
+            await self.publish_action("executing", f"Starting plan execution: {plan.get('title', 'Plan')}")
+
+            # Send step_update to frontend with all steps
+            if self._pubsub and user_id:
+                await self._pubsub.publish(
+                    "agent:responses",
+                    {
+                        "type": "step_update",
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
+                        "plan_id": plan_id,
+                        "steps": steps,
+                        "current_step": 0,
+                        "agent": "wyld",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+            # Execute each step
+            cancelled = False
+            for i, step in enumerate(steps):
+                # Check for task cancellation before each step
+                if self.is_task_cancelled():
+                    cancelled = True
+                    logger.info("Plan execution cancelled by user", plan_id=plan_id)
+                    await self.publish_action("cancelled", "Plan execution stopped by user")
+                    break
+
+                # Skip already completed or skipped steps (e.g., after modification)
+                if step.get("status") in ("completed", "skipped"):
+                    continue
+
+                step_id = step.get("id")
+                step_title = step.get("title", f"Step {i + 1}")
+                step_description = step.get("description", "")
+
+                # Update step status to in_progress
+                step["status"] = "in_progress"
+                step["started_at"] = datetime.now(timezone.utc).isoformat()
+                plan["current_step"] = i
+                await self._redis.set(plan_key, json.dumps(plan))
+
+                # Send step update
+                await self.publish_action("step_progress", f"Working on: {step_title}")
+                if self._pubsub and user_id:
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "step_update",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "plan_id": plan_id,
+                            "steps": steps,
+                            "current_step": i,
+                            "agent": "wyld",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+
+                # Execute the step using Claude
+                try:
+                    # Check for cancellation again before executing
+                    if self.is_task_cancelled():
+                        cancelled = True
+                        step["status"] = "pending"  # Reset to pending
+                        step.pop("started_at", None)
+                        break
+
+                    step_result = await self._execute_plan_step(step, plan)
+                    step["status"] = "completed"
+                    step["completed_at"] = datetime.now(timezone.utc).isoformat()
+                    step["output"] = step_result
+                except Exception as e:
+                    step["status"] = "failed"
+                    step["error"] = str(e)
+                    step["completed_at"] = datetime.now(timezone.utc).isoformat()
+                    logger.error("Step execution failed", step_id=step_id, error=str(e))
+
+                # Update plan in Redis
+                await self._redis.set(plan_key, json.dumps(plan))
+
+                # Send step completion update
+                if self._pubsub and user_id:
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "step_update",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "plan_id": plan_id,
+                            "steps": steps,
+                            "current_step": i,
+                            "agent": "wyld",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+
+                # Small delay to allow task control messages to be processed
+                await asyncio.sleep(0.1)
+
+            # Mark plan as completed or cancelled
+            completed_steps = sum(1 for s in steps if s.get("status") == "completed")
+
+            if cancelled:
+                plan["status"] = "paused"  # Mark as paused so it can be resumed
+                await self._redis.set(plan_key, json.dumps(plan))
+
+                # Send cancelled status update
+                if self._pubsub and user_id:
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "plan_update",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "plan_id": plan_id,
+                            "plan_content": f"⏸️ Plan paused. {completed_steps}/{len(steps)} steps completed.\n\nType 'resume' to continue or modify the plan.",
+                            "plan_status": "APPROVED",  # Keep approved so it can be resumed
+                            "agent": "wyld",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+
+                return TaskResponse(
+                    task_id=request.id,
+                    status=TaskStatus.COMPLETED,
+                    result={
+                        "plan_id": plan_id,
+                        "cancelled": True,
+                        "steps_completed": completed_steps,
+                        "steps_total": len(steps),
+                    },
+                    agent_type=self.agent_type,
+                )
+
+            plan["status"] = "completed"
+            plan["completed_at"] = datetime.now(timezone.utc).isoformat()
+            await self._redis.set(plan_key, json.dumps(plan))
+
+            # Send completion message
+            await self.publish_action("complete", f"Plan completed: {completed_steps}/{len(steps)} steps")
+
+            # Store completed plan in PAI memory (LEARN phase)
+            if self._memory:
+                try:
+                    from ai_memory import Learning, LearningScope, PAIPhase
+
+                    plan_title = plan.get("title", plan.get("description", "Untitled plan"))
+                    step_summaries = []
+                    for s in steps:
+                        status_icon = "✓" if s.get("status") == "completed" else "✗"
+                        step_summaries.append(f"{status_icon} {s.get('title', 'Step')}")
+
+                    learning_content = (
+                        f"Completed plan: {plan_title}\n"
+                        f"Steps ({completed_steps}/{len(steps)} completed):\n"
+                        + "\n".join(step_summaries)
+                    )
+
+                    learning = Learning(
+                        content=learning_content,
+                        phase=PAIPhase.LEARN,
+                        category="plan_completion",
+                        scope=LearningScope.PROJECT,
+                        created_by_agent="supervisor",
+                        metadata={
+                            "plan_id": plan_id,
+                            "plan_title": plan_title,
+                            "steps_completed": completed_steps,
+                            "steps_total": len(steps),
+                            "conversation_id": conversation_id,
+                            "completed_at": plan["completed_at"],
+                        },
+                    )
+                    await self._memory.store_learning(learning)
+                    logger.info("Plan stored in memory", plan_id=plan_id, phase="LEARN")
+                except Exception as mem_err:
+                    logger.warning("Failed to store plan in memory", error=str(mem_err))
+
+            # Send final plan_update to clear plan panel
+            if self._pubsub and user_id:
+                await self._pubsub.publish(
+                    "agent:responses",
+                    {
+                        "type": "plan_update",
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
+                        "plan_id": plan_id,
+                        "plan_content": f"✅ Plan completed! {completed_steps}/{len(steps)} steps finished.",
+                        "plan_status": "COMPLETED",
+                        "agent": "wyld",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.COMPLETED,
+                result={
+                    "plan_id": plan_id,
+                    "steps_completed": completed_steps,
+                    "steps_total": len(steps),
+                },
+                agent_type=self.agent_type,
+            )
+
+        except Exception as e:
+            logger.error("Plan execution failed", error=str(e))
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error=str(e),
+                agent_type=self.agent_type,
+            )
+        finally:
+            # Clear state context
+            self._state.current_user_id = None
+            self._state.current_conversation_id = None
+
+    # Tool definitions for plan step execution
+    STEP_TOOLS = [
+        {
+            "name": "read_file",
+            "description": "Read the contents of a file. Use this to understand existing code before making changes.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute file path to read"},
+                    "max_lines": {"type": "integer", "description": "Max lines to read (default 200)", "default": 200},
+                },
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "write_file",
+            "description": "Write content to a file. Creates parent directories if needed. Use for new files or full rewrites.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute file path to write"},
+                    "content": {"type": "string", "description": "Full file content to write"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+        {
+            "name": "edit_file",
+            "description": "Replace specific text in a file. Safer than write_file for targeted changes.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute file path to edit"},
+                    "old_text": {"type": "string", "description": "Exact text to find and replace"},
+                    "new_text": {"type": "string", "description": "Replacement text"},
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
+        {
+            "name": "glob_files",
+            "description": "Find files matching a glob pattern within the project.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Glob pattern (e.g. '*.py', 'docs/*.md')"},
+                    "base_path": {"type": "string", "description": "Base directory (default /home/wyld-core)", "default": "/home/wyld-core"},
+                },
+                "required": ["pattern"],
+            },
+        },
+        {
+            "name": "grep_files",
+            "description": "Search for a text pattern across project files.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Search pattern (regex supported)"},
+                    "path": {"type": "string", "description": "Directory to search (default /home/wyld-core)", "default": "/home/wyld-core"},
+                },
+                "required": ["pattern"],
+            },
+        },
+        {
+            "name": "run_command",
+            "description": "Execute a shell command. Use for git operations, builds, tests, package management, and other CLI tasks. Commands run from the project root directory.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute"},
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                },
+                "required": ["command"],
+            },
+        },
+        {
+            "name": "list_directory",
+            "description": "List files and directories at a given path.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path to list"},
+                },
+                "required": ["path"],
+            },
+        },
+    ]
+
+    async def _execute_plan_step(self, step: dict, plan: dict) -> str:
+        """
+        Execute a single plan step using Claude with file tools.
+
+        Uses a tool-use loop so Claude can:
+        1. Explore the codebase (read, glob, grep)
+        2. Make actual file changes (write, edit)
+        3. Verify its work
+
+        TELOS values are injected into context to guide decisions.
+        """
+        import json as json_mod
+
+        step_title = step.get("title", "Step")
+        step_description = step.get("description", "")
+        step_agent = step.get("agent", "code")
+        files = step.get("files", [])
+
+        # Get project root from plan
+        root_path = plan.get("root_path", "/home/wyld-core")
+        project_name = plan.get("project_name", "")
+        agent_context = plan.get("agent_context", "")
+
+        # Load TELOS context
+        telos = _load_telos_context()
+
+        # Build the execution prompt
+        file_context = f"\nRelevant files: {', '.join(files)}" if files else ""
+        project_info = f"\n**Project:** {project_name}" if project_name else ""
+        custom_context = f"\n\n## Project Instructions\n{agent_context}" if agent_context else ""
+        prompt = f"""{telos}
+
+---
+
+## Task Execution
+
+You are executing a plan step.{project_info}
+
+**Plan:** {plan.get('title', '')} - {plan.get('description', '')}
+**Step:** {step_title}
+**Description:** {step_description}
+**Agent Role:** {step_agent}{file_context}{custom_context}
+
+## Instructions
+
+1. Use the tools to explore relevant files first (read_file, glob_files, grep_files)
+2. Make the actual changes using write_file or edit_file
+3. Verify your changes by reading back the modified files
+4. All file paths are under {root_path}
+
+## Values Alignment
+- Verify before acting: Read existing files before modifying
+- Transparency: Explain what you're changing and why
+- Security first: Never write credentials or sensitive data
+- Continuous improvement: Store learnings from this step
+
+Execute this step now. Make real file changes, not just descriptions."""
+
+        messages = [{"role": "user", "content": prompt}]
+        actions_taken = []
+        max_iterations = 12  # Prevent infinite loops
+
+        for iteration in range(max_iterations):
+            # Check for task cancellation between iterations
+            if self.is_task_cancelled():
+                return f"Step cancelled after {iteration} iterations. Actions: {'; '.join(actions_taken)}"
+
+            response = await self._claude.messages.create(
+                model=self.config.model,
+                max_tokens=4096,
+                messages=messages,
+                tools=self.STEP_TOOLS,
+            )
+
+            # Check if Claude wants to use tools
+            if response.stop_reason == "tool_use":
+                # Process all tool calls in this response
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        tool_name = block.name
+                        tool_input = block.input
+
+                        # Execute the tool
+                        result, is_error = await self._run_step_tool(tool_name, tool_input, root_path)
+                        actions_taken.append(f"{tool_name}({tool_input.get('path', tool_input.get('pattern', ''))[:50]})")
+
+                        # Publish action for real-time UI updates
+                        action_label = {
+                            "read_file": "file_read",
+                            "write_file": "file_write",
+                            "edit_file": "file_edit",
+                            "glob_files": "file_search",
+                            "grep_files": "file_search",
+                        }.get(tool_name, "executing")
+
+                        short_path = tool_input.get("path", tool_input.get("pattern", ""))
+                        if "/" in short_path:
+                            short_path = short_path.split("/")[-1]
+                        await self.publish_action(action_label, f"{tool_name}: {short_path}")
+
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result[:8000],  # Truncate large results
+                            "is_error": is_error,
+                        })
+
+                # Add assistant response and tool results to messages
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append({"role": "user", "content": tool_results})
+            else:
+                # Claude is done - extract final text response
+                final_text = ""
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        final_text += block.text
+
+                # Store learning from this step execution
+                if self._memory and actions_taken:
+                    try:
+                        from ai_memory import Learning, LearningScope, PAIPhase
+                        learning = Learning(
+                            content=f"Plan step '{step_title}': {final_text[:200]}",
+                            phase=PAIPhase.EXECUTE,
+                            category="plan_execution",
+                            scope=LearningScope.PROJECT,
+                            created_by_agent="supervisor",
+                            metadata={
+                                "plan_title": plan.get("title", ""),
+                                "step_title": step_title,
+                                "actions": actions_taken[:10],
+                                "files_modified": [a.split("(")[1].rstrip(")") for a in actions_taken if "write_file" in a or "edit_file" in a],
+                            },
+                        )
+                        await self._memory.store_learning(learning)
+                    except Exception as e:
+                        logger.debug("Failed to store step learning", error=str(e))
+
+                return final_text or f"Step completed with {len(actions_taken)} actions"
+
+        return f"Step reached max iterations ({max_iterations}). Actions: {'; '.join(actions_taken)}"
+
+    async def _run_step_tool(self, tool_name: str, tool_input: dict, root_path: str = "/home/wyld-core") -> tuple[str, bool]:
+        """
+        Execute a tool call from the plan step execution loop.
+
+        Returns:
+            Tuple of (result_string, is_error)
+        """
+        import json as json_mod
+
+        try:
+            if tool_name == "read_file":
+                result = await _read_file(
+                    tool_input["path"],
+                    max_lines=tool_input.get("max_lines", 200),
+                )
+                return (result, False)
+            elif tool_name == "write_file":
+                result = await _write_file(
+                    tool_input["path"],
+                    tool_input["content"],
+                    allowed_base=root_path,
+                )
+                return (result, False)
+            elif tool_name == "edit_file":
+                result = await _edit_file(
+                    tool_input["path"],
+                    tool_input["old_text"],
+                    tool_input["new_text"],
+                    allowed_base=root_path,
+                )
+                return (result, False)
+            elif tool_name == "glob_files":
+                results = await _glob_files(
+                    tool_input["pattern"],
+                    base_path=tool_input.get("base_path", root_path),
+                    max_results=20,
+                )
+                return (json_mod.dumps(results, indent=2), False)
+            elif tool_name == "grep_files":
+                results = await _grep_content(
+                    tool_input["pattern"],
+                    path=tool_input.get("path", root_path),
+                    max_results=15,
+                )
+                return (json_mod.dumps(results, indent=2), False)
+            elif tool_name == "run_command":
+                result = await _run_command(
+                    tool_input["command"],
+                    cwd=tool_input.get("cwd", root_path),
+                    timeout=120,
+                )
+                return (result, False)
+            elif tool_name == "list_directory":
+                result = await _list_directory(tool_input["path"])
+                return (result, False)
+            else:
+                return (f"Unknown tool: {tool_name}", True)
+        except Exception as e:
+            return (f"Tool error ({tool_name}): {e}", True)
+
+    async def _handle_modify_plan(self, request: TaskRequest) -> TaskResponse:
+        """
+        Handle plan modification requests from user chat messages.
+
+        Supports:
+        - Adding new steps
+        - Skipping steps
+        - Modifying step descriptions
+        - Reordering steps
+        """
+        import json
+        from datetime import datetime, timezone
+        from uuid import uuid4
+
+        plan_id = request.payload.get("plan_id")
+        conversation_id = request.payload.get("conversation_id")
+        user_id = request.user_id or request.payload.get("user_id")
+        user_message = request.payload.get("message", "")
+        modification_type = request.payload.get("modification_type")
+        modification_data = request.payload.get("modification_data", {})
+
+        # Set state context
+        self._state.current_user_id = user_id
+        self._state.current_conversation_id = conversation_id
+
+        logger.info(
+            "Modifying plan",
+            plan_id=plan_id,
+            modification_type=modification_type,
+            user_message=user_message[:50] if user_message else None,
+        )
+
+        try:
+            # Load plan from Redis
+            plan_key = f"plan:{plan_id}"
+            plan_data = await self._redis.get(plan_key)
+
+            if not plan_data:
+                return TaskResponse(
+                    task_id=request.id,
+                    status=TaskStatus.FAILED,
+                    error=f"Plan {plan_id} not found",
+                    agent_type=self.agent_type,
+                )
+
+            plan = json.loads(plan_data)
+            steps = plan.get("steps", [])
+            original_step_count = len(steps)
+
+            # If no explicit modification type, use Claude to parse intent
+            if not modification_type and user_message:
+                modification_type, modification_data = await self._parse_modification_intent(
+                    user_message, steps, plan
+                )
+
+            if not modification_type:
+                # Couldn't parse as a modification — let the user know
+                if self._pubsub and user_id:
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "message",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "content": (
+                                "I have a plan ready for your review. You can:\n"
+                                "- **Describe changes** you'd like (e.g., \"also add error handling\" or \"use Redis instead\")\n"
+                                "- **`/plan approve`** to start execution\n"
+                                "- **`/plan reject`** to discard the plan"
+                            ),
+                            "agent": "wyld",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                return TaskResponse(
+                    task_id=request.id,
+                    status=TaskStatus.COMPLETED,
+                    result={"message": "Not a plan modification, guidance sent"},
+                    agent_type=self.agent_type,
+                )
+
+            # Apply the modification
+            result_message = ""
+
+            if modification_type == "add":
+                # Add new step(s)
+                new_steps = modification_data.get("steps", [])
+                insert_after = modification_data.get("insert_after")  # step index or None for end
+
+                for new_step_data in new_steps:
+                    new_step = {
+                        "id": str(uuid4()),
+                        "order": len(steps) + 1,
+                        "title": new_step_data.get("title", "New Step"),
+                        "description": new_step_data.get("description", ""),
+                        "status": "pending",
+                        "agent": new_step_data.get("agent"),
+                        "files": new_step_data.get("files", []),
+                    }
+
+                    if insert_after is not None and insert_after < len(steps):
+                        steps.insert(insert_after + 1, new_step)
+                    else:
+                        steps.append(new_step)
+
+                # Reorder step numbers
+                for i, step in enumerate(steps):
+                    step["order"] = i + 1
+
+                result_message = f"Added {len(new_steps)} new step(s) to the plan"
+                await self.publish_action("plan_modified", result_message)
+
+            elif modification_type == "skip":
+                # Skip specific step(s)
+                step_indices = modification_data.get("step_indices", [])
+                skipped = 0
+
+                for idx in step_indices:
+                    if 0 <= idx < len(steps):
+                        if steps[idx]["status"] == "pending":
+                            steps[idx]["status"] = "skipped"
+                            steps[idx]["completed_at"] = datetime.now(timezone.utc).isoformat()
+                            skipped += 1
+
+                result_message = f"Skipped {skipped} step(s)"
+                await self.publish_action("plan_modified", result_message)
+
+            elif modification_type == "modify":
+                # Modify step description/title
+                step_index = modification_data.get("step_index")
+                new_title = modification_data.get("title")
+                new_description = modification_data.get("description")
+
+                if step_index is not None and 0 <= step_index < len(steps):
+                    if new_title:
+                        steps[step_index]["title"] = new_title
+                    if new_description:
+                        steps[step_index]["description"] = new_description
+
+                    result_message = f"Modified step {step_index + 1}: {steps[step_index]['title']}"
+                    await self.publish_action("plan_modified", result_message)
+
+            elif modification_type == "reorder":
+                # Reorder steps
+                new_order = modification_data.get("new_order", [])  # list of step indices
+
+                if new_order and len(new_order) == len(steps):
+                    reordered = [steps[i] for i in new_order if 0 <= i < len(steps)]
+                    if len(reordered) == len(steps):
+                        steps = reordered
+                        for i, step in enumerate(steps):
+                            step["order"] = i + 1
+
+                        result_message = "Reordered plan steps"
+                        await self.publish_action("plan_modified", result_message)
+
+            elif modification_type == "remove":
+                # Remove step(s) - only pending ones
+                step_indices = sorted(modification_data.get("step_indices", []), reverse=True)
+                removed = 0
+
+                for idx in step_indices:
+                    if 0 <= idx < len(steps) and steps[idx]["status"] == "pending":
+                        steps.pop(idx)
+                        removed += 1
+
+                # Reorder step numbers
+                for i, step in enumerate(steps):
+                    step["order"] = i + 1
+
+                result_message = f"Removed {removed} step(s) from the plan"
+                await self.publish_action("plan_modified", result_message)
+
+            elif modification_type == "research_and_update":
+                # User asked for something that requires more codebase exploration.
+                # Re-explore and regenerate the plan incorporating the new requirement.
+                root_path = request.payload.get("root_path", "/home/wyld-core")
+                additional_context = modification_data.get("context", user_message)
+
+                # Combine original plan description with new requirement
+                original_description = plan.get("description", plan.get("title", ""))
+                combined_task = f"{original_description}\n\nAdditional requirement: {additional_context}"
+
+                await self.publish_action("exploring", f"Researching: {additional_context[:60]}...")
+
+                # Do exploration focused on the new requirement
+                exploration = await self._explore_for_plan(additional_context, base_path=root_path)
+
+                # Also include context from original exploration if available
+                # by reading key files from existing steps
+                existing_files = []
+                for s in steps:
+                    existing_files.extend(s.get("files", []))
+
+                await self.publish_action("planning", "Updating plan with new findings...")
+
+                # Regenerate steps with combined context
+                new_steps = await self._generate_plan_from_exploration(
+                    combined_task, exploration, base_path=root_path
+                )
+
+                if new_steps:
+                    steps = [
+                        {
+                            "id": str(uuid4()),
+                            "order": i + 1,
+                            "title": s.get("title", f"Step {i + 1}"),
+                            "description": s.get("description", ""),
+                            "agent": s.get("agent"),
+                            "files": s.get("files", []),
+                            "status": "pending",
+                        }
+                        for i, s in enumerate(new_steps)
+                    ]
+
+                result_message = f"Plan updated with {len(steps)} steps after researching: {additional_context[:50]}"
+                await self.publish_action("plan_modified", result_message)
+
+            # Update plan in Redis
+            plan["steps"] = steps
+            await self._redis.set(plan_key, json.dumps(plan))
+
+            # Send update to frontend
+            if self._pubsub and user_id:
+                if modification_type == "research_and_update":
+                    # Full plan regeneration — send plan_update with new content
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "plan_update",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "plan_id": plan_id,
+                            "plan_content": self._format_plan_for_display(plan),
+                            "plan_status": "PENDING",
+                            "plan": plan,
+                            "agent": "wyld",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                else:
+                    # Structural change — send step_update
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "step_update",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "plan_id": plan_id,
+                            "steps": steps,
+                            "current_step": plan.get("current_step", 0),
+                            "modification": modification_type,
+                            "agent": "wyld",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+
+                # Also send a chat message about the modification
+                await self._pubsub.publish(
+                    "agent:responses",
+                    {
+                        "type": "message",
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
+                        "content": f"✏️ Plan updated: {result_message}",
+                        "agent": "wyld",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.COMPLETED,
+                result={
+                    "plan_id": plan_id,
+                    "modification_type": modification_type,
+                    "message": result_message,
+                    "steps_before": original_step_count,
+                    "steps_after": len(steps),
+                },
+                agent_type=self.agent_type,
+            )
+
+        except Exception as e:
+            logger.error("Plan modification failed", error=str(e))
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error=str(e),
+                agent_type=self.agent_type,
+            )
+        finally:
+            self._state.current_user_id = None
+            self._state.current_conversation_id = None
+
+    async def _parse_modification_intent(
+        self, user_message: str, steps: list, plan: dict
+    ) -> tuple[str | None, dict]:
+        """
+        Use Claude to parse the user's modification intent from their message.
+
+        Returns (modification_type, modification_data) tuple.
+        """
+        import json
+
+        # Build step list for context
+        step_list = "\n".join([
+            f"{i+1}. [{s['status']}] {s['title']}: {s.get('description', '')[:50]}"
+            for i, s in enumerate(steps)
+        ])
+
+        prompt = f"""Analyze this user message to determine how they want to modify the plan.
+
+Current Plan: {plan.get('title', 'Untitled')}
+Current Steps:
+{step_list}
+
+User Message: "{user_message}"
+
+Determine the modification type and data. Respond with JSON only:
+
+For NEW FEATURES or requirements that need codebase research (e.g., "also add authentication",
+"use PostgreSQL instead", "include API rate limiting", "what about error handling?"):
+{{"type": "research_and_update", "data": {{"context": "the user's requirement in clear terms"}}}}
+
+Use "research_and_update" when the user:
+- Asks to add substantial new functionality
+- Wants to change the technical approach
+- Mentions something that requires understanding the codebase
+- Asks a question about the plan that implies they want changes
+- Requests the plan cover additional areas
+
+For simple step additions (when you know exactly what to add):
+{{"type": "add", "data": {{"steps": [{{"title": "...", "description": "...", "agent": "code|qa"}}], "insert_after": null}}}}
+
+For skipping steps:
+{{"type": "skip", "data": {{"step_indices": [0, 2]}}}}
+
+For modifying a step's title/description:
+{{"type": "modify", "data": {{"step_index": 0, "title": "new title", "description": "new description"}}}}
+
+For reordering (provide new order as indices):
+{{"type": "reorder", "data": {{"new_order": [2, 0, 1, 3]}}}}
+
+For removing steps:
+{{"type": "remove", "data": {{"step_indices": [1]}}}}
+
+IMPORTANT: Default to "research_and_update" when in doubt. It is better to research
+and regenerate than to add a vague step without understanding the codebase.
+
+JSON response:"""
+
+        try:
+            response = await self._claude.messages.create(
+                model=self.config.model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            text = response.content[0].text if response.content else "{}"
+
+            # Extract JSON from response
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                result = json.loads(text[start:end])
+                return result.get("type"), result.get("data", {})
+
+        except Exception as e:
+            logger.error("Failed to parse modification intent", error=str(e))
+
+        return None, {}
+
+    async def _explore_for_plan(self, task_description: str, base_path: str = "/home/wyld-core") -> dict:
+        """
+        Explore codebase to gather context for planning.
+
+        Uses Claude to determine search strategy, then executes file searches
+        and reads key files to build understanding of the codebase.
+        """
+        import json
+
+        # Ask Claude for search strategy based on the task
+        strategy_prompt = f"""Analyze this development task and determine what to search for in the codebase.
+Project root: {base_path}
+
+Task: {task_description}
+
+Respond with a JSON object containing search strategies:
+{{"file_patterns": ["*.py", "auth*.ts"], "search_terms": ["login", "user"], "key_dirs": ["services", "models"]}}
+
+- file_patterns: glob patterns for relevant files (max 4)
+- search_terms: keywords to search for in code (max 3)
+- key_dirs: directories likely to contain relevant code
+
+Key project directories: services/, packages/, agents/, config/, docs/, database/, web/, pai/
+
+Only output the JSON object, no other text."""
+
+        try:
+            response = await self._claude.messages.create(
+                model=self.config.model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": strategy_prompt}],
+            )
+
+            # Record API usage for cost tracking
+            from ai_core import get_cost_tracker
+            asyncio.create_task(
+                get_cost_tracker().record_usage(
+                    model=self.config.model,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                    cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                    agent_type=self.agent_type,
+                    agent_name="wyld",
+                    user_id=self._state.current_user_id,
+                    project_id=self._state.current_project_id,
+                )
+            )
+
+            text = response.content[0].text if response.content else "{}"
+            # Extract JSON from response
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                strategy = json.loads(text[start:end])
+            else:
+                strategy = {}
+        except Exception as e:
+            logger.debug("Failed to get search strategy", error=str(e))
+            # Fallback: extract keywords from task description
+            words = task_description.lower().split()
+            keywords = [w for w in words if len(w) > 3 and w not in ["with", "that", "this", "from", "have"]][:2]
+            strategy = {
+                "file_patterns": ["*.py", "*.ts"],
+                "search_terms": keywords or ["main"],
+            }
+
+        exploration: dict[str, list[Any]] = {"files": [], "patterns": [], "content": []}
+
+        # Find files matching patterns
+        for pattern in strategy.get("file_patterns", [])[:4]:
+            await self.publish_action("file_search", f"Searching: {pattern}")
+            files = await _glob_files(pattern, base_path=base_path, max_results=15)
+            exploration["files"].extend(files[:10])
+
+        # Search for patterns in code
+        for term in strategy.get("search_terms", [])[:3]:
+            await self.publish_action("file_search", f"Searching for: {term}")
+            matches = await _grep_content(term, path=base_path, max_results=10)
+            exploration["patterns"].extend(matches[:8])
+
+        # Read key files discovered
+        seen_paths = set()
+        files_to_read = exploration["files"][:4]
+        for f in files_to_read:
+            path = f.get("path", "")
+            if path and path not in seen_paths:
+                seen_paths.add(path)
+                file_name = Path(path).name
+                await self.publish_action("file_read", f"Reading: {file_name}")
+                content = await _read_file(path, max_lines=60)
+                exploration["content"].append({
+                    "path": path,
+                    "content": content[:2000]
+                })
+
+        logger.info(
+            "Exploration complete",
+            files_found=len(exploration["files"]),
+            patterns_found=len(exploration["patterns"]),
+            files_read=len(exploration["content"]),
+        )
+
+        return exploration
+
+    async def _generate_plan_from_exploration(self, task: str, exploration: dict, base_path: str = "/home/wyld-core") -> list[dict]:
+        """
+        Generate plan steps from exploration results.
+
+        Uses Claude to create intelligent, context-aware plan steps
+        based on actual files and patterns found in the codebase.
+        """
+        import json
+
+        # Format exploration results for the prompt
+        files_summary = "\n".join([
+            f"- {f.get('relative', f.get('path', 'unknown'))}"
+            for f in exploration.get("files", [])[:12]
+        ]) or "No files found"
+
+        patterns_summary = "\n".join([
+            f"- {Path(p.get('file', '')).name}:{p.get('line', '?')}: {p.get('content', '')[:60]}..."
+            for p in exploration.get("patterns", [])[:8]
+        ]) or "No patterns found"
+
+        content_summary = "\n\n".join([
+            f"### {Path(c['path']).name}\n```\n{c['content'][:800]}\n```"
+            for c in exploration.get("content", [])[:2]
+        ]) or "No file contents available"
+
+        # Load TELOS for value-aligned planning
+        telos = _load_telos_context()
+
+        prompt = f"""Create an ACTIONABLE implementation plan. Research is ALREADY DONE — the exploration results below show what exists in the codebase.
+
+{telos}
+
+---
+
+## Task
+{task}
+
+## Codebase Root
+{base_path}
+
+## Files Already Found
+{files_summary}
+
+## Code Patterns Already Found
+{patterns_summary}
+
+## File Contents Already Read
+{content_summary}
+
+## CRITICAL RULES
+
+The exploration above IS the research phase. Do NOT create steps that say "investigate", "research", "identify", or "determine". Those are already done.
+
+Every step must be a CONCRETE ACTION that modifies or creates a file. Each step will be executed by an agent with read/write file tools.
+
+Respond with a JSON array only:
+[{{"title": "Action verb + what", "description": "Specific file changes: what to write/modify and where", "agent": "code|infra|qa", "files": ["{base_path}/path/to/file"]}}]
+
+Rules:
+- NEVER use agent type "research" — research is already complete
+- Every step MUST specify which files to create or modify with full paths starting with {base_path}
+- Titles must start with action verbs: "Create", "Add", "Update", "Configure", "Modify", "Write"
+- Descriptions must say exactly WHAT content to write or change, not what to "look for"
+- Use "code" for source code changes, "infra" for config/deployment, "qa" for tests
+- Include a final "Verify changes" step (agent: "qa")
+- 3-6 steps maximum
+- Only output the JSON array, no other text."""
+
+        try:
+            response = await self._claude.messages.create(
+                model=self.config.model,
+                max_tokens=1500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            # Record API usage for cost tracking
+            from ai_core import get_cost_tracker
+            asyncio.create_task(
+                get_cost_tracker().record_usage(
+                    model=self.config.model,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                    cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                    agent_type=self.agent_type,
+                    agent_name="wyld",
+                    user_id=self._state.current_user_id,
+                    project_id=self._state.current_project_id,
+                )
+            )
+
+            text = response.content[0].text if response.content else "[]"
+            # Extract JSON array from response
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                steps = json.loads(text[start:end])
+                return steps
+            else:
+                raise ValueError("No JSON array found in response")
+
+        except Exception as e:
+            logger.warning("Failed to generate plan from exploration", error=str(e))
+            # Return fallback actionable steps based on exploration
+            found_files = [f.get("path", "") for f in exploration.get("files", [])[:5] if f.get("path")]
+            return [
+                {
+                    "title": f"Read and understand relevant files",
+                    "description": f"Read files found during exploration to understand current state before making changes",
+                    "agent": "code",
+                    "files": found_files[:3],
+                },
+                {
+                    "title": f"Implement: {task[:40]}",
+                    "description": f"Make the required modifications to implement the task",
+                    "agent": "code",
+                    "files": found_files,
+                },
+                {
+                    "title": "Verify changes are correct",
+                    "description": "Read back modified files and confirm changes are accurate",
+                    "agent": "qa",
+                    "files": found_files[:3],
+                },
+            ]
 
     def _format_plan_for_display(self, plan: dict) -> str:
         """Format a plan dict for display in chat."""
@@ -1067,8 +2694,15 @@ async def main() -> None:
     settings = get_settings()
 
     # Initialize database for cost tracking
+    # Use localhost for host-based supervisor (not running in Docker)
+    # The .env uses POSTGRES_HOST=postgres for Docker, but we need localhost
+    db_url = settings.database.url_with_password.replace(
+        f"@{settings.database.host}:",
+        "@localhost:"
+    )
+    logger.info("Database URL configured for host access", host="localhost")
     db_engine = create_async_engine(
-        settings.database.url_with_password,
+        db_url,
         pool_size=5,
         max_overflow=10,
     )
@@ -1081,7 +2715,16 @@ async def main() -> None:
     logger.info("Cost tracker configured for database persistence")
 
     # Initialize Redis client
-    redis_client = RedisClient(settings.redis)
+    # Override host to localhost for host-based supervisor
+    from ai_core import RedisSettings
+    redis_settings = RedisSettings(
+        host="localhost",
+        port=settings.redis.port,
+        password=settings.redis.password,
+        db=settings.redis.db,
+        max_connections=settings.redis.max_connections,
+    )
+    redis_client = RedisClient(redis_settings)
     await redis_client.connect()
 
     # Initialize Qdrant store for WARM tier memory

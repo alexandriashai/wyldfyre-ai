@@ -12,7 +12,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .enums import AgentType
 from .logging import get_logger
@@ -58,11 +58,11 @@ class CostTracker:
     in a single atomic operation.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._session_factory = None
+        self._session_factory: Any = None
 
-    def set_session_factory(self, session_factory) -> None:
+    def set_session_factory(self, session_factory: Any) -> None:
         """Set the database session factory for persistence."""
         self._session_factory = session_factory
 
@@ -76,6 +76,7 @@ class CostTracker:
         agent_name: str | None = None,
         task_id: str | None = None,
         user_id: str | None = None,
+        project_id: str | None = None,
         correlation_id: str | None = None,
         request_id: str | None = None,
         latency_ms: int | None = None,
@@ -93,6 +94,7 @@ class CostTracker:
             agent_name: Name of the agent instance
             task_id: Associated task ID
             user_id: Associated user ID
+            project_id: Associated project ID for per-project cost tracking
             correlation_id: Request correlation ID
             request_id: API request ID from provider
             latency_ms: Response latency in milliseconds
@@ -124,6 +126,7 @@ class CostTracker:
                 agent_name=agent_name,
                 task_id=task_id,
                 user_id=user_id,
+                project_id=project_id,
                 correlation_id=correlation_id,
                 request_id=request_id,
                 latency_ms=latency_ms,
@@ -148,6 +151,7 @@ class CostTracker:
         agent_name: str | None,
         task_id: str | None,
         user_id: str | None,
+        project_id: str | None,
         correlation_id: str | None,
         request_id: str | None,
         latency_ms: int | None,
@@ -179,6 +183,7 @@ class CostTracker:
                 agent_name=agent_name,
                 task_id=task_id,
                 user_id=user_id,
+                project_id=project_id,
                 correlation_id=correlation_id,
                 request_id=request_id,
                 latency_ms=latency_ms,
@@ -374,6 +379,7 @@ class CostTracker:
         except Exception as e:
             logger.error("Failed to get daily summary", error=str(e))
             return None
+        return None
 
     async def get_usage_by_agent(
         self,
@@ -424,6 +430,7 @@ class CostTracker:
         except Exception as e:
             logger.error("Failed to get usage by agent", error=str(e))
             return {}
+        return {}
 
     async def get_usage_history(
         self,
@@ -487,6 +494,7 @@ class CostTracker:
         except Exception as e:
             logger.error("Failed to get usage history", error=str(e))
             return []
+        return []
 
 
 # Global singleton instance
@@ -501,7 +509,7 @@ def get_cost_tracker() -> CostTracker:
     return _cost_tracker
 
 
-def configure_cost_tracker(session_factory) -> CostTracker:
+def configure_cost_tracker(session_factory: Any) -> CostTracker:
     """Configure the cost tracker with a database session factory."""
     tracker = get_cost_tracker()
     tracker.set_session_factory(session_factory)

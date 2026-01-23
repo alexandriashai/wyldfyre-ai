@@ -8,10 +8,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ai_core import get_logger, message_processing_duration_seconds, message_queue_length
+from ai_core import MessageType, get_logger, message_processing_duration_seconds, message_queue_length
 
 from .client import RedisClient
-from .messages import BaseMessage, MessageType, TaskRequest, TaskResponse
+from .messages import BaseMessage, TaskRequest, TaskResponse
 
 logger = get_logger(__name__)
 
@@ -22,7 +22,7 @@ Handler = Callable[[BaseMessage], Awaitable[None]]
 class PendingRequest:
     """Tracks a pending request waiting for response."""
     request_id: str
-    future: asyncio.Future
+    future: asyncio.Future[TaskResponse]
     timeout: float
     created_at: float
 
@@ -44,7 +44,7 @@ class MessageBus:
         self._handlers: dict[MessageType, list[Handler]] = {}
         self._pending_requests: dict[str, PendingRequest] = {}
         self._running = False
-        self._consumer_task: asyncio.Task | None = None
+        self._consumer_task: asyncio.Task[None] | None = None
 
         # Stream names
         self._request_stream = f"ai:bus:{service_name}:requests"

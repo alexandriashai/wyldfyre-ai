@@ -6,7 +6,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import redis.asyncio as redis
 
@@ -44,7 +44,7 @@ class PubSubManager:
         self._pubsub: redis.client.PubSub | None = None
         self._subscriptions: dict[str, Subscription] = {}
         self._running = False
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         """Start the pub/sub listener."""
@@ -129,11 +129,14 @@ class PubSubManager:
         count = await self._client.client.publish(channel, data)
         messages_published_total.labels(channel=channel).inc()
         logger.debug("Published message", channel=channel, subscribers=count)
-        return count
+        return cast(int, count)
 
     async def _listen(self) -> None:
         """Listen for messages using explicit polling with yielding."""
         logger.info("PubSub listener started")
+        if self._pubsub is None:
+            logger.error("PubSub not initialized")
+            return
         try:
             while self._running:
                 try:

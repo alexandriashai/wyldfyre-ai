@@ -26,6 +26,20 @@ interface Conversation {
 
 type PlanStatus = "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null;
 
+export interface PlanStep {
+  id: string;
+  order: number;
+  title: string;
+  description: string;
+  status: "pending" | "in_progress" | "completed" | "failed" | "skipped";
+  agent?: string;
+  files?: string[];
+  output?: string;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
 interface ChatState {
   conversations: Conversation[];
   currentConversation: Conversation | null;
@@ -40,6 +54,8 @@ interface ChatState {
   // Plan state (Claude CLI style)
   currentPlan: string | null;
   planStatus: PlanStatus;
+  planSteps: PlanStep[];
+  currentStepIndex: number;
 
   // Filters
   projectFilter: string | null;
@@ -62,9 +78,13 @@ interface ChatState {
 
   // Plan actions
   updatePlan: (content: string, status?: PlanStatus) => void;
+  updateSteps: (steps: PlanStep[], currentStep: number) => void;
   approvePlan: (token: string) => Promise<void>;
   rejectPlan: (token: string) => Promise<void>;
   clearPlan: () => void;
+
+  // Local state updates (from WebSocket pushes)
+  renameConversationLocal: (conversationId: string, title: string) => void;
 
   // Filter actions
   setProjectFilter: (projectId: string | null) => void;
@@ -81,6 +101,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isAppFocused: true,
   currentPlan: null,
   planStatus: null,
+  planSteps: [],
+  currentStepIndex: 0,
   projectFilter: null,
 
   fetchConversations: async (token: string, projectId?: string | null) => {
@@ -224,9 +246,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   addMessage: (message: Message) => {
-    set((state) => ({
-      messages: [...state.messages, message],
-    }));
+    set((state) => {
+      // Deduplicate by checking if message with same content exists in last 10 messages
+      const recentMessages = state.messages.slice(-10);
+      const isDuplicate = recentMessages.some(
+        (m) => m.content === message.content && m.role === message.role
+      );
+      if (isDuplicate) {
+        console.log("[ChatStore] Skipping duplicate message:", message.content.slice(0, 50));
+        return state;
+      }
+      return {
+        messages: [...state.messages, message],
+      };
+    });
   },
 
   // New method that also handles notifications
@@ -307,6 +340,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
+  updateSteps: (steps: PlanStep[], currentStep: number) => {
+    set({
+      planSteps: steps,
+      currentStepIndex: currentStep,
+      // If steps are being executed, update plan status
+      planStatus: steps.some((s) => s.status === "in_progress")
+        ? "APPROVED"
+        : steps.every((s) => s.status === "completed" || s.status === "skipped")
+        ? "COMPLETED"
+        : get().planStatus,
+    });
+  },
+
   approvePlan: async (token: string) => {
     const state = get();
     if (!state.currentConversation) return;
@@ -336,7 +382,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearPlan: () => {
-    set({ currentPlan: null, planStatus: null });
+    set({ currentPlan: null, planStatus: null, planSteps: [], currentStepIndex: 0 });
+  },
+
+  // Local state updates (from WebSocket pushes)
+  renameConversationLocal: (conversationId: string, title: string) => {
+    set((state) => ({
+      conversations: state.conversations.map((c) =>
+        c.id === conversationId ? { ...c, title } : c
+      ),
+      currentConversation:
+        state.currentConversation?.id === conversationId
+          ? { ...state.currentConversation, title }
+          : state.currentConversation,
+    }));
   },
 
   // Filter actions
