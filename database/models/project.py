@@ -45,6 +45,9 @@ class Project(Base, UUIDMixin, TimestampMixin):
     # Project root path - filesystem location of the project's codebase
     root_path: Mapped[str | None] = mapped_column(String(500))
 
+    # Primary URL - the main URL for this project (e.g., https://example.com)
+    primary_url: Mapped[str | None] = mapped_column(String(500))
+
     # Status
     status: Mapped[ProjectStatus] = mapped_column(
         Enum(ProjectStatus),

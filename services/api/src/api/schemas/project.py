@@ -16,6 +16,7 @@ class ProjectCreate(BaseModel):
     description: str | None = None
     agent_context: str | None = None
     root_path: str | None = Field(None, max_length=500)
+    primary_url: str | None = Field(None, max_length=500)
     color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str | None = Field(None, max_length=50)
 
@@ -27,6 +28,7 @@ class ProjectUpdate(BaseModel):
     description: str | None = None
     agent_context: str | None = None
     root_path: str | None = Field(None, max_length=500)
+    primary_url: str | None = Field(None, max_length=500)
     status: ProjectStatus | None = None
     color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str | None = Field(None, max_length=50)
@@ -40,6 +42,7 @@ class ProjectResponse(BaseModel):
     description: str | None
     agent_context: str | None
     root_path: str | None
+    primary_url: str | None
     status: ProjectStatus
     color: str | None
     icon: str | None
@@ -89,6 +92,7 @@ class ProjectContextResponse(BaseModel):
     description: str | None
     agent_context: str | None
     root_path: str | None
+    primary_url: str | None
     domains: list[ProjectDomainInfo] = []
 
     class Config:

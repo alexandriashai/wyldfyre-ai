@@ -72,6 +72,8 @@ export default function ProjectsPage() {
   const [showDeleteProject, setShowDeleteProject] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
   const [projectDescription, setProjectDescription] = useState("");
+  const [projectPrimaryUrl, setProjectPrimaryUrl] = useState("");
+  const [projectRootPath, setProjectRootPath] = useState("");
   const [projectAgentContext, setProjectAgentContext] = useState("");
   const [projectColor, setProjectColor] = useState(PROJECT_COLORS[0]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -115,6 +117,8 @@ export default function ProjectsPage() {
       await createProject(token, {
         name: projectName.trim(),
         description: projectDescription.trim() || undefined,
+        primary_url: projectPrimaryUrl.trim() || undefined,
+        root_path: projectRootPath.trim() || undefined,
         agent_context: projectAgentContext.trim() || undefined,
         color: projectColor,
       });
@@ -135,6 +139,8 @@ export default function ProjectsPage() {
       await updateProject(token, showEditProject, {
         name: projectName.trim(),
         description: projectDescription.trim() || undefined,
+        primary_url: projectPrimaryUrl.trim() || undefined,
+        root_path: projectRootPath.trim() || undefined,
         agent_context: projectAgentContext.trim() || undefined,
         color: projectColor,
       });
@@ -178,6 +184,8 @@ export default function ProjectsPage() {
     if (project) {
       setProjectName(project.name);
       setProjectDescription(project.description || "");
+      setProjectPrimaryUrl(project.primary_url || "");
+      setProjectRootPath(project.root_path || "");
       setProjectAgentContext(project.agent_context || "");
       setProjectColor(project.color || PROJECT_COLORS[0]);
       setShowEditProject(projectId);
@@ -187,6 +195,8 @@ export default function ProjectsPage() {
   const resetForm = () => {
     setProjectName("");
     setProjectDescription("");
+    setProjectPrimaryUrl("");
+    setProjectRootPath("");
     setProjectAgentContext("");
     setProjectColor(PROJECT_COLORS[0]);
   };
@@ -348,6 +358,31 @@ export default function ProjectsPage() {
               />
             </div>
             <div className="grid gap-2">
+              <Label htmlFor="project-primary-url">Primary URL (optional)</Label>
+              <Input
+                id="project-primary-url"
+                type="url"
+                placeholder="https://example.com"
+                value={projectPrimaryUrl}
+                onChange={(e) => setProjectPrimaryUrl(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                The main URL for this project. Sets the matching domain as primary.
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="project-root-path">Project Root (optional)</Label>
+              <Input
+                id="project-root-path"
+                placeholder="/home/wyld-web/static/my-site/"
+                value={projectRootPath}
+                onChange={(e) => setProjectRootPath(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Project base directory for chats, tasks, and git. Auto-derived from primary URL if not set.
+              </p>
+            </div>
+            <div className="grid gap-2">
               <Label htmlFor="project-context">Agent Context (optional)</Label>
               <Textarea
                 id="project-context"
@@ -428,6 +463,31 @@ export default function ProjectsPage() {
                 value={projectDescription}
                 onChange={(e) => setProjectDescription(e.target.value)}
               />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="edit-project-primary-url">Primary URL</Label>
+              <Input
+                id="edit-project-primary-url"
+                type="url"
+                placeholder="https://example.com"
+                value={projectPrimaryUrl}
+                onChange={(e) => setProjectPrimaryUrl(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                The main URL for this project. Sets the matching domain as primary.
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="edit-project-root-path">Project Root</Label>
+              <Input
+                id="edit-project-root-path"
+                placeholder="/home/wyld-web/static/my-site/"
+                value={projectRootPath}
+                onChange={(e) => setProjectRootPath(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Project base directory for chats, tasks, and git. Auto-derived from primary URL if not set.
+              </p>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="edit-project-context">Agent Context</Label>

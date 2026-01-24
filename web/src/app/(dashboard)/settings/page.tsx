@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useAuthStore } from "@/stores/auth-store";
 import { usePreferencesStore, ACCENT_COLORS } from "@/stores/preferences-store";
 import { formatShortcut } from "@/hooks/useKeyboardShortcuts";
-import { settingsApi, notificationsApi, conversationsApi, memoryApi } from "@/lib/api";
+import { settingsApi, notificationsApi, conversationsApi, memoryApi, SystemAIConfig } from "@/lib/api";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,6 +43,7 @@ import {
   RotateCcw,
   Download,
   Check,
+  Cpu,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -93,6 +94,21 @@ export default function SettingsPage() {
   // Export state
   const [isExporting, setIsExporting] = useState<string | null>(null);
 
+  // System AI config state (admin-only)
+  const [systemAI, setSystemAI] = useState<SystemAIConfig>({
+    router_enabled: true,
+    router_up_threshold: 0.75,
+    router_down_threshold: 0.30,
+    router_latency_budget_ms: 50,
+    router_type: "mf",
+    aider_enabled: true,
+    aider_default_model: "claude-sonnet-4-20250514",
+    aider_edit_format: "diff",
+    aider_map_tokens: 2048,
+  });
+  const [isSavingSystemAI, setIsSavingSystemAI] = useState(false);
+  const [systemAIMessage, setSystemAIMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
   // Preferences
   const {
     theme,
@@ -138,6 +154,15 @@ export default function SettingsPage() {
         .catch(() => {});
     }
   }, [token]);
+
+  // Fetch system AI config on mount (admin-only)
+  useEffect(() => {
+    if (token && user?.is_admin) {
+      settingsApi.getSystemAI(token)
+        .then(setSystemAI)
+        .catch(() => {});
+    }
+  }, [token, user?.is_admin]);
 
   // Keyboard shortcut rebinding listener
   useEffect(() => {
@@ -316,6 +341,21 @@ export default function SettingsPage() {
     downloadBlob(blob, "preferences-export.json");
   };
 
+  const handleSaveSystemAI = async () => {
+    if (!token) return;
+    setIsSavingSystemAI(true);
+    setSystemAIMessage(null);
+
+    try {
+      await settingsApi.updateSystemAI(token, systemAI);
+      setSystemAIMessage({ type: "success", text: "System AI configuration saved" });
+    } catch (error) {
+      setSystemAIMessage({ type: "error", text: error instanceof Error ? error.message : "Failed to save config" });
+    } finally {
+      setIsSavingSystemAI(false);
+    }
+  };
+
   function downloadBlob(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -368,6 +408,12 @@ export default function SettingsPage() {
             <Accessibility className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
             <span className="hidden sm:inline">A11y</span>
           </TabsTrigger>
+          {user?.is_admin && (
+            <TabsTrigger value="system" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+              <Cpu className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              <span className="hidden sm:inline">System</span>
+            </TabsTrigger>
+          )}
         </TabsList>
 
         {/* Profile Tab */}
@@ -915,6 +961,215 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* System Tab (Admin-only) */}
+        {user?.is_admin && (
+          <TabsContent value="system" className="space-y-6">
+            {systemAIMessage && (
+              <div className={`flex items-center gap-2 rounded-md p-3 text-sm ${
+                systemAIMessage.type === "success" ? "bg-green-500/15 text-green-500" : "bg-destructive/15 text-destructive"
+              }`}>
+                {systemAIMessage.type === "success" ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+                {systemAIMessage.text}
+              </div>
+            )}
+
+            {/* Content Router Card */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Content Router</CardTitle>
+                <CardDescription>
+                  LLMRouter analyzes prompt complexity to route between model tiers
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>Enable Content Router</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Route BALANCED-tier requests based on prompt complexity
+                    </p>
+                  </div>
+                  <Switch
+                    checked={systemAI.router_enabled}
+                    onCheckedChange={(checked) => setSystemAI({ ...systemAI, router_enabled: checked })}
+                  />
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>UP Threshold</Label>
+                    <Badge variant="secondary" className="font-mono">{systemAI.router_up_threshold.toFixed(2)}</Badge>
+                  </div>
+                  <Slider
+                    value={[systemAI.router_up_threshold]}
+                    onValueChange={([val]) => setSystemAI({ ...systemAI, router_up_threshold: val })}
+                    min={0.5}
+                    max={0.95}
+                    step={0.05}
+                    className="w-full"
+                    disabled={!systemAI.router_enabled}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Score above this upgrades to POWERFUL tier
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>DOWN Threshold</Label>
+                    <Badge variant="secondary" className="font-mono">{systemAI.router_down_threshold.toFixed(2)}</Badge>
+                  </div>
+                  <Slider
+                    value={[systemAI.router_down_threshold]}
+                    onValueChange={([val]) => setSystemAI({ ...systemAI, router_down_threshold: val })}
+                    min={0.1}
+                    max={0.5}
+                    step={0.05}
+                    className="w-full"
+                    disabled={!systemAI.router_enabled}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Score below this downgrades to FAST tier
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Latency Budget</Label>
+                    <Badge variant="secondary" className="font-mono">{systemAI.router_latency_budget_ms}ms</Badge>
+                  </div>
+                  <Slider
+                    value={[systemAI.router_latency_budget_ms]}
+                    onValueChange={([val]) => setSystemAI({ ...systemAI, router_latency_budget_ms: val })}
+                    min={10}
+                    max={200}
+                    step={10}
+                    className="w-full"
+                    disabled={!systemAI.router_enabled}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Maximum time allowed for routing decision
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Router Type</Label>
+                  <Select
+                    value={systemAI.router_type}
+                    onValueChange={(v) => setSystemAI({ ...systemAI, router_type: v })}
+                    disabled={!systemAI.router_enabled}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mf">Matrix Factorization (mf)</SelectItem>
+                      <SelectItem value="bert">BERT</SelectItem>
+                      <SelectItem value="causal_llm">Causal LLM</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Model architecture used for routing decisions
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Aider Card */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Aider Coding Tool</CardTitle>
+                <CardDescription>
+                  Multi-file code editing with repo mapping and git integration
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>Enable Aider</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Allow agents to use Aider for code editing tasks
+                    </p>
+                  </div>
+                  <Switch
+                    checked={systemAI.aider_enabled}
+                    onCheckedChange={(checked) => setSystemAI({ ...systemAI, aider_enabled: checked })}
+                  />
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <Label>Default Model</Label>
+                  <Select
+                    value={systemAI.aider_default_model}
+                    onValueChange={(v) => setSystemAI({ ...systemAI, aider_default_model: v })}
+                    disabled={!systemAI.aider_enabled}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="claude-haiku-4-20250514">Claude Haiku (Fast)</SelectItem>
+                      <SelectItem value="claude-sonnet-4-20250514">Claude Sonnet (Balanced)</SelectItem>
+                      <SelectItem value="claude-opus-4-5-20251101">Claude Opus (Powerful)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Model used when tier is set to &quot;auto&quot;
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Edit Format</Label>
+                  <Select
+                    value={systemAI.aider_edit_format}
+                    onValueChange={(v) => setSystemAI({ ...systemAI, aider_edit_format: v })}
+                    disabled={!systemAI.aider_enabled}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="diff">Diff (standard patches)</SelectItem>
+                      <SelectItem value="udiff">Unified Diff</SelectItem>
+                      <SelectItem value="whole">Whole File</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Format used to represent code changes
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Map Tokens</Label>
+                    <Badge variant="secondary" className="font-mono">{systemAI.aider_map_tokens}</Badge>
+                  </div>
+                  <Slider
+                    value={[systemAI.aider_map_tokens]}
+                    onValueChange={([val]) => setSystemAI({ ...systemAI, aider_map_tokens: val })}
+                    min={512}
+                    max={8192}
+                    step={512}
+                    className="w-full"
+                    disabled={!systemAI.aider_enabled}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Tokens allocated for repo map context
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Button onClick={handleSaveSystemAI} disabled={isSavingSystemAI}>
+              {isSavingSystemAI ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving...</> : "Save System Configuration"}
+            </Button>
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

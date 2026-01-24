@@ -188,7 +188,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
         messages: conversation.messages,
         currentPlan: conversation.plan_content,
-        planStatus: conversation.plan_status as PlanStatus,
+        planStatus: conversation.plan_status
+          ? (conversation.plan_status.toUpperCase() as PlanStatus)
+          : null,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load conversation";
@@ -422,15 +424,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   updateSteps: (steps: PlanStep[], currentStep: number) => {
+    // Determine plan status from step states
+    let derivedStatus: PlanStatus = get().planStatus;
+    if (steps.length > 0) {
+      if (steps.some((s) => s.status === "in_progress")) {
+        derivedStatus = "APPROVED"; // "APPROVED" displays as "Executing..." in UI
+      } else if (steps.every((s) => ["completed", "skipped", "failed"].includes(s.status))) {
+        derivedStatus = "COMPLETED";
+      }
+    }
     set({
       planSteps: steps,
       currentStepIndex: currentStep,
-      // If steps are being executed, update plan status
-      planStatus: steps.some((s) => s.status === "in_progress")
-        ? "APPROVED"
-        : steps.every((s) => s.status === "completed" || s.status === "skipped")
-        ? "COMPLETED"
-        : get().planStatus,
+      planStatus: derivedStatus,
     });
   },
 

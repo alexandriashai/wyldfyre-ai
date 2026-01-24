@@ -440,30 +440,55 @@ async def approve_conversation_plan(
     plan = await plan_manager.get_active_plan(conversation_id)
 
     if plan:
+        # Guard: only approve plans that are ready (pending status with steps)
+        plan_data_raw = await redis.get(f"plan:{plan.id}")
+        if plan_data_raw:
+            import json as json_mod
+            plan_data = json_mod.loads(plan_data_raw)
+            plan_status_val = plan_data.get("status", "")
+            if plan_status_val in ("exploring", "drafting"):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Plan is still being created. Please wait for it to finish.",
+                )
+            if not plan_data.get("steps"):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Plan has no steps. It may still be generating.",
+                )
+
         # Mark plan as approved
         await plan_manager.approve_plan(plan.id)
+
+        # Get root_path from plan data for execution context
+        plan_root_path = plan_data.get("root_path") if plan_data_raw else None
 
         # Trigger execution via supervisor
         pubsub = PubSubManager(redis)
         await pubsub.start()
         try:
+            payload = {
+                "plan_id": plan.id,
+                "conversation_id": conversation_id,
+                "user_id": current_user.sub,
+            }
+            if plan_root_path:
+                payload["root_path"] = plan_root_path
+
             await pubsub.publish(
                 "agent:supervisor:tasks",
                 {
                     "type": "task_request",
                     "task_type": "execute_plan",
                     "user_id": current_user.sub,
-                    "payload": {
-                        "plan_id": plan.id,
-                        "conversation_id": conversation_id,
-                        "user_id": current_user.sub,
-                    },
+                    "payload": payload,
                 },
             )
             logger.info(
                 "Plan execution triggered",
                 plan_id=plan.id,
                 conversation_id=conversation_id,
+                root_path=plan_root_path,
             )
         finally:
             await pubsub.stop()

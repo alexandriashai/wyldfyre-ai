@@ -1,15 +1,17 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn, getAgentColor, getAgentBgColor, formatDate } from "@/lib/utils";
 import { useChatStore, MessageStatus } from "@/stores/chat-store";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Bot, User, Check, X, RefreshCw, Loader2, AlertCircle, WifiOff } from "lucide-react";
+import { Bot, User, Check, X, RefreshCw, Loader2, AlertCircle, WifiOff, Lightbulb } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { useChat } from "@/hooks/useChat";
+import { useWorkspaceStore } from "@/stores/workspace-store";
+import { SynthesizeModal } from "./synthesize-modal";
 
 interface Message {
   id: string;
@@ -93,10 +95,12 @@ function MessageBubble({
   message,
   onPlanAction,
   onRetry,
+  onSynthesize,
 }: {
   message: Message;
   onPlanAction?: (action: string) => void;
   onRetry?: (messageId: string) => void;
+  onSynthesize?: (content: string) => void;
 }) {
   const isUser = message.role === "user";
   const showPlanButtons = !isUser && isPendingPlanMessage(message.content) && onPlanAction;
@@ -199,6 +203,17 @@ function MessageBubble({
               onRetry={onRetry ? () => onRetry(message.id) : undefined}
             />
           )}
+          {!isUser && !message.isStreaming && onSynthesize && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onSynthesize(message.content)}
+              className="h-5 px-1.5 text-xs text-muted-foreground hover:text-primary"
+              title="Synthesize learnings from this message"
+            >
+              <Lightbulb className="h-3 w-3" />
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -261,10 +276,12 @@ function ConnectionBanner({ state }: { state: string }) {
 }
 
 export function MessageList() {
-  const { messages, streamingMessage, connectionState } = useChatStore();
+  const { messages, streamingMessage, connectionState, currentConversation } = useChatStore();
   const { sendMessage, retryMessage } = useChat();
+  const { activeProjectId } = useWorkspaceStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [synthesizeContent, setSynthesizeContent] = useState<string | null>(null);
 
   // Auto-scroll to bottom when new messages arrive or on mount
   useEffect(() => {
@@ -324,12 +341,22 @@ export function MessageList() {
               message={message}
               onPlanAction={handlePlanAction}
               onRetry={handleRetry}
+              onSynthesize={setSynthesizeContent}
             />
           ))}
           {streamingMessage && <StreamingMessage content={streamingMessage} />}
           <div ref={scrollRef} />
         </div>
       </div>
+
+      {synthesizeContent && (
+        <SynthesizeModal
+          content={synthesizeContent}
+          conversationId={currentConversation?.id}
+          projectId={activeProjectId ?? undefined}
+          onClose={() => setSynthesizeContent(null)}
+        />
+      )}
     </div>
   );
 }

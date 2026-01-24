@@ -200,6 +200,11 @@ async def _write_file(path: str, content: str, allowed_base: str = "/home/wyld-c
     if not path.startswith(allowed_base):
         return f"Error: Cannot write outside {allowed_base}"
 
+    # Safety: prevent writing to the base directory itself or existing directories
+    resolved = Path(path).resolve()
+    if resolved.is_dir() or str(resolved) == str(Path(allowed_base).resolve()):
+        return f"Error: '{path}' is a directory, not a file. Write to a file path inside it."
+
     # Safety: block sensitive paths
     path_lower = path.lower()
     for blocked in WRITE_BLOCKED_PATTERNS:
@@ -211,6 +216,18 @@ async def _write_file(path: str, content: str, allowed_base: str = "/home/wyld-c
         file_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(path, "w") as f:
             await f.write(content)
+
+        # Set web-appropriate permissions for files in web-served directories
+        web_dirs = ["/home/wyld-web/", "/var/www/"]
+        if any(path.startswith(d) for d in web_dirs):
+            import os
+            os.chmod(path, 0o644)
+            try:
+                import shutil
+                shutil.chown(path, user="www-data", group="www-data")
+            except Exception:
+                pass  # May fail in Docker, permissions are still readable
+
         return f"Successfully wrote {len(content)} bytes to {path}"
     except Exception as e:
         return f"Error writing file: {e}"
@@ -312,11 +329,11 @@ async def _list_directory(path: str) -> str:
 
 
 def _load_telos_context() -> str:
-    """Load TELOS mission and values for agent context."""
+    """Load TELOS mission, values, and server baseline for agent context."""
     telos_dir = Path("/home/wyld-core/pai/TELOS")
     context_parts = []
 
-    for filename in ["mission.md", "values.md"]:
+    for filename in ["mission.md", "values.md", "server_baseline.md"]:
         filepath = telos_dir / filename
         if filepath.exists():
             try:
@@ -326,7 +343,7 @@ def _load_telos_context() -> str:
                 pass
 
     if context_parts:
-        return "## TELOS Framework (Mission & Values)\n\n" + "\n\n---\n\n".join(context_parts)
+        return "## TELOS Framework (Mission, Values & Server Context)\n\n" + "\n\n---\n\n".join(context_parts)
     return ""
 
 
@@ -1093,6 +1110,10 @@ class SupervisorAgent(BaseAgent):
         if request.task_type == "modify_plan":
             return await self._handle_modify_plan(request)
 
+        # Handle host command execution (delegated from API container)
+        if request.task_type == "host_command":
+            return await self._handle_host_command(request)
+
         # Otherwise use default processing
         response = await super().process_task(request)
 
@@ -1400,6 +1421,30 @@ class SupervisorAgent(BaseAgent):
                 )
 
             plan = json.loads(plan_data)
+
+            # Guard: wait for plan creation to finish if still in progress
+            plan_status = plan.get("status", "")
+            if plan_status in ("exploring", "drafting"):
+                # Plan is still being created - wait up to 60s for it to finish
+                logger.info("Plan still being created, waiting...", plan_id=plan_id, status=plan_status)
+                for _wait in range(12):  # 12 x 5s = 60s max
+                    await asyncio.sleep(5)
+                    plan_data = await self._redis.get(plan_key)
+                    if not plan_data:
+                        break
+                    plan = json.loads(plan_data)
+                    plan_status = plan.get("status", "")
+                    if plan_status not in ("exploring", "drafting"):
+                        logger.info("Plan creation finished", plan_id=plan_id, status=plan_status)
+                        break
+                else:
+                    return TaskResponse(
+                        task_id=request.id,
+                        status=TaskStatus.FAILED,
+                        error="Plan creation timed out - still in progress after 60s",
+                        agent_type=self.agent_type,
+                    )
+
             steps = plan.get("steps", [])
 
             # Resolve root_path: request > plan > default
@@ -1811,7 +1856,7 @@ You are executing a plan step.{project_info}
 1. The target file contents are pre-loaded above — use them directly, do NOT re-read files already shown
 2. Make the specific changes using write_file (for new files) or edit_file (for modifications)
 3. Verify your changes by reading back the modified files
-4. All file paths are under {root_path}
+4. All file paths are under the directory {root_path}/ (this is a DIRECTORY even if the name contains dots)
 5. Do NOT just describe or recommend changes — actually write them to files
 6. If a file needs to be CREATED, use write_file with the full content
 7. If a file needs to be MODIFIED, use edit_file with old_text and new_text
@@ -2310,6 +2355,109 @@ Execute this step now. Make real file changes, not just descriptions."""
             self._state.current_user_id = None
             self._state.current_conversation_id = None
 
+    async def _handle_host_command(self, request: TaskRequest) -> TaskResponse:
+        """
+        Execute a shell command on the host, delegated from the API container.
+
+        Used by domain_service for nginx/certbot operations that require
+        host-level access (the API container runs as non-root without nginx/certbot).
+
+        Publishes the result back to a response channel so the caller can await it.
+        """
+        import asyncio as _asyncio
+        import json
+
+        command_id = request.payload.get("command_id")
+        command = request.payload.get("command")
+
+        if not command_id or not command:
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error="Missing command_id or command in payload",
+                agent_type=self.agent_type,
+            )
+
+        logger.info("Executing host command", command_id=command_id, command=command[:100])
+
+        # Allow only specific command patterns for security
+        allowed_prefixes = [
+            "bash -c",
+            "nginx",
+            "certbot",
+            "ln -sf /etc/nginx",
+            "systemctl reload nginx",
+            "systemctl restart nginx",
+        ]
+        cmd_lower = command.lower().strip()
+        # Block obviously dangerous patterns
+        dangerous = ["rm -rf /", "mkfs", "dd if=", "shutdown", "reboot", "passwd", "userdel", "chmod -R 777 /"]
+        for d in dangerous:
+            if d in cmd_lower:
+                error_msg = f"Blocked dangerous command pattern: {d}"
+                logger.warning("Host command blocked", command_id=command_id, reason=error_msg)
+                result = {"returncode": 1, "stdout": "", "stderr": error_msg}
+                await self._redis.client.publish(
+                    f"host_command:{command_id}:response",
+                    json.dumps(result),
+                )
+                return TaskResponse(
+                    task_id=request.id,
+                    status=TaskStatus.FAILED,
+                    error=error_msg,
+                    agent_type=self.agent_type,
+                )
+
+        try:
+            proc = await _asyncio.create_subprocess_shell(
+                command,
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.PIPE,
+                cwd="/tmp",
+            )
+            stdout_bytes, stderr_bytes = await _asyncio.wait_for(
+                proc.communicate(), timeout=120
+            )
+
+            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            returncode = proc.returncode or 0
+
+            logger.info(
+                "Host command completed",
+                command_id=command_id,
+                returncode=returncode,
+                stdout_len=len(stdout),
+                stderr_len=len(stderr),
+            )
+
+            result = {
+                "returncode": returncode,
+                "stdout": stdout[:8000],
+                "stderr": stderr[:8000],
+            }
+
+        except _asyncio.TimeoutError:
+            logger.error("Host command timed out", command_id=command_id)
+            result = {"returncode": 1, "stdout": "", "stderr": "Command timed out after 120s"}
+
+        except Exception as e:
+            logger.error("Host command failed", command_id=command_id, error=str(e))
+            result = {"returncode": 1, "stdout": "", "stderr": str(e)}
+
+        # Publish result back to the waiting domain_service
+        response_channel = f"host_command:{command_id}:response"
+        await self._redis.client.publish(response_channel, json.dumps(result))
+
+        status = TaskStatus.COMPLETED if result["returncode"] == 0 else TaskStatus.FAILED
+        return TaskResponse(
+            task_id=request.id,
+            status=status,
+            result=result,
+            error=result["stderr"] if result["returncode"] != 0 else None,
+            agent_type=self.agent_type,
+        )
+
     async def _parse_modification_intent(
         self, user_message: str, steps: list, plan: dict
     ) -> tuple[str | None, dict]:
@@ -2399,7 +2547,8 @@ JSON response:"""
 
         # Ask Claude for search strategy based on the task
         strategy_prompt = f"""Analyze this development task and determine what to search for in the codebase.
-Project root: {base_path}
+Project root directory: {base_path}/
+(This is a DIRECTORY, not a file — even if the name contains dots like "site.example.com")
 
 Task: {task_description}
 
@@ -2618,8 +2767,9 @@ Only output the JSON object, no other text."""
 ## Task
 {task}
 
-## Codebase Root
-{base_path}
+## Codebase Root Directory
+{base_path}/
+(This is a DIRECTORY path — even if the name contains dots like "site.example.com", it is a folder, not a file)
 
 ## Files Already Found
 {files_summary}
@@ -2633,6 +2783,12 @@ Only output the JSON object, no other text."""
 ## CRITICAL RULES
 
 The exploration above IS the research phase. Do NOT create steps that say "investigate", "research", "identify", or "determine". Those are already done.
+
+This is a SINGLE SERVER environment. All infrastructure (nginx, databases, SSL, Docker) is already installed and running. When building websites or apps:
+- Build files directly in the project's configured root_path — do NOT set up new servers, cloud services, or deployment pipelines
+- Nginx, certbot, Node, Python, PHP are already available — do NOT include installation steps
+- Use existing databases (PostgreSQL, Redis) — do NOT provision new database instances
+- Reference the Server Baseline above for what's already available
 
 Every step must be a CONCRETE ACTION that modifies or creates a file. Each step will be executed by an agent with read/write file tools.
 

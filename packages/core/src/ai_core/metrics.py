@@ -226,6 +226,22 @@ pai_learnings_extracted_total = Counter(
 )
 
 # =============================================================================
+# Content Router Metrics
+# =============================================================================
+
+routing_decisions_total = Counter(
+    "llm_routing_decisions_total",
+    "Content router decisions",
+    ["from_tier", "to_tier"],
+)
+
+routing_latency_seconds = Histogram(
+    "llm_routing_latency_seconds",
+    "Content router decision latency",
+    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25],
+)
+
+# =============================================================================
 # System Metrics
 # =============================================================================
 

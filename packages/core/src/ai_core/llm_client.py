@@ -19,7 +19,8 @@ from .llm_provider import (
     LLMProviderType,
     LLMResponse,
 )
-from .model_selector import ModelTier, TIER_MODELS, select_model
+from .content_router import get_content_router
+from .model_selector import ModelTier, TIER_MODELS, select_model, select_model_with_routing
 
 logger = get_logger(__name__)
 
@@ -121,6 +122,7 @@ class LLMClient:
         self._fallback_since: float = 0  # timestamp when fallback started
         self._fallback_reason: str = ""  # why we fell back
         self._redis = redis  # Optional RedisClient for persistent fallback state
+        self._content_router = get_content_router(redis=redis)
 
         anthropic_key = settings.api.anthropic_api_key.get_secret_value()
         openai_key = settings.api.openai_api_key.get_secret_value()
@@ -187,13 +189,21 @@ class LLMClient:
         "powerful": ModelTier.POWERFUL,
     }
 
-    def _resolve_model(self, model: str, provider: LLMProviderType, tier: ModelTier | None,
-                       max_tokens: int, tools: list[dict[str, Any]] | None, system: str) -> str:
+    async def _resolve_model(
+        self,
+        model: str,
+        provider: LLMProviderType,
+        tier: ModelTier | None,
+        max_tokens: int,
+        tools: list[dict[str, Any]] | None,
+        system: str,
+        messages: list[dict[str, Any]] | None = None,
+    ) -> str:
         """
         Resolve model name for a specific provider.
 
         Handles:
-        - "auto": auto-detect tier from task complexity
+        - "auto": auto-detect tier from task complexity, with content routing
         - "fast"/"balanced"/"powerful": explicit tier shorthand
         - Specific model names (e.g. "claude-sonnet-4-20250514"): pass through
         """
@@ -204,14 +214,17 @@ class LLMClient:
                 tier=self._TIER_SHORTCUTS[model],
             )
 
-        # Auto mode: detect tier from task signals
+        # Auto mode: detect tier from task signals + content routing
         if model == "auto":
-            return select_model(
+            return await select_model_with_routing(
                 provider=provider,
                 tier=tier,
                 max_tokens=max_tokens,
                 tools_count=len(tools) if tools else 0,
                 system_prompt_length=len(system),
+                messages=messages,
+                system=system,
+                router=self._content_router,
             )
 
         # Specific model name: pass through
@@ -263,8 +276,8 @@ class LLMClient:
 
         # If already using fallback, resolve model for fallback provider and call it
         if self._using_fallback and self._fallback:
-            fallback_model = self._resolve_model(
-                model, self._fallback.provider_type, tier, max_tokens, tools, system
+            fallback_model = await self._resolve_model(
+                model, self._fallback.provider_type, tier, max_tokens, tools, system, messages
             )
             # Auto-set reasoning_effort for POWERFUL tier on OpenAI
             effective_effort = reasoning_effort
@@ -281,8 +294,8 @@ class LLMClient:
             raise RuntimeError("No LLM provider configured. Check API keys.")
 
         # Resolve model for primary provider
-        primary_model = self._resolve_model(
-            model, self._primary.provider_type, tier, max_tokens, tools, system
+        primary_model = await self._resolve_model(
+            model, self._primary.provider_type, tier, max_tokens, tools, system, messages
         )
 
         # Auto-set reasoning_effort for POWERFUL tier on OpenAI (when primary is OpenAI)
@@ -322,8 +335,8 @@ class LLMClient:
                         logger.debug("Failed to set fallback disabled key", error=str(redis_err))
 
                 # Resolve model for fallback provider
-                fallback_model = self._resolve_model(
-                    model, self._fallback.provider_type, tier, max_tokens, tools, system
+                fallback_model = await self._resolve_model(
+                    model, self._fallback.provider_type, tier, max_tokens, tools, system, messages
                 )
                 # Auto-set reasoning_effort for POWERFUL tier on OpenAI
                 fallback_effort = reasoning_effort

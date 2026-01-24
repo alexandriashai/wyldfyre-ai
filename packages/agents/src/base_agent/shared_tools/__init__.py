@@ -47,6 +47,8 @@ from .subagent_tools import (
     spawn_subagent,
 )
 
+from .aider_tool import aider_code
+
 from .browser_shared import (
     browser_status,
     screenshot_url,
@@ -78,6 +80,8 @@ __all__ = [
     "system_info",
     # Subagent tools
     "spawn_subagent",
+    # Aider code editing
+    "aider_code",
     # Browser shared tools
     "browser_status",
     "screenshot_url",

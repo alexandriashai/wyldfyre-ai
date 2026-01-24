@@ -5,6 +5,7 @@ Project management routes.
 import asyncio
 import os
 import subprocess
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -32,6 +33,42 @@ from ..schemas.project import (
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+
+
+async def _sync_primary_url(
+    db: AsyncSession,
+    project: Project,
+    primary_url: str,
+    root_path_explicit: bool,
+) -> None:
+    """
+    Sync domain is_primary flags and optionally derive root_path
+    from the matching domain's web_root.
+    """
+    # Strip protocol to get domain name
+    parsed = urlparse(primary_url)
+    domain_name = parsed.hostname or parsed.path.strip("/")
+
+    # Find matching domain in this project
+    domains_result = await db.execute(
+        select(Domain).where(Domain.project_id == project.id)
+    )
+    domains = list(domains_result.scalars().all())
+
+    matched_domain = None
+    for d in domains:
+        if d.domain_name == domain_name:
+            d.is_primary = True
+            matched_domain = d
+        else:
+            d.is_primary = False
+
+    # If root_path not explicitly provided, derive from domain's web_root parent
+    if not root_path_explicit and matched_domain and matched_domain.web_root:
+        # e.g., web_root=/home/wyld-web/static/site/public → root_path=/home/wyld-web/static/site/
+        parent = os.path.dirname(matched_domain.web_root.rstrip("/"))
+        if parent:
+            project.root_path = parent + "/"
 
 
 @router.get("", response_model=ProjectListResponse)
@@ -101,6 +138,7 @@ async def create_project(
         description=request.description,
         agent_context=request.agent_context,
         root_path=request.root_path,
+        primary_url=request.primary_url,
         color=request.color,
         icon=request.icon,
         user_id=current_user.sub,
@@ -109,6 +147,15 @@ async def create_project(
     db.add(project)
     await db.flush()
     await db.refresh(project)
+
+    # Sync primary_url → domain is_primary flags and derive root_path
+    if request.primary_url:
+        await _sync_primary_url(
+            db, project, request.primary_url,
+            root_path_explicit=request.root_path is not None,
+        )
+        await db.flush()
+        await db.refresh(project)
 
     # Auto-initialize git if root_path is set and .git doesn't exist
     if request.root_path and not os.path.isdir(os.path.join(request.root_path, ".git")):
@@ -189,6 +236,8 @@ async def get_project(
         name=project.name,
         description=project.description,
         agent_context=project.agent_context,
+        root_path=project.root_path,
+        primary_url=project.primary_url,
         status=project.status,
         color=project.color,
         icon=project.icon,
@@ -230,6 +279,13 @@ async def update_project(
     update_data = request.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(project, field, value)
+
+    # Sync primary_url → domain is_primary flags and derive root_path
+    if "primary_url" in update_data and update_data["primary_url"]:
+        await _sync_primary_url(
+            db, project, update_data["primary_url"],
+            root_path_explicit="root_path" in update_data,
+        )
 
     await db.flush()
     await db.refresh(project)
@@ -337,6 +393,8 @@ async def get_project_context(
         name=project.name,
         description=project.description,
         agent_context=project.agent_context,
+        root_path=project.root_path,
+        primary_url=project.primary_url,
         domains=domain_infos,
     )
 

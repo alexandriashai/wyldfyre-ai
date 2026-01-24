@@ -127,8 +127,9 @@ from .llm_provider import (
     LLMToolCall,
     LLMToolResult,
 )
+from .content_router import ContentRouter, get_content_router
 from .llm_client import LLMClient
-from .model_selector import ModelTier, select_model
+from .model_selector import ModelTier, select_model, select_model_with_routing
 from .mcp_client import (
     MCPClient,
     MCPToolResult,
@@ -170,6 +171,8 @@ from .metrics import (
     pai_learnings_extracted_total,
     pai_phase_duration_seconds,
     pai_phase_executions_total,
+    routing_decisions_total,
+    routing_latency_seconds,
     system_uptime_seconds,
 )
 
@@ -299,6 +302,8 @@ __all__ = [
     "pai_phase_executions_total",
     "pai_phase_duration_seconds",
     "pai_learnings_extracted_total",
+    "routing_decisions_total",
+    "routing_latency_seconds",
     "system_uptime_seconds",
     # Plugins
     "Plugin",
@@ -319,6 +324,10 @@ __all__ = [
     # Model Selection
     "ModelTier",
     "select_model",
+    "select_model_with_routing",
+    # Content Router
+    "ContentRouter",
+    "get_content_router",
     # MCP Client
     "MCPClient",
     "MCPToolResult",

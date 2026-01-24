@@ -7,21 +7,27 @@ Supports scoped learnings:
 - DOMAIN: Isolated to a specific domain/site
 """
 
+import json
+import os
+import subprocess
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_core import (
     CircuitOpenError,
+    LLMClient,
     get_all_breaker_status,
     get_logger,
     reset_circuit_breaker,
 )
 from ai_memory import LearningScope, PAIPhase, QdrantStore
 
-from ..dependencies import CurrentUserDep, RedisDep
+from ..dependencies import CurrentUserDep, DbSessionDep, RedisDep
 
 logger = get_logger(__name__)
 
@@ -539,3 +545,389 @@ def _get_phase_description(phase: PAIPhase) -> str:
         PAIPhase.LEARN: "Extract learnings and update memory",
     }
     return descriptions.get(phase, "")
+
+
+# --- Synthesize Learnings Endpoint ---
+
+EXTRACTION_SYSTEM_PROMPT = """You are a knowledge extraction system. Extract discrete, reusable insights from the conversation.
+
+Focus on:
+- Architecture patterns and conventions used in this project
+- User preferences and workflow habits
+- Technical gotchas and lessons learned
+- Tool/library usage patterns
+- Configuration and deployment knowledge
+
+Avoid:
+- Task-specific steps that aren't reusable
+- Obvious/trivial information
+- Transient state or temporary decisions
+
+Each learning must be a standalone, self-contained statement that would be useful in future conversations.
+
+Respond with a JSON array of objects:
+[
+  {
+    "content": "The extracted learning as a clear, actionable statement",
+    "category": "pattern|convention|preference|architecture|gotcha",
+    "scope": "global|project",
+    "confidence": 0.5-0.9,
+    "file_references": ["relative/path/to/file.ts"]
+  }
+]
+
+Only output valid JSON. No preamble or explanation."""
+
+CLASSIFICATION_SYSTEM_PROMPT = """You are a learning classifier. Given a candidate learning, file evidence, and existing related learnings, determine the appropriate action.
+
+Actions:
+- "create": New information not covered by existing learnings
+- "update": Refines or improves an existing learning (provide merged content)
+- "delete": An existing learning is now outdated/contradicted
+
+Respond with a JSON object:
+{
+  "action": "create|update|delete",
+  "content": "final learning text (merged if update, null if delete)",
+  "confidence": 0.0-1.0,
+  "verified": true/false,
+  "evidence": "Brief description of what confirmed/denied the learning",
+  "reason": "Only for delete: why the existing learning is obsolete",
+  "target_existing_id": "ID of existing learning to update/delete, or null for create"
+}
+
+Only output valid JSON. No preamble or explanation."""
+
+
+class SynthesizeRequest(BaseModel):
+    """Request body for synthesize endpoint."""
+
+    content: str
+    project_id: str | None = None
+    domain_id: str | None = None
+    conversation_id: str | None = None
+    verify: bool = True
+
+
+class RelatedExisting(BaseModel):
+    """Related existing learning."""
+
+    id: str
+    content: str
+    similarity: float
+
+
+class SynthesizeProposal(BaseModel):
+    """A single synthesize proposal."""
+
+    action: str  # create, update, delete
+    content: str | None = None
+    category: str | None = None
+    confidence: float = 0.0
+    verified: bool = False
+    scope: str = "project"
+    evidence: str | None = None
+    reason: str | None = None
+    related_existing: RelatedExisting | None = None
+
+
+class SynthesizeResponse(BaseModel):
+    """Response from synthesize endpoint."""
+
+    proposals: list[SynthesizeProposal]
+
+
+def _safe_read_file(root_path: str, relative_path: str, max_chars: int = 3000) -> str | None:
+    """Safely read a file within project root, preventing path traversal."""
+    if not root_path or not relative_path:
+        return None
+
+    # Block path traversal
+    if ".." in relative_path or relative_path.startswith("/"):
+        return None
+
+    resolved = os.path.realpath(os.path.join(root_path, relative_path))
+    canonical_root = os.path.realpath(root_path)
+
+    if not resolved.startswith(canonical_root + os.sep) and resolved != canonical_root:
+        return None
+
+    if not os.path.isfile(resolved):
+        return None
+
+    try:
+        with open(resolved, "r", encoding="utf-8", errors="replace") as f:
+            return f.read(max_chars)
+    except Exception:
+        return None
+
+
+def _grep_project(root_path: str, pattern: str, max_results: int = 5) -> list[str]:
+    """Run a simple grep in the project for a pattern, return matching file paths."""
+    if not root_path or not pattern or not os.path.isdir(root_path):
+        return []
+
+    try:
+        result = subprocess.run(
+            ["grep", "-rl", "--include=*.ts", "--include=*.tsx", "--include=*.py",
+             "--include=*.js", "--include=*.jsx", pattern, root_path],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            files = result.stdout.strip().split("\n")[:max_results]
+            # Convert to relative paths
+            return [os.path.relpath(f, root_path) for f in files if f]
+    except Exception:
+        pass
+    return []
+
+
+async def _get_conversation_context(redis, conversation_id: str) -> str:
+    """Fetch conversation history from Redis."""
+    try:
+        # Get message IDs from the conversation list
+        message_ids = await redis.lrange(f"conversation:{conversation_id}:messages", 0, -1)
+        if not message_ids:
+            return ""
+
+        messages_text = []
+        for msg_id in message_ids[-20:]:  # Last 20 messages for context
+            msg_data = await redis.hgetall(f"message:{msg_id}")
+            if msg_data:
+                role = msg_data.get("role", "unknown")
+                content = msg_data.get("content", "")
+                if content:
+                    messages_text.append(f"[{role}]: {content}")
+
+        return "\n\n".join(messages_text)
+    except Exception as e:
+        logger.warning("Failed to fetch conversation context", error=str(e))
+        return ""
+
+
+async def _get_project_root(db: AsyncSession, project_id: str) -> str | None:
+    """Get project root_path from database."""
+    try:
+        from database.models.project import Project
+        result = await db.execute(select(Project).where(Project.id == project_id))
+        project = result.scalar_one_or_none()
+        return project.root_path if project else None
+    except Exception as e:
+        logger.warning("Failed to get project root", error=str(e))
+        return None
+
+
+def _parse_json_response(text: str) -> Any:
+    """Parse JSON from LLM response, handling markdown code blocks."""
+    text = text.strip()
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        lines = text.split("\n")
+        # Remove first line (```json or ```) and last line (```)
+        lines = [l for l in lines[1:] if not l.strip().startswith("```")]
+        text = "\n".join(lines)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+@router.post("/synthesize", response_model=SynthesizeResponse)
+async def synthesize_learnings(
+    body: SynthesizeRequest,
+    current_user: CurrentUserDep,
+    redis: RedisDep,
+    db: DbSessionDep,
+) -> SynthesizeResponse:
+    """
+    Synthesize learnings from a message using AI.
+
+    Pipeline:
+    1. Gather context (conversation history, project root)
+    2. Extract candidate learnings via LLM
+    3. Verify candidates against codebase + classify against existing learnings
+    """
+    llm = LLMClient()
+    proposals: list[SynthesizeProposal] = []
+
+    # --- Step 1: Gather Context ---
+    conversation_context = ""
+    if body.conversation_id:
+        conversation_context = await _get_conversation_context(redis, body.conversation_id)
+
+    root_path: str | None = None
+    if body.project_id:
+        root_path = await _get_project_root(db, body.project_id)
+
+    # Build extraction input
+    extraction_input = ""
+    if conversation_context:
+        extraction_input += f"=== CONVERSATION CONTEXT ===\n{conversation_context}\n\n"
+    extraction_input += f"=== TARGET MESSAGE (extract learnings from this) ===\n{body.content}"
+
+    # --- Step 2: Extract Candidate Learnings ---
+    try:
+        extraction_response = await llm.create_message(
+            model="fast",
+            max_tokens=2048,
+            system=EXTRACTION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": extraction_input}],
+        )
+    except Exception as e:
+        logger.error("LLM extraction failed", error=str(e))
+        return SynthesizeResponse(proposals=[])
+
+    candidates = _parse_json_response(extraction_response.text_content)
+    if not candidates or not isinstance(candidates, list):
+        return SynthesizeResponse(proposals=[])
+
+    # --- Step 3: Verify + Classify each candidate ---
+    qdrant = await get_qdrant_store()
+
+    for candidate in candidates[:10]:  # Cap at 10 candidates
+        content = candidate.get("content", "")
+        category = candidate.get("category", "pattern")
+        scope = candidate.get("scope", "project")
+        base_confidence = candidate.get("confidence", 0.7)
+        file_refs = candidate.get("file_references", [])
+
+        # 3a. Codebase verification
+        evidence_snippets: list[str] = []
+        verified = False
+
+        if body.verify and root_path:
+            # Check referenced files
+            for ref in file_refs[:3]:
+                file_content = _safe_read_file(root_path, ref, max_chars=2000)
+                if file_content:
+                    evidence_snippets.append(f"[{ref}]:\n{file_content[:500]}")
+                    verified = True
+                    base_confidence = min(1.0, base_confidence + 0.1)
+
+            # Smart search: extract key terms and grep
+            if not verified:
+                # Extract likely search terms from the learning
+                words = content.split()
+                search_terms = [w for w in words if len(w) > 4 and not w[0].islower() or "." in w][:3]
+                for term in search_terms:
+                    matched_files = _grep_project(root_path, term, max_results=3)
+                    for mf in matched_files[:2]:
+                        fc = _safe_read_file(root_path, mf, max_chars=1000)
+                        if fc:
+                            evidence_snippets.append(f"[{mf}]: contains '{term}'")
+                            verified = True
+                            base_confidence = min(1.0, base_confidence + 0.05)
+                            break
+                    if verified:
+                        break
+
+            if not verified and file_refs:
+                # Referenced files don't exist - lower confidence
+                base_confidence = max(0.3, base_confidence - 0.2)
+
+        # 3b. Semantic search for related existing learnings
+        related_existing: RelatedExisting | None = None
+        existing_context = ""
+
+        try:
+            search_filter = {}
+            if body.project_id:
+                search_filter["project_id"] = body.project_id
+
+            search_results = await qdrant.search(
+                query=content,
+                limit=3,
+                score_threshold=0.6,
+                filter=search_filter if search_filter else None,
+            )
+
+            if search_results:
+                top = search_results[0]
+                related_existing = RelatedExisting(
+                    id=top["id"],
+                    content=top.get("text", ""),
+                    similarity=top.get("score", 0.0),
+                )
+                existing_context = "\n".join(
+                    f"- [{r['id']}] (score={r.get('score', 0):.2f}): {r.get('text', '')}"
+                    for r in search_results
+                )
+        except Exception as e:
+            logger.warning("Semantic search failed during synthesize", error=str(e))
+
+        # 3c. Classification via LLM
+        classification_input = f"""Candidate learning: "{content}"
+Category: {category}
+Scope: {scope}
+
+File evidence:
+{chr(10).join(evidence_snippets) if evidence_snippets else "No file evidence available"}
+
+Related existing learnings:
+{existing_context if existing_context else "No similar existing learnings found"}
+"""
+
+        try:
+            classify_response = await llm.create_message(
+                model="fast",
+                max_tokens=512,
+                system=CLASSIFICATION_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": classification_input}],
+            )
+
+            classification = _parse_json_response(classify_response.text_content)
+            if classification and isinstance(classification, dict):
+                action = classification.get("action", "create")
+                final_content = classification.get("content", content)
+                final_confidence = classification.get("confidence", base_confidence)
+                is_verified = classification.get("verified", verified)
+                evidence_text = classification.get("evidence", None)
+                reason = classification.get("reason", None)
+
+                # If action targets an existing learning, use the related_existing
+                target_id = classification.get("target_existing_id")
+                if target_id and not related_existing:
+                    # Try to find it in search results
+                    pass
+                elif action in ("update", "delete") and not related_existing:
+                    # Can't update/delete without a target - fallback to create
+                    action = "create"
+
+                proposals.append(SynthesizeProposal(
+                    action=action,
+                    content=final_content if action != "delete" else None,
+                    category=category,
+                    confidence=round(final_confidence, 2),
+                    verified=is_verified,
+                    scope=scope,
+                    evidence=evidence_text,
+                    reason=reason if action == "delete" else None,
+                    related_existing=related_existing if action in ("update", "delete") else None,
+                ))
+            else:
+                # Fallback: create proposal without classification
+                proposals.append(SynthesizeProposal(
+                    action="create",
+                    content=content,
+                    category=category,
+                    confidence=round(base_confidence, 2),
+                    verified=verified,
+                    scope=scope,
+                    evidence=evidence_snippets[0] if evidence_snippets else None,
+                    related_existing=None,
+                ))
+        except Exception as e:
+            logger.warning("Classification LLM call failed", error=str(e))
+            # Still add as a create proposal
+            proposals.append(SynthesizeProposal(
+                action="create",
+                content=content,
+                category=category,
+                confidence=round(base_confidence, 2),
+                verified=verified,
+                scope=scope,
+                related_existing=None,
+            ))
+
+    await qdrant.disconnect()
+    return SynthesizeResponse(proposals=proposals)

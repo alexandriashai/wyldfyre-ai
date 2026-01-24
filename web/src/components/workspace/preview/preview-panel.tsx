@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { domainsApi } from "@/lib/api";
+import { domainsApi, projectsApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, ExternalLink, Globe } from "lucide-react";
 
@@ -12,14 +12,46 @@ export function PreviewPanel() {
   const { activeProjectId, deployStatus } = useWorkspaceStore();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchDomainUrl = useCallback(async () => {
+    if (!token || !activeProjectId) return;
+    setIsLoading(true);
+    setError(null);
+    try {
+      // Prefer project's primary_url if set
+      const project = await projectsApi.get(token, activeProjectId);
+      if (project.primary_url) {
+        setPreviewUrl(project.primary_url);
+        return;
+      }
+
+      // Fall back to domain with is_primary, then first domain
+      const domains = await domainsApi.list(token, { project_id: activeProjectId });
+      const primary = domains.find((d: any) => d.is_primary) || domains[0];
+      if (primary) {
+        setPreviewUrl(`https://${primary.domain_name}`);
+      } else {
+        setPreviewUrl(null);
+      }
+    } catch (err) {
+      console.error("Preview: failed to fetch domain URL:", err);
+      setError(err instanceof Error ? err.message : "Failed to load preview URL");
+      setPreviewUrl(null);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [token, activeProjectId]);
 
   // Fetch domain URL for the project
   useEffect(() => {
     if (token && activeProjectId) {
       fetchDomainUrl();
+    } else {
+      setIsLoading(false);
     }
-  }, [token, activeProjectId]);
+  }, [token, activeProjectId, fetchDomainUrl]);
 
   // Auto-refresh after deploy
   useEffect(() => {
@@ -32,33 +64,34 @@ export function PreviewPanel() {
     }
   }, [deployStatus]);
 
-  const fetchDomainUrl = async () => {
-    if (!token) return;
-    try {
-      const domains = await domainsApi.list(token, { project_id: activeProjectId! });
-      const primary = domains.find((d: any) => d.is_primary) || domains[0];
-      if (primary) {
-        setPreviewUrl(`https://${primary.domain_name}`);
-      } else {
-        setPreviewUrl(null);
-      }
-    } catch {
-      setPreviewUrl(null);
-    }
-  };
-
   const handleRefresh = () => {
     setRefreshKey((k) => k + 1);
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-2">
+        <RefreshCw className="h-6 w-6 text-muted-foreground animate-spin" />
+        <p className="text-sm text-muted-foreground">Loading preview...</p>
+      </div>
+    );
+  }
 
   if (!previewUrl) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-2">
         <Globe className="h-8 w-8 text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">No domain configured</p>
-        <p className="text-xs text-muted-foreground text-center px-4">
-          Link a domain to this project to see a live preview
+        <p className="text-sm text-muted-foreground">
+          {error ? "Failed to load preview" : "No domain configured"}
         </p>
+        <p className="text-xs text-muted-foreground text-center px-4">
+          {error || "Link a domain to this project to see a live preview"}
+        </p>
+        {error && (
+          <Button variant="ghost" size="sm" onClick={fetchDomainUrl}>
+            Retry
+          </Button>
+        )}
       </div>
     );
   }

@@ -293,6 +293,8 @@ export interface Project {
   name: string;
   description: string | null;
   agent_context: string | null;
+  root_path: string | null;
+  primary_url: string | null;
   status: 'active' | 'archived' | 'completed';
   color: string | null;
   icon: string | null;
@@ -336,7 +338,7 @@ export const projectsApi = {
     return handleResponse<ProjectWithStats>(response);
   },
 
-  async create(token: string, data: { name: string; description?: string; agent_context?: string; color?: string; icon?: string }) {
+  async create(token: string, data: { name: string; description?: string; agent_context?: string; root_path?: string; primary_url?: string; color?: string; icon?: string }) {
     const response = await fetch(`${API_BASE_URL}/api/projects`, {
       method: 'POST',
       headers: getHeaders(token),
@@ -345,7 +347,7 @@ export const projectsApi = {
     return handleResponse<Project>(response);
   },
 
-  async update(token: string, id: string, data: { name?: string; description?: string; agent_context?: string; status?: string; color?: string; icon?: string }) {
+  async update(token: string, id: string, data: { name?: string; description?: string; agent_context?: string; root_path?: string; primary_url?: string; status?: string; color?: string; icon?: string }) {
     const response = await fetch(`${API_BASE_URL}/api/projects/${id}`, {
       method: 'PATCH',
       headers: getHeaders(token),
@@ -646,6 +648,33 @@ export const memoryApi = {
     });
     return handleResponse<{ message: string; id: string }>(response);
   },
+
+  async synthesize(token: string, data: {
+    content: string;
+    project_id?: string;
+    domain_id?: string;
+    conversation_id?: string;
+    verify?: boolean;
+  }) {
+    const response = await fetch(`${API_BASE_URL}/api/memory/synthesize`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{
+      proposals: Array<{
+        action: "create" | "update" | "delete";
+        content: string | null;
+        category?: string;
+        confidence: number;
+        verified: boolean;
+        scope: string;
+        evidence?: string;
+        reason?: string;
+        related_existing?: { id: string; content: string; similarity: number } | null;
+      }>;
+    }>(response);
+  },
 };
 
 // Domain Types
@@ -752,6 +781,19 @@ export const healthApi = {
   },
 };
 
+// System AI Config Types
+export interface SystemAIConfig {
+  router_enabled: boolean;
+  router_up_threshold: number;
+  router_down_threshold: number;
+  router_latency_budget_ms: number;
+  router_type: string;
+  aider_enabled: boolean;
+  aider_default_model: string;
+  aider_edit_format: string;
+  aider_map_tokens: number;
+}
+
 // Settings API
 export const settingsApi = {
   async updateProfile(token: string, data: { display_name?: string }) {
@@ -826,6 +868,23 @@ export const settingsApi = {
     const response = await fetch(`${API_BASE_URL}/api/settings/api-keys/${id}`, {
       method: 'DELETE',
       headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async getSystemAI(token: string) {
+    const response = await fetch(`${API_BASE_URL}/api/settings/system/ai`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<SystemAIConfig>(response);
+  },
+
+  async updateSystemAI(token: string, data: SystemAIConfig) {
+    const response = await fetch(`${API_BASE_URL}/api/settings/system/ai`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
     });
     return handleResponse<{ message: string }>(response);
   },

@@ -9,6 +9,7 @@ dependencies = [
     "ai-messaging",
     "ai-memory",
     "pydantic>=2.5.0",
+    "aider-chat>=0.70.0",
 ]
 
 [project.optional-dependencies]

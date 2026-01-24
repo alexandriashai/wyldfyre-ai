@@ -25,7 +25,7 @@ interface PlanStep {
 }
 
 interface ChatMessage {
-  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress";
+  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "plan_status" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress";
   title?: string;
   conversation_id?: string;
   message_id?: string;
@@ -58,6 +58,21 @@ interface ChatMessage {
 }
 
 export type ConnectionState = "connected" | "connecting" | "disconnected" | "reconnecting";
+
+type PlanStatus = "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null;
+
+/** Normalize plan_status from backend (may be lowercase) to uppercase for frontend */
+function normalizePlanStatus(status?: string | null): PlanStatus {
+  if (!status) return null;
+  const upper = status.toUpperCase();
+  if (["DRAFT", "PENDING", "APPROVED", "REJECTED", "COMPLETED"].includes(upper)) {
+    return upper as PlanStatus;
+  }
+  // Map backend execution states to frontend equivalents
+  if (upper === "EXECUTING" || upper === "PAUSED") return "APPROVED";
+  if (upper === "EXPLORING" || upper === "DRAFTING") return "DRAFT";
+  return "DRAFT";
+}
 
 export function useChat() {
   const socketRef = useRef<WebSocket | null>(null);
@@ -196,7 +211,7 @@ export function useChat() {
             } else {
               updatePlan(
                 data.plan_content,
-                data.plan_status as "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null
+                normalizePlanStatus(data.plan_status)
               );
             }
           }
@@ -222,9 +237,23 @@ export function useChat() {
           if (data.plan_content !== undefined) {
             updatePlan(
               data.plan_content,
-              data.plan_status as "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null
+              normalizePlanStatus(data.plan_status)
             );
             setIsSending(false);
+          }
+          break;
+
+        case "plan_status":
+          if (data.plan_status) {
+            const normalized = normalizePlanStatus(data.plan_status);
+            if (normalized === "COMPLETED") {
+              useChatStore.getState().clearPlan();
+            } else {
+              const currentPlan = useChatStore.getState().currentPlan;
+              if (currentPlan) {
+                updatePlan(currentPlan, normalized);
+              }
+            }
           }
           break;
 

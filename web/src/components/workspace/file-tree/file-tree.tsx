@@ -145,7 +145,9 @@ function FileTreeNode({ node, onFileOpen, onRefresh, depth }: FileTreeNodeProps)
 
   return (
     <div>
-      <DropdownMenu open={contextMenuOpen} onOpenChange={setContextMenuOpen}>
+      <DropdownMenu open={contextMenuOpen} onOpenChange={(open) => {
+        if (!open) setContextMenuOpen(false);
+      }}>
         <DropdownMenuTrigger asChild>
           <div
             className={cn(

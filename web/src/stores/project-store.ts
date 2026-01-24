@@ -11,8 +11,8 @@ interface ProjectState {
   // Actions
   fetchProjects: (token: string) => Promise<void>;
   selectProject: (project: Project | null) => void;
-  createProject: (token: string, data: { name: string; description?: string; agent_context?: string; color?: string; icon?: string }) => Promise<Project>;
-  updateProject: (token: string, id: string, data: { name?: string; description?: string; agent_context?: string; status?: string; color?: string; icon?: string }) => Promise<void>;
+  createProject: (token: string, data: { name: string; description?: string; agent_context?: string; root_path?: string; primary_url?: string; color?: string; icon?: string }) => Promise<Project>;
+  updateProject: (token: string, id: string, data: { name?: string; description?: string; agent_context?: string; root_path?: string; primary_url?: string; status?: string; color?: string; icon?: string }) => Promise<void>;
   deleteProject: (token: string, id: string, archive?: boolean) => Promise<void>;
   getProjectById: (id: string) => Project | undefined;
   clearSelection: () => void;

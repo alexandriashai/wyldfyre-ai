@@ -6,12 +6,9 @@ Auto-provisions domains on creation (DNS, Nginx, SSL) without LLM agent.
 """
 
 import asyncio
-import grp
 import os
-import pwd
 import socket
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -30,8 +27,8 @@ SSL_EMAIL = os.environ.get("SSL_EMAIL", "alexandria.shai.eden@gmail.com")
 WEB_ROOT_BASE = os.environ.get("WEB_ROOT_BASE", "/home/wyld-web/static")
 
 # Nginx / SSL paths for direct provisioning
-NGINX_SITES_AVAILABLE = Path(os.environ.get("NGINX_SITES_AVAILABLE", "/etc/nginx/sites-available"))
-NGINX_SITES_ENABLED = Path(os.environ.get("NGINX_SITES_ENABLED", "/etc/nginx/sites-enabled"))
+NGINX_SITES_AVAILABLE = "/etc/nginx/sites-available"
+NGINX_SITES_ENABLED = "/etc/nginx/sites-enabled"
 CERTBOT_PATH = os.environ.get("CERTBOT_PATH", "certbot")
 WEB_USER = os.environ.get("WEB_USER", "www-data")
 WEB_GROUP = os.environ.get("WEB_GROUP", "www-data")
@@ -451,30 +448,34 @@ class DomainService:
 
     async def _provision_nginx(self, domain_name: str, domain: Any) -> None:
         """Create web root directory, nginx config, enable site, and reload."""
-        web_root = Path(domain.web_root or f"{WEB_ROOT_BASE}/{domain_name}")
+        web_root = domain.web_root or f"{WEB_ROOT_BASE}/{domain_name}"
         site_type = "proxy" if domain.proxy_target else "static"
 
-        # Step 1: Create web root directory
-        web_root.mkdir(parents=True, exist_ok=True)
-        try:
-            uid = pwd.getpwnam(WEB_USER).pw_uid
-            gid = grp.getgrnam(WEB_GROUP).gr_gid
-            os.chown(web_root, uid, gid)
-        except KeyError:
-            logger.warning("Could not set web root ownership", user=WEB_USER, group=WEB_GROUP)
-        os.chmod(web_root, 0o755)
-
-        # Create default index.html for static sites
+        # Step 1: Create web root directory (via host command for proper permissions)
+        webroot_cmd = (
+            f"mkdir -p {web_root} && "
+            f"chown {WEB_USER}:{WEB_GROUP} {web_root} && "
+            f"chmod 755 {web_root}"
+        )
         if site_type == "static":
-            index_path = web_root / "index.html"
-            if not index_path.exists():
-                index_path.write_text(
-                    f"<!DOCTYPE html><html><head><title>{domain_name}</title></head>"
-                    f"<body><h1>{domain_name}</h1><p>Site provisioned successfully.</p></body></html>\n"
-                )
+            # Also create a default index.html if none exists
+            default_html = (
+                f"<!DOCTYPE html><html><head><title>{domain_name}</title></head>"
+                f"<body><h1>{domain_name}</h1><p>Site provisioned successfully.</p></body></html>"
+            )
+            escaped_html = default_html.replace("'", "'\\''")
+            webroot_cmd += (
+                f" && [ ! -f {web_root}/index.html ] && "
+                f"printf '%s' '{escaped_html}' > {web_root}/index.html && "
+                f"chown {WEB_USER}:{WEB_GROUP} {web_root}/index.html && "
+                f"chmod 644 {web_root}/index.html || true"
+            )
 
-        # Step 2: Write nginx config
-        nginx_config = NGINX_SITES_AVAILABLE / domain_name
+        code, _, stderr = await self._run_command(["bash", "-c", webroot_cmd])
+        if code != 0:
+            logger.warning("Web root setup had issues", domain=domain_name, error=stderr)
+
+        # Step 2: Build nginx config content
         if site_type == "static":
             config_content = (
                 f"server {{\n"
@@ -511,28 +512,29 @@ class DomainService:
                 f"    error_log /var/log/nginx/{domain_name}.error.log;\n"
                 f"}}\n"
             )
-        nginx_config.write_text(config_content)
 
-        # Step 3: Enable site (symlink)
-        nginx_enabled = NGINX_SITES_ENABLED / domain_name
-        if not nginx_enabled.exists():
-            nginx_enabled.symlink_to(nginx_config)
-
-        # Step 4: Test and reload nginx
-        code, _, stderr = await self._run_command(["nginx", "-t"])
+        # Steps 2-4: Write config, enable site, test and reload (via host supervisor)
+        nginx_available = f"/etc/nginx/sites-available/{domain_name}.conf"
+        nginx_enabled = f"/etc/nginx/sites-enabled/{domain_name}.conf"
+        escaped_config = config_content.replace("'", "'\\''")
+        provision_cmd = (
+            f"printf '%s' '{escaped_config}' > {nginx_available} && "
+            f"ln -sf {nginx_available} {nginx_enabled} && "
+            f"nginx -t && nginx -s reload"
+        )
+        code, _, stderr = await self._run_command(["bash", "-c", provision_cmd])
         if code != 0:
-            raise RuntimeError(f"Nginx config test failed: {stderr}")
-        await self._run_command(["nginx", "-s", "reload"])
+            raise RuntimeError(f"Nginx provisioning failed: {stderr}")
 
         logger.info("Nginx provisioned", domain=domain_name, site_type=site_type)
 
     async def _request_ssl_certificate(self, domain_name: str, domain: Any) -> None:
         """Request SSL certificate via certbot."""
-        web_root = Path(domain.web_root or f"{WEB_ROOT_BASE}/{domain_name}")
+        web_root = domain.web_root or f"{WEB_ROOT_BASE}/{domain_name}"
 
         ssl_args = [
             CERTBOT_PATH, "certonly",
-            "--webroot", "-w", str(web_root),
+            "--webroot", "-w", web_root,
             "-d", domain_name,
             "--email", SSL_EMAIL,
             "--agree-tos", "--non-interactive",
@@ -542,33 +544,57 @@ class DomainService:
         if code != 0:
             raise RuntimeError(f"SSL certificate request failed: {stderr or stdout}")
 
-        # Update nginx config with SSL
-        nginx_config = NGINX_SITES_AVAILABLE / domain_name
+        # Update nginx config with SSL (via host command since /etc/nginx is read-only)
+        nginx_path = f"/etc/nginx/sites-available/{domain_name}.conf"
+
+        if domain.proxy_target:
+            location_block = (
+                f"    location / {{\n"
+                f"        proxy_pass {domain.proxy_target};\n"
+                f"        proxy_http_version 1.1;\n"
+                f"        proxy_set_header Upgrade $http_upgrade;\n"
+                f"        proxy_set_header Connection 'upgrade';\n"
+                f"        proxy_set_header Host $host;\n"
+                f"        proxy_set_header X-Real-IP $remote_addr;\n"
+                f"        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+                f"        proxy_set_header X-Forwarded-Proto $scheme;\n"
+                f"        proxy_read_timeout 86400;\n"
+                f"    }}\n"
+            )
+        else:
+            location_block = (
+                f"    root {web_root};\n"
+                f"    index index.html index.htm;\n\n"
+                f"    location / {{\n"
+                f"        try_files $uri $uri/ =404;\n"
+                f"    }}\n"
+            )
+
         ssl_config = (
             f"server {{\n"
             f"    listen 80;\n"
             f"    listen [::]:80;\n"
-            f"    server_name {domain_name};\n"
-            f"    return 301 https://$server_name$request_uri;\n"
-            f"}}\n\n"
-            f"server {{\n"
-            f"    listen 443 ssl http2;\n"
-            f"    listen [::]:443 ssl http2;\n"
+            f"    listen 443 ssl;\n"
+            f"    listen [::]:443 ssl;\n"
             f"    server_name {domain_name};\n\n"
             f"    ssl_certificate /etc/letsencrypt/live/{domain_name}/fullchain.pem;\n"
             f"    ssl_certificate_key /etc/letsencrypt/live/{domain_name}/privkey.pem;\n"
             f"    ssl_protocols TLSv1.2 TLSv1.3;\n\n"
-            f"    root {web_root};\n"
-            f"    index index.html index.htm;\n\n"
-            f"    location / {{\n"
-            f"        try_files $uri $uri/ =404;\n"
-            f"    }}\n\n"
+            f"{location_block}\n"
             f"    access_log /var/log/nginx/{domain_name}.access.log;\n"
             f"    error_log /var/log/nginx/{domain_name}.error.log;\n"
             f"}}\n"
         )
-        nginx_config.write_text(ssl_config)
-        await self._run_command(["nginx", "-s", "reload"])
+
+        escaped_config = ssl_config.replace("'", "'\\''")
+        ssl_nginx_cmd = (
+            f"printf '%s' '{escaped_config}' > {nginx_path} && "
+            f"nginx -t && nginx -s reload"
+        )
+        code, _, stderr = await self._run_command(["bash", "-c", ssl_nginx_cmd])
+        if code != 0:
+            logger.error("Failed to update nginx with SSL config", domain=domain_name, error=stderr)
+            raise RuntimeError(f"SSL nginx config update failed: {stderr}")
 
         logger.info("SSL certificate provisioned", domain=domain_name)
 
@@ -607,14 +633,72 @@ class DomainService:
         return {}
 
     async def _run_command(self, cmd: list[str]) -> tuple[int, str, str]:
-        """Run a subprocess command and return (returncode, stdout, stderr)."""
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate()
-        return (process.returncode or 0, stdout.decode().strip(), stderr.decode().strip())
+        """
+        Run a command on the HOST via the supervisor agent.
+
+        The API container cannot run nginx/certbot commands directly.
+        This delegates to the supervisor agent which runs on the host with root access.
+        Uses raw Redis pubsub for the response channel.
+        """
+        import json
+
+        command_str = " ".join(cmd)
+        command_id = str(uuid4())
+        response_channel = f"host_command:{command_id}:response"
+
+        try:
+            # Use raw Redis pubsub for subscribing to the response
+            ps = self.redis.client.pubsub()
+            await ps.subscribe(response_channel)
+
+            # Publish command to supervisor via raw Redis publish
+            task_payload = json.dumps({
+                "type": "task_request",
+                "task_type": "host_command",
+                "payload": {
+                    "command_id": command_id,
+                    "command": command_str,
+                },
+            })
+            await self.redis.client.publish("agent:supervisor:tasks", task_payload)
+
+            logger.info("Host command dispatched", command_id=command_id, command=command_str[:80])
+
+            # Wait for response (max 60s)
+            try:
+                response = await asyncio.wait_for(
+                    self._wait_for_host_response(ps, response_channel),
+                    timeout=60,
+                )
+                return (
+                    response.get("returncode", 1),
+                    response.get("stdout", ""),
+                    response.get("stderr", ""),
+                )
+            except asyncio.TimeoutError:
+                logger.error("Host command timed out", command=command_str)
+                return (1, "", "Host command timed out after 60s")
+            finally:
+                await ps.unsubscribe(response_channel)
+                await ps.close()
+
+        except Exception as e:
+            logger.error("Host command failed", command=command_str, error=str(e))
+            return (1, "", str(e))
+
+    async def _wait_for_host_response(self, ps, channel: str) -> dict:
+        """Wait for a response message on the raw Redis pubsub channel."""
+        import json
+
+        while True:
+            message = await ps.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if message is not None:
+                if message.get("type") == "message":
+                    data = message.get("data", b"{}")
+                    if isinstance(data, bytes):
+                        data = data.decode("utf-8")
+                    return json.loads(data)
+            await asyncio.sleep(0.1)
 
     async def _wait_for_provision_complete(
         self, task_id: str, domain_name: str, timeout: int = 600
