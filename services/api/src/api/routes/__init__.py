@@ -9,6 +9,7 @@ from .conversations import router as conversations_router
 from .domains import router as domains_router
 from .files import router as files_router
 from .grafana_proxy import router as grafana_router
+from .integrations import router as integrations_router
 from .health import router as health_router
 from .memory import router as memory_router
 from .notifications import router as notifications_router
@@ -27,6 +28,7 @@ __all__ = [
     "files_router",
     "grafana_router",
     "health_router",
+    "integrations_router",
     "memory_router",
     "notifications_router",
     "projects_router",

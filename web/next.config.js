@@ -23,6 +23,9 @@ const nextConfig = {
     NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000',
   },
 
+  // Transpile GrapesJS for standalone build
+  transpilePackages: ['grapesjs'],
+
   // Image domains for Next.js Image component
   images: {
     domains: ['localhost'],

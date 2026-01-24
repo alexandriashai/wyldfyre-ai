@@ -58,7 +58,7 @@ interface WorkspaceState {
   activeFilePath: string | null;
 
   // Panels
-  rightPanelMode: 'preview' | 'chat';
+  rightPanelMode: 'preview' | 'chat' | 'design';
   panelSizes: number[];
   isFileTreeCollapsed: boolean;
 
@@ -98,7 +98,7 @@ interface WorkspaceState {
   setActiveFile: (path: string | null) => void;
   updateFileContent: (path: string, content: string) => void;
   markFileSaved: (path: string) => void;
-  setRightPanelMode: (mode: 'preview' | 'chat') => void;
+  setRightPanelMode: (mode: 'preview' | 'chat' | 'design') => void;
   setPanelSizes: (sizes: number[]) => void;
   setFileTreeCollapsed: (collapsed: boolean) => void;
   setMobileActiveTab: (tab: 'files' | 'editor' | 'preview' | 'chat') => void;

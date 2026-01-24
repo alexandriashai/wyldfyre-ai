@@ -133,6 +133,8 @@ class OpenAIProvider(BaseLLMProvider):
         stop_reason = "end_turn"
         if choice.finish_reason == "tool_calls":
             stop_reason = "tool_use"
+        elif choice.finish_reason == "length":
+            stop_reason = "max_tokens"
 
         input_tokens = response.usage.prompt_tokens if response.usage else 0
         output_tokens = response.usage.completion_tokens if response.usage else 0

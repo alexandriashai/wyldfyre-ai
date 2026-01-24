@@ -112,7 +112,7 @@ async def notify_user(
                 "type": "string",
                 "description": "Description of what help is needed",
             },
-            "context": {
+            "task_context": {
                 "type": "object",
                 "description": "Additional context to pass to the target agent",
             },
@@ -129,7 +129,7 @@ async def notify_user(
 async def request_agent_help(
     target_agent: str,
     task_description: str,
-    context: dict[str, Any] | None = None,
+    task_context: dict[str, Any] | None = None,
     priority: str = "normal",
 ) -> ToolResult:
     """Request help from another agent."""
@@ -147,7 +147,7 @@ async def request_agent_help(
                 "payload": {
                     "target_agent": target_agent,
                     "task_description": task_description,
-                    "context": context or {},
+                    "context": task_context or {},
                     "requesting_agent": "unknown",  # Will be filled by caller
                 },
                 "priority": priority_map.get(priority, 5),

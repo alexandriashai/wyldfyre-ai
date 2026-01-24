@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useAuthStore } from "@/stores/auth-store";
+import { useProjectStore } from "@/stores/project-store";
 import { domainsApi, projectsApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, ExternalLink, Globe } from "lucide-react";
@@ -10,6 +11,7 @@ import { RefreshCw, ExternalLink, Globe } from "lucide-react";
 export function PreviewPanel() {
   const { token } = useAuthStore();
   const { activeProjectId, deployStatus } = useWorkspaceStore();
+  const { projects } = useProjectStore();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -20,7 +22,15 @@ export function PreviewPanel() {
     setIsLoading(true);
     setError(null);
     try {
-      // Prefer project's primary_url if set
+      // Check project store first for immediate primary_url
+      const storeProject = projects.find((p) => p.id === activeProjectId);
+      if (storeProject?.primary_url) {
+        setPreviewUrl(storeProject.primary_url);
+        setIsLoading(false);
+        return;
+      }
+
+      // Fall back to API call for fresh data
       const project = await projectsApi.get(token, activeProjectId);
       if (project.primary_url) {
         setPreviewUrl(project.primary_url);
@@ -42,16 +52,17 @@ export function PreviewPanel() {
     } finally {
       setIsLoading(false);
     }
-  }, [token, activeProjectId]);
+  }, [token, activeProjectId, projects]);
 
   // Fetch domain URL for the project
   useEffect(() => {
     if (token && activeProjectId) {
       fetchDomainUrl();
-    } else {
-      setIsLoading(false);
+    } else if (!activeProjectId) {
+      // Don't show "no domain" if project hasn't loaded yet
+      setIsLoading(projects.length === 0);
     }
-  }, [token, activeProjectId, fetchDomainUrl]);
+  }, [token, activeProjectId, fetchDomainUrl, projects.length]);
 
   // Auto-refresh after deploy
   useEffect(() => {

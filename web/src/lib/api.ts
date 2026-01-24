@@ -4,7 +4,12 @@
  * Handles all API requests to the backend.
  */
 
+import { getToken, setToken, getRefreshToken, setRefreshToken, isTokenExpired, removeToken } from './auth';
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+// Token refresh state to prevent concurrent refresh attempts
+let refreshPromise: Promise<string | null> | null = null;
 
 export class ApiError extends Error {
   constructor(
@@ -52,6 +57,100 @@ function getHeaders(token?: string | null): HeadersInit {
   }
 
   return headers;
+}
+
+/**
+ * Attempt to refresh the access token using the refresh token.
+ * Returns the new access token or null if refresh fails.
+ */
+async function doTokenRefresh(): Promise<string | null> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return null;
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    setToken(data.access_token);
+    if (data.refresh_token) {
+      setRefreshToken(data.refresh_token);
+    }
+    return data.access_token;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get a valid token, refreshing if expired.
+ * Deduplicates concurrent refresh attempts.
+ */
+async function getValidToken(token?: string | null): Promise<string | null> {
+  const currentToken = token || getToken();
+  if (!currentToken) return null;
+
+  if (!isTokenExpired(currentToken)) {
+    return currentToken;
+  }
+
+  // Token expired — attempt refresh (deduplicated)
+  if (!refreshPromise) {
+    refreshPromise = doTokenRefresh().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
+/**
+ * Authenticated fetch wrapper that handles token refresh on 401.
+ */
+export async function authenticatedFetch(
+  url: string,
+  token?: string | null,
+  options: RequestInit = {}
+): Promise<Response> {
+  // Get a valid token (refresh if needed)
+  let validToken = await getValidToken(token);
+
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(validToken ? { Authorization: `Bearer ${validToken}` } : {}),
+      ...(options.headers || {}),
+    },
+  });
+
+  // If 401, try refreshing and retry once
+  if (response.status === 401 && validToken) {
+    refreshPromise = null; // Clear any stale promise
+    const newToken = await doTokenRefresh();
+    if (newToken) {
+      // Retry with new token
+      return fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${newToken}`,
+          ...(options.headers || {}),
+        },
+      });
+    }
+    // Refresh failed — clear auth and redirect to login
+    removeToken();
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login';
+    }
+  }
+
+  return response;
 }
 
 // Authentication API
@@ -1289,5 +1388,189 @@ export const usageApi = {
       page: number;
       page_size: number;
     }>(response);
+  },
+};
+
+// Integration Types
+export interface Template {
+  id: string;
+  name: string;
+  category: string;
+  description: string | null;
+  html: string;
+  css: string | null;
+  js: string | null;
+  thumbnail_url: string | null;
+  tags: string[];
+  is_public: boolean;
+  created_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface GrapesJSBlock {
+  id: string;
+  label: string;
+  category: string;
+  content: string;
+  attributes?: Record<string, unknown>;
+}
+
+export interface IntegrationStatus {
+  name: string;
+  enabled: boolean;
+  healthy: boolean;
+  url: string | null;
+  version: string | null;
+  message: string | null;
+}
+
+export interface IntegrationsStatus {
+  grapesjs: IntegrationStatus;
+  nocobase: IntegrationStatus;
+  webstudio: IntegrationStatus;
+  mobirise: IntegrationStatus;
+}
+
+// Integrations API
+export const integrationsApi = {
+  // Template Library
+  async listTemplates(token: string, params?: { category?: string; search?: string; tag?: string; page?: number }) {
+    const searchParams = new URLSearchParams();
+    if (params?.category) searchParams.set('category', params.category);
+    if (params?.search) searchParams.set('search', params.search);
+    if (params?.tag) searchParams.set('tag', params.tag);
+    if (params?.page) searchParams.set('page', params.page.toString());
+
+    const url = `${API_BASE_URL}/api/integrations/templates${searchParams.toString() ? `?${searchParams}` : ''}`;
+    const response = await fetch(url, { headers: getHeaders(token) });
+    return handleResponse<{ templates: Template[]; total: number; page: number; per_page: number }>(response);
+  },
+
+  async getTemplate(token: string, templateId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/integrations/templates/${templateId}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<Template>(response);
+  },
+
+  async createTemplate(token: string, data: {
+    name: string;
+    category?: string;
+    description?: string;
+    html: string;
+    css?: string;
+    js?: string;
+    tags?: string[];
+    is_public?: boolean;
+  }) {
+    const response = await fetch(`${API_BASE_URL}/api/integrations/templates`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<Template>(response);
+  },
+
+  async updateTemplate(token: string, templateId: string, data: Partial<{
+    name: string;
+    category: string;
+    description: string;
+    html: string;
+    css: string;
+    tags: string[];
+    is_public: boolean;
+  }>) {
+    const response = await fetch(`${API_BASE_URL}/api/integrations/templates/${templateId}`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<Template>(response);
+  },
+
+  async deleteTemplate(token: string, templateId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/integrations/templates/${templateId}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async getGrapesJSBlocks(token: string, category?: string) {
+    const searchParams = new URLSearchParams();
+    if (category) searchParams.set('category', category);
+
+    const url = `${API_BASE_URL}/api/integrations/templates/blocks/grapesjs${searchParams.toString() ? `?${searchParams}` : ''}`;
+    const response = await fetch(url, { headers: getHeaders(token) });
+    return handleResponse<{ blocks: GrapesJSBlock[] }>(response);
+  },
+
+  // NocoBase
+  async createNocoBaseCollection(token: string, data: {
+    name: string;
+    title?: string;
+    fields: Array<{ name: string; type: string; title?: string; required?: boolean; unique?: boolean }>;
+  }) {
+    const response = await fetch(`${API_BASE_URL}/api/integrations/nocobase/collections`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{ name: string; title: string | null; fields: unknown[]; created_at: string | null }>(response);
+  },
+
+  async nocobaseProxy(token: string, method: string, path: string, body?: Record<string, unknown>, params?: Record<string, string>) {
+    const response = await fetch(`${API_BASE_URL}/api/integrations/nocobase/proxy`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ method, path, body, params }),
+    });
+    return handleResponse<{ status_code: number; data: unknown; error: string | null }>(response);
+  },
+
+  // Webstudio
+  async webstudioExport(token: string, projectId: string, data: {
+    project_url: string;
+    output_format?: string;
+    output_path?: string;
+  }) {
+    const response = await fetch(`${API_BASE_URL}/api/integrations/projects/${projectId}/webstudio/export`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{ status: string; output_path: string | null; files_created: number; message: string | null }>(response);
+  },
+
+  async webstudioBuild(token: string, projectId: string, projectPath?: string) {
+    const response = await fetch(`${API_BASE_URL}/api/integrations/projects/${projectId}/webstudio/build`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ project_path: projectPath }),
+    });
+    return handleResponse<{ status: string; build_path: string | null; message: string | null }>(response);
+  },
+
+  // Mobirise
+  async mobiriseImport(token: string, projectId: string, data: {
+    source_path: string;
+    target_path?: string;
+    import_assets?: boolean;
+  }) {
+    const response = await fetch(`${API_BASE_URL}/api/integrations/projects/${projectId}/mobirise/import`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{ status: string; files_imported: number; html_files: string[]; asset_files: string[]; message: string | null }>(response);
+  },
+
+  // Status
+  async getStatus(token: string) {
+    const response = await fetch(`${API_BASE_URL}/api/integrations/status`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<IntegrationsStatus>(response);
   },
 };

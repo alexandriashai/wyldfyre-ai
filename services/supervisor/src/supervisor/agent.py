@@ -357,27 +357,23 @@ Your primary role is to be the user's conversational AI assistant. You should:
 5. ALWAYS search your memory for relevant learnings before answering infrastructure questions
 
 CRITICAL: NEVER make assumptions about the system architecture or infrastructure. If you're unsure:
-1. First, use `search_learnings` to check if you've learned about this before
+1. First, use `search_memory` to check if you've learned about this before
 2. If no relevant learnings, delegate to INFRA to check the actual state
 3. Only state facts that you have verified or that the user has confirmed
 
 The user (Wyld) is an experienced developer. Don't assume you know their infrastructure better than they do.
 
 ## Memory System (PAI)
-You have access to a persistent memory system with 3 tiers:
-- HOT (Redis): Real-time task traces, 24-hour retention
-- WARM (Qdrant): Searchable learnings, 30-day retention - USE THIS FOR IMPORTANT INSIGHTS
-- COLD (File): Historical archive, 365-day retention
+You have access to a persistent memory system powered by Qdrant vector search.
+Store important learnings and retrieve them later via semantic similarity search.
 
 Use these memory tools:
-- `store_learning`: Save an insight to the WARM tier (searchable vector store)
-- `search_learnings`: Find relevant past learnings by semantic search
-- `store_task_trace`: Track task execution in the HOT tier
-- `get_task_traces`: Retrieve task traces
-- `promote_learnings`: Move task traces to searchable learnings
-- `list_cold_learnings`: View archived historical learnings
+- `store_memory`: Save a learning/insight to the vector store. Include category, tags, and appropriate scope (GLOBAL/PROJECT/DOMAIN).
+- `search_memory`: Find relevant past learnings by semantic similarity search. Use project_id/domain_id to scope results.
+- `list_memory_collections`: List available memory collections.
+- `get_memory_stats`: Get statistics about stored memories.
 
-IMPORTANT: When you or your agents discover something important about the system, infrastructure, or user preferences, use `store_learning` to remember it!
+IMPORTANT: When you or your agents discover something important about the system, infrastructure, or user preferences, use `store_memory` to remember it! Always search with `search_memory` before answering infrastructure questions.
 
 Available specialist agents (use for tasks AND fact-checking):
 - CODE: Git operations, file operations, code analysis, running tests
@@ -419,7 +415,7 @@ CRITICAL RULES - FOLLOW THESE EXACTLY:
 8. Your job is to EXECUTE tasks, not to explain why you can't. Find a way or delegate.
 9. NEVER make definitive claims about system state without verification. If the user corrects you, STORE that correction as a learning.
 10. When discussing infrastructure (nginx, directories, DNS, domains), VERIFY first by delegating to INFRA or searching learnings.
-11. If you're wrong about something, acknowledge it immediately and store the correct information using store_learning.
+11. If you're wrong about something, acknowledge it immediately and store the correct information using store_memory.
 
 BANNED PHRASES (never use these):
 - "hitting complexity limits"
@@ -466,8 +462,27 @@ class SupervisorAgent(BaseAgent):
         self._pending_responses: dict[str, asyncio.Future] = {}
 
     def get_system_prompt(self) -> str:
-        """Get the supervisor's system prompt."""
-        return SUPERVISOR_SYSTEM_PROMPT
+        """Get the supervisor's system prompt, with project context if available."""
+        base_prompt = SUPERVISOR_SYSTEM_PROMPT
+
+        # Append project context if we're handling a project-scoped task
+        project_ctx = getattr(self, "_current_project_context", None)
+        if project_ctx:
+            project_section = "\n\n## CURRENT PROJECT CONTEXT\n"
+            project_section += "You are currently working within a specific project. Use this context for all responses:\n"
+            if project_ctx.get("project_name"):
+                project_section += f"- Project Name: {project_ctx['project_name']}\n"
+            if project_ctx.get("root_path"):
+                project_section += f"- Project Root Path: {project_ctx['root_path']}\n"
+            if project_ctx.get("domain"):
+                project_section += f"- Domain: {project_ctx['domain']}\n"
+            if project_ctx.get("agent_context"):
+                project_section += f"- Additional Context: {project_ctx['agent_context']}\n"
+            project_section += "\nWhen the user refers to 'the site', 'the project', or asks you to edit/fix something, "
+            project_section += "use the root_path above as the working directory. Do NOT ask which site or project they mean."
+            base_prompt += project_section
+
+        return base_prompt
 
     def register_tools(self) -> None:
         """Register supervisor-specific tools."""
@@ -484,6 +499,106 @@ class SupervisorAgent(BaseAgent):
         self.register_tool(self._create_approve_elevation_tool())
         self.register_tool(self._create_deny_elevation_tool())
         self.register_tool(self._create_restart_agent_tool())
+
+    async def _recall_relevant_memories(
+        self,
+        task_description: str,
+        project_id: str | None = None,
+        domain_id: str | None = None,
+        categories: list[str] | None = None,
+        limit: int = 8,
+    ) -> str:
+        """
+        Search PAI memory for relevant past learnings to inform current work.
+
+        Searches across multiple dimensions:
+        - Task similarity (semantic search on description)
+        - Project-scoped learnings (architecture, conventions)
+        - Domain-scoped learnings (site preferences, configs)
+        - Global best practices
+
+        Returns formatted context string for injection into prompts.
+        """
+        if not self._memory:
+            return ""
+
+        all_learnings: list[dict] = []
+
+        try:
+            # Search 1: Direct task relevance
+            task_results = await self._memory.search_learnings(
+                query=task_description,
+                limit=limit,
+                agent_type="supervisor",
+                permission_level=4,
+                project_id=project_id,
+                domain_id=domain_id,
+            )
+            all_learnings.extend(task_results)
+
+            # Search 2: Category-specific learnings if provided
+            if categories:
+                for cat in categories[:3]:
+                    cat_results = await self._memory.search_learnings(
+                        query=task_description,
+                        category=cat,
+                        limit=3,
+                        agent_type="supervisor",
+                        permission_level=4,
+                        project_id=project_id,
+                        domain_id=domain_id,
+                    )
+                    for r in cat_results:
+                        if r not in all_learnings:
+                            all_learnings.append(r)
+
+            # Search 3: Error/failure learnings to avoid repeating mistakes
+            error_results = await self._memory.search_learnings(
+                query=f"error problem issue {task_description}",
+                category="error_pattern",
+                limit=3,
+                agent_type="supervisor",
+                permission_level=4,
+                project_id=project_id,
+                domain_id=domain_id,
+            )
+            for r in error_results:
+                if r not in all_learnings:
+                    all_learnings.append(r)
+
+        except Exception as e:
+            logger.warning("Memory recall failed", error=str(e))
+            return ""
+
+        if not all_learnings:
+            return ""
+
+        # Deduplicate by content similarity (exact match on first 100 chars)
+        seen_content: set[str] = set()
+        unique_learnings: list[dict] = []
+        for learning in all_learnings:
+            content_key = learning.get("content", "")[:100]
+            if content_key not in seen_content:
+                seen_content.add(content_key)
+                unique_learnings.append(learning)
+
+        # Format for prompt injection
+        memory_parts: list[str] = []
+        for i, learning in enumerate(unique_learnings[:limit], 1):
+            content = learning.get("content", "")
+            scope = learning.get("scope", "global")
+            category = learning.get("category", "general")
+            confidence = learning.get("confidence", 0.8)
+
+            # Truncate long learnings
+            if len(content) > 300:
+                content = content[:300] + "..."
+
+            scope_label = f"[{scope.upper()}]" if scope != "global" else ""
+            conf_label = "★" if confidence >= 0.9 else ""
+            memory_parts.append(f"{i}. {scope_label}{conf_label} ({category}) {content}")
+
+        return "\n\n## Past Learnings (from PAI Memory)\n" + "\n".join(memory_parts) + "\n\nApply these learnings to improve your work. Avoid past mistakes. Build on what worked before."
 
     def _create_route_task_tool(self) -> Tool:
         """Create the route_task tool."""
@@ -574,10 +689,22 @@ class SupervisorAgent(BaseAgent):
                 f"Delegating to {agent_display_name}"
             )
 
+            # Auto-inject project context into delegated payload
+            task_payload = payload or {}
+            project_ctx = getattr(supervisor, "_current_project_context", None)
+            if project_ctx:
+                # Only inject if not already set by the LLM
+                if "root_path" not in task_payload and project_ctx.get("root_path"):
+                    task_payload["root_path"] = project_ctx["root_path"]
+                if "project_name" not in task_payload and project_ctx.get("project_name"):
+                    task_payload["project_name"] = project_ctx["project_name"]
+                if "domain" not in task_payload and project_ctx.get("domain"):
+                    task_payload["domain"] = project_ctx["domain"]
+
             # Create task request
             request = TaskRequest(
                 task_type=task_type,
-                payload=payload or {},
+                payload=task_payload,
                 target_agent=target_agent,
                 correlation_id=context.get("task_id") if context else None,
             )
@@ -1114,16 +1241,31 @@ class SupervisorAgent(BaseAgent):
         if request.task_type == "host_command":
             return await self._handle_host_command(request)
 
-        # Otherwise use default processing
-        response = await super().process_task(request)
+        # Inject project context for project-scoped tasks
+        self._current_project_context = None
+        payload = request.payload or {}
+        if payload.get("root_path") or payload.get("project_name"):
+            self._current_project_context = {
+                "project_name": payload.get("project_name"),
+                "root_path": payload.get("root_path"),
+                "domain": payload.get("domain"),
+                "agent_context": payload.get("agent_context"),
+            }
 
-        # Auto-generate conversation title after first chat message
-        if request.task_type == "chat" and response.status == TaskStatus.COMPLETED:
-            conversation_id = request.payload.get("conversation_id")
-            if conversation_id:
-                await self._maybe_generate_title(request, conversation_id)
+        try:
+            # Use default processing (system prompt now includes project context)
+            response = await super().process_task(request)
 
-        return response
+            # Auto-generate conversation title after first chat message
+            if request.task_type == "chat" and response.status == TaskStatus.COMPLETED:
+                conversation_id = payload.get("conversation_id")
+                if conversation_id:
+                    await self._maybe_generate_title(request, conversation_id)
+
+            return response
+        finally:
+            # Clear project context after task completes
+            self._current_project_context = None
 
     async def _maybe_generate_title(self, request: TaskRequest, conversation_id: str) -> None:
         """
@@ -1249,9 +1391,24 @@ class SupervisorAgent(BaseAgent):
             await self.publish_action("exploring", f"Exploring {project_name or 'codebase'}...")
             exploration = await self._explore_for_plan(description, base_path=root_path)
 
+            # ========== MEMORY RECALL PHASE ==========
+            past_learnings = ""
+            if self._memory:
+                await self.publish_action("recalling", "Checking past learnings...")
+                past_learnings = await self._recall_relevant_memories(
+                    task_description=description,
+                    project_id=project_id,
+                    domain_id=project_name,  # Use project name as domain_id for site projects
+                    categories=["plan_creation", "plan_completion", "error_pattern", "file_pattern"],
+                )
+                if past_learnings:
+                    logger.info("Retrieved past learnings for plan", learnings_length=len(past_learnings))
+
             # ========== PLAN PHASE ==========
             await self.publish_action("planning", "Creating implementation plan...")
-            steps = await self._generate_plan_from_exploration(description, exploration, base_path=root_path)
+            steps = await self._generate_plan_from_exploration(
+                description, exploration, base_path=root_path, past_learnings=past_learnings
+            )
 
             # Update plan in Redis with steps
             plan_key = f"plan:{plan_id}"
@@ -1607,22 +1764,37 @@ class SupervisorAgent(BaseAgent):
             # Send completion message
             await self.publish_action("complete", f"Plan completed: {completed_steps}/{len(steps)} steps")
 
-            # Store completed plan in PAI memory (LEARN phase)
+            # ========== PAI PLAN COMPLETION FEEDBACK ==========
             if self._memory:
                 try:
                     from ai_memory import Learning, LearningScope, PAIPhase
 
                     plan_title = plan.get("title", plan.get("description", "Untitled plan"))
-                    step_summaries = []
-                    for s in steps:
-                        status_icon = "✓" if s.get("status") == "completed" else "✗"
-                        step_summaries.append(f"{status_icon} {s.get('title', 'Step')}")
 
+                    # Calculate plan quality score
+                    success_rate = completed_steps / max(len(steps), 1)
+                    plan_confidence = max(0.5, min(0.95, success_rate))
+
+                    step_summaries = []
+                    failed_steps = []
+                    for s in steps:
+                        status = s.get("status", "pending")
+                        title = s.get("title", "Step")
+                        if status == "completed":
+                            step_summaries.append(f"✓ {title}")
+                        else:
+                            step_summaries.append(f"✗ {title}")
+                            failed_steps.append(title)
+
+                    # Store plan outcome with quality grading
+                    feedback_type = "full_success" if success_rate == 1.0 else "partial_success" if success_rate > 0.5 else "mostly_failed"
                     learning_content = (
-                        f"Completed plan: {plan_title}\n"
-                        f"Steps ({completed_steps}/{len(steps)} completed):\n"
-                        + "\n".join(step_summaries)
+                        f"Plan '{plan_title}' completed ({feedback_type}). "
+                        f"{completed_steps}/{len(steps)} steps succeeded. "
+                        f"Steps: {', '.join(step_summaries)}"
                     )
+                    if failed_steps:
+                        learning_content += f" Failed: {', '.join(failed_steps)}."
 
                     learning = Learning(
                         content=learning_content,
@@ -1630,19 +1802,48 @@ class SupervisorAgent(BaseAgent):
                         category="plan_completion",
                         scope=LearningScope.PROJECT,
                         created_by_agent="supervisor",
+                        confidence=plan_confidence,
+                        project_id=self._state.current_project_id,
+                        domain_id=plan.get("project_name") or None,
                         metadata={
                             "plan_id": plan_id,
                             "plan_title": plan_title,
                             "steps_completed": completed_steps,
                             "steps_total": len(steps),
+                            "success_rate": success_rate,
+                            "feedback_type": feedback_type,
+                            "failed_steps": failed_steps,
                             "conversation_id": conversation_id,
                             "completed_at": plan["completed_at"],
                         },
                     )
                     await self._memory.store_learning(learning)
-                    logger.info("Plan stored in memory", plan_id=plan_id, phase="LEARN")
+
+                    # If plan had failures, store error pattern for future avoidance
+                    if failed_steps:
+                        error_learning = Learning(
+                            content=(
+                                f"Plan '{plan_title}' had {len(failed_steps)} failed steps: {', '.join(failed_steps)}. "
+                                f"Consider breaking these into smaller sub-tasks or providing more specific file instructions."
+                            ),
+                            phase=PAIPhase.LEARN,
+                            category="error_pattern",
+                            scope=LearningScope.PROJECT,
+                            created_by_agent="supervisor",
+                            confidence=0.85,
+                            project_id=self._state.current_project_id,
+                            domain_id=plan.get("project_name") or None,
+                            metadata={
+                                "plan_id": plan_id,
+                                "failed_steps": failed_steps,
+                                "feedback_type": "plan_failure_pattern",
+                            },
+                        )
+                        await self._memory.store_learning(error_learning)
+
+                    logger.info("Plan feedback stored in memory", plan_id=plan_id, confidence=plan_confidence)
                 except Exception as mem_err:
-                    logger.warning("Failed to store plan in memory", error=str(mem_err))
+                    logger.warning("Failed to store plan feedback in memory", error=str(mem_err))
 
             # Send final plan_update to clear plan panel
             if self._pubsub and user_id:
@@ -1816,6 +2017,106 @@ class SupervisorAgent(BaseAgent):
             if preloaded_parts:
                 preloaded_context = "\n\n## Current File Contents (already loaded for you):\n\n" + "\n\n".join(preloaded_parts)
 
+        # ========== PAI MEMORY PRE-LOAD ==========
+        # Search for relevant past learnings to inject into the step context
+        memory_context = ""
+        if self._memory:
+            try:
+                # Set context for store_insight tool handler
+                self._current_plan_title = plan.get("title", "")
+                self._current_domain_id = project_name or None
+
+                # Search for learnings relevant to this specific step
+                step_query = f"{step_title} {step_description} {plan.get('title', '')}"
+                memory_results = await self._memory.search_learnings(
+                    query=step_query,
+                    limit=5,
+                    agent_type="supervisor",
+                    permission_level=4,
+                    project_id=self._state.current_project_id,
+                    domain_id=project_name or None,
+                )
+
+                if memory_results:
+                    memory_parts = []
+                    for r in memory_results:
+                        content = r.get("content", "")[:200]
+                        scope = r.get("scope", "global")
+                        cat = r.get("category", "general")
+                        confidence = r.get("confidence", 0.8)
+                        marker = "★" if confidence >= 0.9 else "•"
+                        memory_parts.append(f"{marker} [{scope}/{cat}] {content}")
+
+                    memory_context = "\n\n## Past Learnings (Apply these to your work)\n" + "\n".join(memory_parts)
+                    logger.info("Injected memory context into step", step=step_title, learnings=len(memory_results))
+            except Exception as e:
+                logger.debug("Memory pre-load failed for step", error=str(e))
+
+        # Detect if this is a frontend/web task and inject design context
+        all_text = f"{step_title} {step_description} {plan.get('title', '')} {plan.get('description', '')}".lower()
+        all_files = " ".join(files).lower()
+        is_frontend_task = (
+            any(kw in all_text for kw in ["website", "bootstrap", "frontend", "html", "css", "redesign", "landing page", "web page", "responsive", "navbar", "hero"]) or
+            any(ext in all_files for ext in [".html", ".css", ".scss", ".js"])
+        )
+
+        frontend_context = ""
+        if is_frontend_task:
+            frontend_context = """
+
+## Frontend Design Standards (FOLLOW THESE)
+
+### Bootstrap 5 Integration
+- Use Bootstrap 5 via CDN in the `<head>`:
+  ```
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>
+  ```
+- Use Bootstrap's grid system: `container`, `row`, `col-*` classes
+- Use Bootstrap components: `navbar`, `card`, `btn`, `form-control`, etc.
+- Use utility classes: `mt-4`, `py-3`, `text-center`, `d-flex`, etc.
+
+### HTML Quality
+- Use semantic elements: `<header>`, `<nav>`, `<main>`, `<section>`, `<article>`, `<footer>`
+- Every page needs: proper `<!DOCTYPE html>`, `<meta charset="utf-8">`, `<meta name="viewport" ...>`
+- Logical heading hierarchy: h1 → h2 → h3 (one h1 per page)
+- All images need `alt` attributes; decorative images use `alt=""`
+- Links should have descriptive text (not "click here")
+
+### Modern CSS Patterns
+- Use CSS custom properties for theming: `:root { --primary: #6366f1; }`
+- Mobile-first responsive design with min-width media queries
+- Smooth transitions: `transition: all 0.2s ease-out;`
+- Card hover effects: `transform: translateY(-4px); box-shadow: 0 12px 24px rgba(0,0,0,0.1);`
+- Button hover: subtle scale `transform: scale(1.02);`
+- Gradient backgrounds: `background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);`
+- Use `clamp()` for fluid typography: `font-size: clamp(1rem, 2.5vw, 2rem);`
+
+### Responsive Design
+- Bootstrap breakpoints: sm(576px), md(768px), lg(992px), xl(1200px), xxl(1400px)
+- Navigation should collapse to hamburger toggler at mobile widths
+- Images use `img-fluid` class for responsive scaling
+- Stack columns on mobile, side-by-side on desktop: `col-12 col-md-6 col-lg-4`
+- No horizontal scroll on mobile — avoid fixed pixel widths
+
+### Accessibility Essentials
+- Color contrast: text should be ≥4.5:1 contrast ratio
+- All interactive elements reachable via keyboard (Tab)
+- Focus styles visible: `outline: 2px solid var(--primary); outline-offset: 2px;`
+- Skip-to-content link for keyboard users
+- `aria-label` on icon-only buttons; `aria-current="page"` on active nav items
+- Respect `prefers-reduced-motion`: wrap animations in `@media (prefers-reduced-motion: no-preference) { }`
+
+### Quality Patterns
+- Hero sections: full-width gradient bg + centered text + CTA button
+- Cards: consistent border-radius, subtle shadow, lift on hover
+- Forms: proper labels, inline validation, focus ring styling
+- Footer: dark background, organized link groups, muted copyright text
+- Loading states: skeleton shimmer animations
+- Consistent spacing: use Bootstrap's spacing scale (1-5)
+- Professional typography: system font stack or Google Fonts (Inter, Poppins)
+"""
+
         # Build the execution prompt
         file_context = f"\nTarget files: {', '.join(files)}" if files else ""
         project_info = f"\n**Project:** {project_name}" if project_name else ""
@@ -1849,7 +2150,7 @@ You are executing a plan step.{project_info}
 **Plan:** {plan.get('title', '')} - {plan.get('description', '')}
 **Step:** {step_title}
 **Description:** {step_description}
-**Agent Role:** {step_agent}{file_context}{todos_context}{changes_context}{preloaded_context}{custom_context}
+**Agent Role:** {step_agent}{file_context}{todos_context}{changes_context}{preloaded_context}{memory_context}{custom_context}{frontend_context}
 
 ## Instructions
 
@@ -1861,30 +2162,110 @@ You are executing a plan step.{project_info}
 6. If a file needs to be CREATED, use write_file with the full content
 7. If a file needs to be MODIFIED, use edit_file with old_text and new_text
 8. You MUST use write_file or edit_file at least once — searching alone is not acceptable
+9. Write COMPLETE, production-quality code — not placeholders or TODOs
+10. Use `recall_learning` if you need to remember how something was done before or what patterns to follow
+11. Use `store_insight` when you discover something important: a technique that works, a pattern to reuse, or a mistake to avoid
 
 Execute this step now. Make real file changes, not just descriptions."""
 
         messages = [{"role": "user", "content": prompt}]
         actions_taken = []
         files_modified = []
-        max_iterations = 15
+        max_iterations = 30
         nudge_sent = False
+
+        # Detect if this is a verify/review step (no write nudge needed)
+        step_lower = (step_title + " " + step_description).lower()
+        is_verify_step = any(kw in step_lower for kw in ["verify", "review", "check", "validate", "test", "inspect"])
+
+        # Build dynamic tools list — add plugin analysis tools for frontend tasks
+        step_tools = list(self.STEP_TOOLS)
+        if is_frontend_task:
+            step_tools.extend([
+                {
+                    "name": "check_accessibility",
+                    "description": "Run accessibility analysis on HTML/CSS code. Returns issues with severity levels and fix suggestions. Use this after writing HTML files to catch a11y problems.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "code": {"type": "string", "description": "HTML or component source code to analyze"},
+                        },
+                        "required": ["code"],
+                    },
+                },
+                {
+                    "name": "check_responsive_design",
+                    "description": "Review CSS for responsive design quality. Checks breakpoint coverage, mobile-first approach, fluid units, and modern patterns. Use after writing CSS.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "css": {"type": "string", "description": "CSS code to review"},
+                        },
+                        "required": ["css"],
+                    },
+                },
+                {
+                    "name": "get_animation_suggestions",
+                    "description": "Get CSS animation/transition suggestions for a component type. Returns ready-to-use CSS snippets.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "component_type": {"type": "string", "description": "Component type: button, card, modal, input, skeleton, navbar, hero"},
+                            "interaction": {"type": "string", "description": "Interaction type: hover, click, focus, enter, exit, loading"},
+                        },
+                        "required": ["component_type"],
+                    },
+                },
+            ])
+
+        # Always add memory tools — PAI should be available in every step
+        step_tools.extend([
+            {
+                "name": "recall_learning",
+                "description": "Search PAI memory for relevant past learnings. Use this when you need context about how something was done before, what patterns to follow, or what mistakes to avoid. Returns semantically similar past experiences.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "What to search for in past learnings (e.g., 'bootstrap navbar patterns', 'responsive grid layout', 'form validation approach')"},
+                        "category": {"type": "string", "description": "Optional category filter: plan_creation, plan_completion, error_pattern, file_pattern, quality_insight, user_preference"},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "store_insight",
+                "description": "Store a new learning/insight in PAI memory for future use. Use this when you discover something important: a pattern that works well, a mistake to avoid, a user preference, or a technique that produced good results.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "The learning/insight to remember (be specific and actionable)"},
+                        "category": {"type": "string", "description": "Category: file_pattern, quality_insight, error_pattern, technique, user_preference", "enum": ["file_pattern", "quality_insight", "error_pattern", "technique", "user_preference"]},
+                        "scope": {"type": "string", "description": "Scope: global (all projects), project (this project only), domain (this site only)", "enum": ["global", "project", "domain"], "default": "project"},
+                    },
+                    "required": ["content", "category"],
+                },
+            },
+        ])
+
+        # Track frontend files written this step for auto-analysis
+        frontend_files_written = []
 
         for iteration in range(max_iterations):
             # Check for task cancellation between iterations
             if self.is_task_cancelled():
                 return f"Step cancelled after {iteration} iterations. Actions: {'; '.join(actions_taken)}"
 
-            # Nudge: if after 5 iterations no write/edit has happened, remind the agent
-            if iteration == 5 and not files_modified and not nudge_sent:
+            # Nudge: if after 8 iterations no write/edit has happened, remind the agent
+            # Skip nudge for verify/review steps which are read-only by nature
+            if iteration == 8 and not files_modified and not nudge_sent and not is_verify_step:
                 nudge_sent = True
-                messages.append({"role": "user", "content": [{"type": "text", "text": "REMINDER: You have used 5 iterations without making any file changes. You MUST use write_file or edit_file NOW to make the required changes. Stop searching and start writing. If you cannot find the right files, create them."}]})
+                messages.append({"role": "user", "content": [{"type": "text", "text": "REMINDER: You have used 8 iterations without making any file changes. You MUST use write_file or edit_file NOW to make the required changes. Stop searching and start writing. If you cannot find the right files, create them."}]})
 
             response = await self._llm.create_message(
-                max_tokens=4096,
+                max_tokens=8192,
                 tier=ModelTier.BALANCED,
                 messages=messages,
-                tools=self.STEP_TOOLS,
+                tools=step_tools,
             )
 
             # Check if LLM wants to use tools
@@ -1895,15 +2276,45 @@ Execute this step now. Make real file changes, not just descriptions."""
                     tool_name = tool_call.name
                     tool_input = tool_call.arguments
 
+                    # Fire pre-tool plugin hook
+                    if self._plugin_integration:
+                        try:
+                            pre_ctx = await self._plugin_integration.trigger_hook(
+                                "pre_tool_use",
+                                {"tool_name": tool_name, "tool_args": tool_input, "agent_name": "wyld"},
+                            )
+                            # Check if hook blocked the tool
+                            if pre_ctx.get("blocked"):
+                                result = f"Tool blocked by plugin: {pre_ctx.get('reason', 'unknown')}"
+                                is_error = True
+                                tool_results.append({"type": "tool_result", "tool_use_id": tool_call.id, "content": result, "is_error": True})
+                                continue
+                        except Exception:
+                            pass
+
                     # Execute the tool
                     result, is_error = await self._run_step_tool(tool_name, tool_input, root_path)
                     actions_taken.append(f"{tool_name}({tool_input.get('path', tool_input.get('pattern', ''))[:50]})")
+
+                    # Fire post-tool plugin hook
+                    if self._plugin_integration:
+                        try:
+                            await self._plugin_integration.trigger_hook(
+                                "post_tool_use",
+                                {"tool_name": tool_name, "tool_args": tool_input, "result": result[:500], "agent_name": "wyld"},
+                            )
+                        except Exception:
+                            pass
 
                     # Track file modifications
                     if tool_name in ("write_file", "edit_file") and not is_error:
                         modified_path = tool_input.get("path", "")
                         if modified_path and modified_path not in files_modified:
                             files_modified.append(modified_path)
+                        # Track frontend files for auto-analysis
+                        if is_frontend_task and modified_path:
+                            if any(modified_path.endswith(ext) for ext in (".html", ".htm", ".css", ".scss")):
+                                frontend_files_written.append(modified_path)
 
                     # Publish action for real-time UI updates
                     action_label = {
@@ -1926,6 +2337,37 @@ Execute this step now. Make real file changes, not just descriptions."""
                         "is_error": is_error,
                     })
 
+                # Auto-run plugin analysis on frontend files that were just written
+                quality_feedback = ""
+                if is_frontend_task and frontend_files_written:
+                    try:
+                        from .plugins_bridge import run_accessibility_check, run_responsive_review
+                        feedback_parts = []
+                        for fpath in frontend_files_written[-2:]:  # Analyze last 2 files max
+                            file_content = await _read_file(fpath, max_lines=300)
+                            if not file_content:
+                                continue
+                            fname = Path(fpath).name
+                            if fpath.endswith((".html", ".htm")):
+                                a11y = run_accessibility_check(file_content)
+                                issues = a11y.get("issues", [])
+                                critical = [i for i in issues if i.get("severity") in ("critical", "high")]
+                                if critical:
+                                    issue_list = "; ".join([i.get("message", "") for i in critical[:3]])
+                                    feedback_parts.append(f"⚠️ {fname} accessibility: {issue_list}")
+                            elif fpath.endswith((".css", ".scss")):
+                                resp = run_responsive_review(file_content)
+                                findings = resp.get("findings", [])
+                                warnings = [f for f in findings if f.get("type") == "warning"]
+                                if warnings:
+                                    warn_list = "; ".join([f.get("message", "") for f in warnings[:2]])
+                                    feedback_parts.append(f"⚠️ {fname} responsive: {warn_list}")
+                        if feedback_parts:
+                            quality_feedback = "\n\n[QUALITY CHECK] " + " | ".join(feedback_parts) + "\nFix these issues in your next file writes."
+                    except Exception:
+                        pass  # Don't break execution if analysis fails
+                    frontend_files_written.clear()
+
                 # Add assistant response and tool results to messages
                 assistant_content = []
                 if response.text_content:
@@ -1938,31 +2380,108 @@ Execute this step now. Make real file changes, not just descriptions."""
                         "input": tc.arguments,
                     })
                 messages.append({"role": "assistant", "content": assistant_content})
+
+                # Append quality feedback to tool results if any
+                if quality_feedback:
+                    tool_results.append({"type": "text", "text": quality_feedback})
                 messages.append({"role": "user", "content": tool_results})
             else:
                 # LLM is done - extract final text response
                 final_text = response.text_content
 
-                # Store learning from this step execution
-                if self._memory and actions_taken:
+                # ========== PAI FEEDBACK LOOP ==========
+                # Store quality-graded learnings based on execution outcome
+                if self._memory:
                     try:
                         from ai_memory import Learning, LearningScope, PAIPhase
-                        learning = Learning(
-                            content=f"Plan step '{step_title}': {final_text[:200]}",
-                            phase=PAIPhase.EXECUTE,
-                            category="plan_execution",
-                            scope=LearningScope.PROJECT,
-                            created_by_agent="supervisor",
-                            metadata={
-                                "plan_title": plan.get("title", ""),
-                                "step_title": step_title,
-                                "actions": actions_taken[:10],
-                                "files_modified": files_modified,
-                            },
-                        )
-                        await self._memory.store_learning(learning)
+                        iterations_used = iteration + 1
+
+                        # === Quality scoring (higher = better execution) ===
+                        quality_score = 1.0
+                        if not files_modified:
+                            quality_score -= 0.3  # No file changes is concerning
+                        if iterations_used > 20:
+                            quality_score -= 0.2  # Took too many iterations
+                        elif iterations_used > 10:
+                            quality_score -= 0.1
+                        if nudge_sent:
+                            quality_score -= 0.1  # Needed a reminder to write
+
+                        # Confidence derived from quality
+                        confidence = max(0.5, min(0.95, 0.7 + (quality_score * 0.25)))
+
+                        # === Store execution outcome learning ===
+                        if files_modified:
+                            # SUCCESS PATTERN: Store what worked
+                            file_exts = list(set(Path(f).suffix for f in files_modified))
+                            learning = Learning(
+                                content=(
+                                    f"Successfully executed '{step_title}' for plan '{plan.get('title', '')}'. "
+                                    f"Modified {len(files_modified)} files ({', '.join(file_exts)}). "
+                                    f"Completed in {iterations_used} iterations. "
+                                    f"Approach: {final_text[:150]}"
+                                ),
+                                phase=PAIPhase.LEARN,
+                                category="technique",
+                                scope=LearningScope.PROJECT,
+                                created_by_agent="supervisor",
+                                confidence=confidence,
+                                project_id=self._state.current_project_id,
+                                domain_id=project_name or None,
+                                metadata={
+                                    "plan_title": plan.get("title", ""),
+                                    "step_title": step_title,
+                                    "files_modified": files_modified,
+                                    "file_extensions": file_exts,
+                                    "iterations_used": iterations_used,
+                                    "quality_score": quality_score,
+                                    "actions_count": len(actions_taken),
+                                    "feedback_type": "success",
+                                },
+                            )
+                            await self._memory.store_learning(learning)
+
+                            # === Store file-level patterns ===
+                            for fpath in files_modified[:3]:
+                                ext = Path(fpath).suffix
+                                fname = Path(fpath).name
+                                file_learning = Learning(
+                                    content=f"File pattern: {fname} ({ext}) in project '{project_name}'. Part of: {step_title}.",
+                                    phase=PAIPhase.LEARN,
+                                    category="file_pattern",
+                                    scope=LearningScope.PROJECT,
+                                    created_by_agent="supervisor",
+                                    confidence=confidence,
+                                    project_id=self._state.current_project_id,
+                                    domain_id=project_name or None,
+                                    metadata={"file_path": fpath, "step_title": step_title},
+                                )
+                                await self._memory.store_learning(file_learning)
+                        else:
+                            # NO-CHANGE PATTERN: Store as potential issue
+                            learning = Learning(
+                                content=(
+                                    f"Step '{step_title}' completed without file changes. "
+                                    f"This may indicate the step was verification-only or encountered issues. "
+                                    f"Actions attempted: {'; '.join(actions_taken[-3:])}"
+                                ),
+                                phase=PAIPhase.LEARN,
+                                category="quality_insight",
+                                scope=LearningScope.PROJECT,
+                                created_by_agent="supervisor",
+                                confidence=0.6,
+                                project_id=self._state.current_project_id,
+                                domain_id=project_name or None,
+                                metadata={
+                                    "step_title": step_title,
+                                    "iterations_used": iterations_used,
+                                    "feedback_type": "no_changes",
+                                },
+                            )
+                            await self._memory.store_learning(learning)
+
                     except Exception as e:
-                        logger.debug("Failed to store step learning", error=str(e))
+                        logger.debug("Failed to store step feedback", error=str(e))
 
                 # Build informative output
                 if files_modified:
@@ -1971,7 +2490,38 @@ Execute this step now. Make real file changes, not just descriptions."""
                 else:
                     return f"{final_text}\n\n⚠️ No files were modified in this step."
 
-        # Max iterations reached
+        # Max iterations reached — store as ERROR PATTERN for future avoidance
+        if self._memory:
+            try:
+                from ai_memory import Learning, LearningScope, PAIPhase
+                error_learning = Learning(
+                    content=(
+                        f"ERROR: Step '{step_title}' hit max iterations ({max_iterations}). "
+                        f"{'Files modified: ' + ', '.join(Path(f).name for f in files_modified) if files_modified else 'NO files modified'}. "
+                        f"Last actions: {'; '.join(actions_taken[-3:])}. "
+                        f"Plan: {plan.get('title', '')}. "
+                        f"This step may need to be broken into smaller sub-tasks or given more specific instructions."
+                    ),
+                    phase=PAIPhase.LEARN,
+                    category="error_pattern",
+                    scope=LearningScope.PROJECT,
+                    created_by_agent="supervisor",
+                    confidence=0.9,  # High confidence that this was a problem
+                    project_id=self._state.current_project_id,
+                    domain_id=project_name or None,
+                    metadata={
+                        "step_title": step_title,
+                        "plan_title": plan.get("title", ""),
+                        "max_iterations": max_iterations,
+                        "files_modified": files_modified,
+                        "actions_taken": actions_taken[-5:],
+                        "feedback_type": "max_iterations",
+                    },
+                )
+                await self._memory.store_learning(error_learning)
+            except Exception:
+                pass
+
         if files_modified:
             modified_list = ", ".join([Path(f).name for f in files_modified])
             return f"Step reached max iterations ({max_iterations}). Files modified: {modified_list}. Actions: {'; '.join(actions_taken[-5:])}"
@@ -2033,6 +2583,63 @@ Execute this step now. Make real file changes, not just descriptions."""
             elif tool_name == "list_directory":
                 result = await _list_directory(tool_input["path"])
                 return (result, False)
+            elif tool_name == "check_accessibility":
+                from .plugins_bridge import run_accessibility_check
+                result = run_accessibility_check(tool_input["code"])
+                return (json_mod.dumps(result, indent=2), False)
+            elif tool_name == "check_responsive_design":
+                from .plugins_bridge import run_responsive_review
+                result = run_responsive_review(tool_input["css"])
+                return (json_mod.dumps(result, indent=2), False)
+            elif tool_name == "get_animation_suggestions":
+                from .plugins_bridge import run_animation_suggestions
+                result = run_animation_suggestions(
+                    tool_input["component_type"],
+                    tool_input.get("interaction"),
+                )
+                return (json_mod.dumps(result, indent=2), False)
+            elif tool_name == "recall_learning":
+                # Search PAI memory for relevant past learnings
+                if self._memory:
+                    results = await self._memory.search_learnings(
+                        query=tool_input["query"],
+                        category=tool_input.get("category"),
+                        limit=5,
+                        agent_type="supervisor",
+                        permission_level=4,
+                        project_id=self._state.current_project_id,
+                        domain_id=getattr(self, "_current_domain_id", None),
+                    )
+                    if results:
+                        formatted = []
+                        for r in results:
+                            content = r.get("content", "")[:250]
+                            scope = r.get("scope", "global")
+                            cat = r.get("category", "general")
+                            conf = r.get("confidence", 0.8)
+                            formatted.append(f"[{scope}|{cat}|conf:{conf:.1f}] {content}")
+                        return ("\n\n".join(formatted), False)
+                    return ("No relevant past learnings found for this query.", False)
+                return ("Memory system not available.", False)
+            elif tool_name == "store_insight":
+                # Store a new learning in PAI memory
+                if self._memory:
+                    from ai_memory import Learning, LearningScope, PAIPhase
+                    scope_map = {"global": LearningScope.GLOBAL, "project": LearningScope.PROJECT, "domain": LearningScope.DOMAIN}
+                    learning = Learning(
+                        content=tool_input["content"],
+                        phase=PAIPhase.LEARN,
+                        category=tool_input["category"],
+                        scope=scope_map.get(tool_input.get("scope", "project"), LearningScope.PROJECT),
+                        created_by_agent="supervisor",
+                        confidence=0.85,
+                        project_id=self._state.current_project_id,
+                        domain_id=getattr(self, "_current_domain_id", None),
+                        metadata={"source": "step_execution", "plan_title": getattr(self, "_current_plan_title", "")},
+                    )
+                    doc_id = await self._memory.store_learning(learning)
+                    return (f"Insight stored successfully (id: {doc_id})", False)
+                return ("Memory system not available.", False)
             else:
                 return (f"Unknown tool: {tool_name}", True)
         except Exception as e:
@@ -2058,6 +2665,26 @@ Execute this step now. Make real file changes, not just descriptions."""
         user_message = request.payload.get("message", "")
         modification_type = request.payload.get("modification_type")
         modification_data = request.payload.get("modification_data", {})
+
+        # Deduplication: prevent processing the same modification message twice
+        # This handles cases where WebSocket reconnection or frontend re-sends cause duplicates
+        import hashlib
+        dedup_hash = hashlib.md5(f"{plan_id}:{user_message}".encode()).hexdigest()[:16]
+        dedup_key = f"plan_modify_dedup:{plan_id}:{dedup_hash}"
+        already_processing = await self._redis.set(dedup_key, "1", ex=120, nx=True)
+        if not already_processing:
+            # Another instance is already processing this exact modification
+            logger.warning(
+                "Duplicate plan modification detected, skipping",
+                plan_id=plan_id,
+                user_message=user_message[:50] if user_message else None,
+            )
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.COMPLETED,
+                result={"message": "Duplicate modification skipped"},
+                agent_type=self.agent_type,
+            )
 
         # Set state context
         self._state.current_user_id = user_id
@@ -2211,32 +2838,33 @@ Execute this step now. Make real file changes, not just descriptions."""
                 result_message = f"Removed {removed} step(s) from the plan"
                 await self.publish_action("plan_modified", result_message)
 
-            elif modification_type == "research_and_update":
-                # User asked for something that requires more codebase exploration.
-                # Re-explore and regenerate the plan incorporating the new requirement.
+            elif modification_type == "regenerate":
+                # User wants to regenerate the plan from scratch (e.g., "try again")
+                # Use the ORIGINAL plan description, not the user's retry message
                 root_path = request.payload.get("root_path", "/home/wyld-core")
-                additional_context = modification_data.get("context", user_message)
-
-                # Combine original plan description with new requirement
                 original_description = plan.get("description", plan.get("title", ""))
-                combined_task = f"{original_description}\n\nAdditional requirement: {additional_context}"
 
-                await self.publish_action("exploring", f"Researching: {additional_context[:60]}...")
+                await self.publish_action("exploring", f"Re-exploring for plan regeneration...")
 
-                # Do exploration focused on the new requirement
-                exploration = await self._explore_for_plan(additional_context, base_path=root_path)
+                # Fresh exploration based on original task
+                exploration = await self._explore_for_plan(original_description, base_path=root_path)
 
-                # Also include context from original exploration if available
-                # by reading key files from existing steps
-                existing_files = []
-                for s in steps:
-                    existing_files.extend(s.get("files", []))
+                # Recall past learnings (especially error patterns from previous attempts)
+                past_learnings = ""
+                if self._memory:
+                    await self.publish_action("recalling", "Learning from previous attempts...")
+                    past_learnings = await self._recall_relevant_memories(
+                        task_description=original_description,
+                        project_id=self._state.current_project_id,
+                        domain_id=plan.get("project_name"),
+                        categories=["plan_completion", "error_pattern", "technique"],
+                    )
 
-                await self.publish_action("planning", "Updating plan with new findings...")
+                await self.publish_action("planning", "Regenerating plan...")
 
-                # Regenerate steps with combined context
+                # Generate fresh steps with memory context
                 new_steps = await self._generate_plan_from_exploration(
-                    combined_task, exploration, base_path=root_path
+                    original_description, exploration, base_path=root_path, past_learnings=past_learnings
                 )
 
                 if new_steps:
@@ -2259,17 +2887,102 @@ Execute this step now. Make real file changes, not just descriptions."""
                         }
                         for i, s in enumerate(new_steps)
                     ]
+                    result_message = f"Plan regenerated with {len(steps)} steps"
+                    await self.publish_action("plan_modified", result_message)
+                else:
+                    # Regeneration failed — keep existing steps
+                    logger.warning("Plan regeneration produced no steps", plan_id=plan_id)
+                    result_message = f"Regeneration attempt produced no steps, keeping {len(steps)} existing steps"
+                    await self.publish_action("plan_modified", result_message)
 
-                result_message = f"Plan updated with {len(steps)} steps after researching: {additional_context[:50]}"
-                await self.publish_action("plan_modified", result_message)
+            elif modification_type == "research_and_update":
+                # User asked for something that requires more codebase exploration.
+                # Re-explore and regenerate the plan incorporating the new requirement.
+                root_path = request.payload.get("root_path", "/home/wyld-core")
+                additional_context = modification_data.get("context", user_message)
 
-            # Update plan in Redis
-            plan["steps"] = steps
-            await self._redis.set(plan_key, json.dumps(plan))
+                # Combine original plan description with new requirement
+                original_description = plan.get("description", plan.get("title", ""))
+                combined_task = f"{original_description}\n\nAdditional requirement: {additional_context}"
+
+                await self.publish_action("exploring", f"Researching: {additional_context[:60]}...")
+
+                # Do exploration focused on the new requirement
+                exploration = await self._explore_for_plan(additional_context, base_path=root_path)
+
+                # Recall past learnings for this project/task
+                past_learnings = ""
+                if self._memory:
+                    await self.publish_action("recalling", "Checking past learnings...")
+                    past_learnings = await self._recall_relevant_memories(
+                        task_description=combined_task,
+                        project_id=self._state.current_project_id,
+                        domain_id=plan.get("project_name"),
+                        categories=["plan_creation", "plan_completion", "error_pattern"],
+                    )
+
+                await self.publish_action("planning", "Updating plan with new findings...")
+
+                # Regenerate steps with combined context and memory
+                new_steps = await self._generate_plan_from_exploration(
+                    combined_task, exploration, base_path=root_path, past_learnings=past_learnings
+                )
+
+                if new_steps:
+                    steps = [
+                        {
+                            "id": str(uuid4()),
+                            "order": i + 1,
+                            "title": s.get("title", f"Step {i + 1}"),
+                            "description": s.get("description", ""),
+                            "agent": s.get("agent"),
+                            "files": s.get("files", []),
+                            "todos": s.get("todos", []),
+                            "changes": s.get("changes", []),
+                            "status": "pending",
+                            "dependencies": [],
+                            "output": None,
+                            "error": None,
+                            "started_at": None,
+                            "completed_at": None,
+                        }
+                        for i, s in enumerate(new_steps)
+                    ]
+                    result_message = f"Plan updated with {len(steps)} steps after researching: {additional_context[:50]}"
+                    await self.publish_action("plan_modified", result_message)
+                else:
+                    # Regeneration produced no steps — re-read plan from Redis
+                    # to avoid overwriting a concurrent update with stale data
+                    logger.warning(
+                        "Plan regeneration produced no steps, keeping existing plan",
+                        plan_id=plan_id,
+                        original_steps=original_step_count,
+                    )
+                    fresh_plan_data = await self._redis.get(plan_key)
+                    if fresh_plan_data:
+                        plan = json.loads(fresh_plan_data)
+                        steps = plan.get("steps", [])
+                    result_message = f"Plan regeneration found no changes, keeping {len(steps)} existing steps"
+                    await self.publish_action("plan_modified", result_message)
+
+            # Update plan in Redis — with concurrency protection
+            # For research_and_update/regenerate: only save if we actually have steps
+            # This prevents a failed regeneration from clearing an existing plan
+            is_regeneration = modification_type in ("research_and_update", "regenerate")
+            if is_regeneration and len(steps) == 0 and original_step_count > 0:
+                logger.warning(
+                    "Refusing to save empty plan over existing steps",
+                    plan_id=plan_id,
+                    original_steps=original_step_count,
+                )
+            else:
+                plan["steps"] = steps
+                plan["modified_at"] = datetime.now(timezone.utc).isoformat()
+                await self._redis.set(plan_key, json.dumps(plan))
 
             # Send update to frontend
             if self._pubsub and user_id:
-                if modification_type == "research_and_update":
+                if modification_type in ("research_and_update", "regenerate"):
                     # Full plan regeneration — send plan_update with new content
                     await self._pubsub.publish(
                         "agent:responses",
@@ -2474,44 +3187,46 @@ Execute this step now. Make real file changes, not just descriptions."""
             for i, s in enumerate(steps)
         ])
 
+        root_path = plan.get("root_path", "/home/wyld-core")
         prompt = f"""Analyze this user message to determine how they want to modify the plan.
 
 Current Plan: {plan.get('title', 'Untitled')}
+Project Root: {root_path}/
 Current Steps:
 {step_list}
 
 User Message: "{user_message}"
 
-Determine the modification type and data. Respond with JSON only:
+Determine the modification type. Respond with JSON only:
 
-For NEW FEATURES or requirements that need codebase research (e.g., "also add authentication",
-"use PostgreSQL instead", "include API rate limiting", "what about error handling?"):
-{{"type": "research_and_update", "data": {{"context": "the user's requirement in clear terms"}}}}
+## IMPORTANT: Almost ALL modifications should use "research_and_update"
 
-Use "research_and_update" when the user:
-- Asks to add substantial new functionality
-- Wants to change the technical approach
-- Mentions something that requires understanding the codebase
-- Asks a question about the plan that implies they want changes
-- Requests the plan cover additional areas
+Use "research_and_update" (DEFAULT for any content change):
+{{"type": "research_and_update", "data": {{"context": "the user's requirement restated clearly"}}}}
 
-For simple step additions (when you know exactly what to add):
-{{"type": "add", "data": {{"steps": [{{"title": "...", "description": "...", "agent": "code|qa"}}], "insert_after": null}}}}
+Use this when the user:
+- Adds ANY new requirement or feature (even small ones)
+- Wants to change the approach or technology
+- Says the plan is missing something
+- Asks about or suggests different implementation details
+- Provides feedback like "make it better", "more modern", "add X"
+- Requests any content that would need file exploration
 
-For skipping steps:
-{{"type": "skip", "data": {{"step_indices": [0, 2]}}}}
+For skipping steps (ONLY use for explicit "skip step X"):
+{{"type": "skip", "data": {{"step_indices": [0]}}}}
 
-For modifying a step's title/description:
-{{"type": "modify", "data": {{"step_index": 0, "title": "new title", "description": "new description"}}}}
-
-For reordering (provide new order as indices):
-{{"type": "reorder", "data": {{"new_order": [2, 0, 1, 3]}}}}
-
-For removing steps:
+For removing steps (ONLY use for explicit "remove step X"):
 {{"type": "remove", "data": {{"step_indices": [1]}}}}
 
-IMPORTANT: Default to "research_and_update" when in doubt. It is better to research
-and regenerate than to add a vague step without understanding the codebase.
+For regenerating from scratch (ONLY for "start over", "try again", "redo the whole plan"):
+{{"type": "regenerate", "data": {{}}}}
+
+CRITICAL RULES:
+- NEVER use "add" type — always use "research_and_update" for adding content
+- NEVER use "modify" type — always use "research_and_update" for changing step content
+- "research_and_update" ensures the plan gets proper todos, file paths, and detailed changes
+- Only use "skip"/"remove"/"regenerate" for their exact purposes described above
+- When in doubt, use "research_and_update"
 
 JSON response:"""
 
@@ -2545,21 +3260,28 @@ JSON response:"""
         """
         import json
 
+        # Scan the project root to give the LLM real directory context
+        try:
+            dir_entries = await asyncio.to_thread(os.listdir, base_path)
+            dir_listing = ", ".join(sorted(dir_entries)[:30])
+        except Exception:
+            dir_listing = "(unable to list)"
+
         # Ask Claude for search strategy based on the task
         strategy_prompt = f"""Analyze this development task and determine what to search for in the codebase.
 Project root directory: {base_path}/
 (This is a DIRECTORY, not a file — even if the name contains dots like "site.example.com")
 
+Files/dirs in project root: {dir_listing}
+
 Task: {task_description}
 
 Respond with a JSON object containing search strategies:
-{{"file_patterns": ["*.py", "auth*.ts"], "search_terms": ["login", "user"], "key_dirs": ["services", "models"]}}
+{{"file_patterns": ["*.html", "*.css", "*.js"], "search_terms": ["navbar", "header"], "key_dirs": ["."]}}
 
-- file_patterns: glob patterns for relevant files (max 6)
+- file_patterns: glob patterns for relevant files (max 6). Match what actually exists in the project!
 - search_terms: keywords to search for in code (max 5)
-- key_dirs: directories likely to contain relevant code
-
-Key project directories: services/, packages/, agents/, config/, docs/, database/, web/, pai/
+- key_dirs: directories likely to contain relevant code (use "." for flat projects)
 
 Only output the JSON object, no other text."""
 
@@ -2730,7 +3452,7 @@ Only output the JSON object, no other text."""
 
         return exploration
 
-    async def _generate_plan_from_exploration(self, task: str, exploration: dict, base_path: str = "/home/wyld-core") -> list[dict]:
+    async def _generate_plan_from_exploration(self, task: str, exploration: dict, base_path: str = "/home/wyld-core", past_learnings: str = "") -> list[dict]:
         """
         Generate plan steps from exploration results.
 
@@ -2758,6 +3480,25 @@ Only output the JSON object, no other text."""
         # Load TELOS for value-aligned planning
         telos = _load_telos_context()
 
+        # Detect if task is web/frontend related for specialized planning
+        task_lower = task.lower()
+        is_web_task = any(kw in task_lower for kw in ["website", "bootstrap", "html", "css", "redesign", "landing", "web page", "frontend", "responsive"])
+
+        web_planning_guide = ""
+        if is_web_task:
+            web_planning_guide = """
+## Web Project Planning Guide
+
+For website tasks, structure steps by PAGE rather than by concept:
+- Step 1: Create shared assets (CSS stylesheet, JS, shared partials)
+- Step 2: Create/Update the main page (index.html) with full Bootstrap layout
+- Step 3: Create/Update each additional page (one step per 2-3 pages max)
+- Step 4: Add interactive features (forms, animations, theme toggle)
+- Final: Verify all pages render correctly
+
+Each HTML page step should produce a COMPLETE page with full Bootstrap 5 markup — not just fragments. Include `<head>` with meta tags, Bootstrap CDN, `<nav>`, `<main>`, `<footer>` in every page.
+"""
+
         prompt = f"""Create an ACTIONABLE implementation plan. Research is ALREADY DONE — the exploration results below show what exists in the codebase.
 
 {telos}
@@ -2779,7 +3520,7 @@ Only output the JSON object, no other text."""
 
 ## File Contents Already Read
 {content_summary}
-
+{web_planning_guide}{past_learnings}
 ## CRITICAL RULES
 
 The exploration above IS the research phase. Do NOT create steps that say "investigate", "research", "identify", or "determine". Those are already done.
@@ -2809,7 +3550,7 @@ Rules:
 
         try:
             response = await self._llm.create_message(
-                max_tokens=3000,
+                max_tokens=6000,
                 tier=ModelTier.BALANCED,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -2830,39 +3571,110 @@ Rules:
             )
 
             text = response.text_content or "[]"
+            logger.debug(
+                "Plan generation LLM response",
+                provider=response.provider.value if response.provider else "unknown",
+                model=response.model,
+                output_tokens=response.output_tokens,
+                stop_reason=response.stop_reason,
+                text_length=len(text),
+                text_preview=text[:300],
+            )
+
+            # Handle truncated responses (max_tokens hit)
+            if response.stop_reason == "max_tokens" or response.stop_reason == "length":
+                logger.warning(
+                    "Plan generation truncated by max_tokens",
+                    output_tokens=response.output_tokens,
+                    text_length=len(text),
+                )
+                # Try to salvage: find the last complete JSON object in the array
+                start = text.find("[")
+                if start >= 0:
+                    # Find last complete object by looking for "}," or "}" before truncation
+                    last_obj_end = text.rfind("}")
+                    if last_obj_end > start:
+                        salvaged = text[start:last_obj_end + 1] + "]"
+                        try:
+                            steps = json.loads(salvaged)
+                            if steps:
+                                logger.info("Salvaged truncated plan", steps_count=len(steps))
+                                return steps
+                        except json.JSONDecodeError:
+                            pass
+
             # Extract JSON array from response
             start = text.find("[")
             end = text.rfind("]") + 1
             if start >= 0 and end > start:
                 steps = json.loads(text[start:end])
+                if not steps:
+                    logger.warning(
+                        "LLM returned empty steps array, using fallback",
+                        model=response.model,
+                        text_preview=text[:200],
+                    )
+                    raise ValueError("LLM returned empty steps array")
                 return steps
             else:
-                raise ValueError("No JSON array found in response")
+                raise ValueError(f"No JSON array found in response (length={len(text)}): {text[:200]}")
 
         except Exception as e:
             logger.warning("Failed to generate plan from exploration", error=str(e))
             # Return fallback actionable steps based on exploration
             found_files = [f.get("path", "") for f in exploration.get("files", [])[:5] if f.get("path")]
-            return [
-                {
-                    "title": f"Read and understand relevant files",
-                    "description": f"Read files found during exploration to understand current state before making changes",
-                    "agent": "code",
-                    "files": found_files[:3],
-                },
-                {
-                    "title": f"Implement: {task[:40]}",
-                    "description": f"Make the required modifications to implement the task",
-                    "agent": "code",
-                    "files": found_files,
-                },
-                {
-                    "title": "Verify changes are correct",
-                    "description": "Read back modified files and confirm changes are accurate",
-                    "agent": "qa",
-                    "files": found_files[:3],
-                },
-            ]
+
+            if found_files:
+                # Existing project: read, modify, verify
+                return [
+                    {
+                        "title": "Read and understand relevant files",
+                        "description": "Read files found during exploration to understand current state before making changes",
+                        "agent": "code",
+                        "files": found_files[:3],
+                    },
+                    {
+                        "title": f"Implement: {task[:40]}",
+                        "description": f"Make the required modifications to implement the task",
+                        "agent": "code",
+                        "files": found_files,
+                    },
+                    {
+                        "title": "Verify changes are correct",
+                        "description": "Read back modified files and confirm changes are accurate",
+                        "agent": "qa",
+                        "files": found_files[:3],
+                    },
+                ]
+            else:
+                # New project: create from scratch
+                return [
+                    {
+                        "title": f"Create project structure",
+                        "description": f"Create the initial project files and directory structure in {base_path}/",
+                        "agent": "code",
+                        "files": [f"{base_path}/index.html"],
+                        "todos": ["Create the main entry file", "Set up directory structure"],
+                    },
+                    {
+                        "title": f"Implement: {task[:40]}",
+                        "description": f"Build the core content and functionality as described: {task[:100]}",
+                        "agent": "code",
+                        "files": [base_path],
+                    },
+                    {
+                        "title": "Add styling and polish",
+                        "description": f"Add CSS styling and any additional assets to complete the project in {base_path}/",
+                        "agent": "code",
+                        "files": [base_path],
+                    },
+                    {
+                        "title": "Verify project is complete",
+                        "description": "Review all created files to ensure the project meets requirements",
+                        "agent": "qa",
+                        "files": [base_path],
+                    },
+                ]
 
     def _format_plan_for_display(self, plan: dict) -> str:
         """Format a plan dict for display in chat."""

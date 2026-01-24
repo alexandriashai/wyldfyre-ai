@@ -341,7 +341,8 @@ class ToolRegistry:
             kwargs = dict(arguments)
 
             # Inject context parameters that the handler can accept
-            if "context" in sig.parameters:
+            # Only inject if not already provided by the LLM arguments
+            if "context" in sig.parameters and "context" not in arguments:
                 kwargs["context"] = ctx
             if "_memory" in sig.parameters and "_memory" in ctx:
                 kwargs["_memory"] = ctx["_memory"]

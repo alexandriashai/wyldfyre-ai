@@ -187,10 +187,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           plan_approved_at: conversation.plan_approved_at,
         },
         messages: conversation.messages,
-        currentPlan: conversation.plan_content,
-        planStatus: conversation.plan_status
-          ? (conversation.plan_status.toUpperCase() as PlanStatus)
-          : null,
+        // Don't restore plan panel for terminal states (completed/rejected)
+        currentPlan: conversation.plan_status &&
+          ["completed", "rejected"].includes(conversation.plan_status.toLowerCase())
+          ? null
+          : conversation.plan_content,
+        planStatus: conversation.plan_status &&
+          ["completed", "rejected"].includes(conversation.plan_status.toLowerCase())
+          ? null
+          : conversation.plan_status
+            ? (conversation.plan_status.toUpperCase() as PlanStatus)
+            : null,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load conversation";
@@ -461,6 +468,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await conversationsApi.rejectPlan(token, state.currentConversation.id);
       set({ planStatus: "REJECTED" });
+      // Auto-dismiss after rejection
+      setTimeout(() => {
+        get().clearPlan();
+      }, 2000);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to reject plan";
       set({ error: message });

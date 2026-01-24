@@ -381,6 +381,7 @@ class MessageHandler:
                     "project_id": project_context.get("project_id"),
                     "project_name": project_context.get("project_name"),
                     "root_path": project_context.get("root_path"),
+                    "domain": project_context.get("domain_name"),
                     "agent_context": project_context.get("agent_context"),
                 },
                 "metadata": {

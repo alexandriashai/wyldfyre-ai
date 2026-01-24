@@ -169,12 +169,16 @@ services:
       - POSTGRES_HOST=postgres
       - REDIS_HOST=redis
       - QDRANT_HOST=qdrant
+      - NOCOBASE_URL=http://nocobase:13000
+      - NOCOBASE_API_TOKEN=${NOCOBASE_API_TOKEN:-}
+      - TEMPLATES_DIR=${TEMPLATES_DIR:-/home/wyld-data/templates}
     env_file:
       - .env
     volumes:
       - /home/wyld-data/logs/api:/app/logs
       - /etc/nginx/sites-available:/etc/nginx/sites-available:ro
       - /home/wyld-web/static:/home/wyld-web/static
+      - /home/wyld-data/templates:/home/wyld-data/templates
     depends_on:
       postgres:
         condition: service_healthy
@@ -257,6 +261,48 @@ services:
       retries: 3
       start_period: 20s
 
+  # =============================================================================
+  # Integration Services
+  # =============================================================================
+
+  nocobase:
+    image: nocobase/nocobase:latest
+    container_name: ai-nocobase
+    restart: unless-stopped
+    ports:
+      - "${NOCOBASE_PORT:-13000}:13000"
+    environment:
+      DB_DIALECT: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${NOCOBASE_DB:-nocobase}
+      DB_USER: ${POSTGRES_USER:-ai_infra}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      APP_KEY: ${NOCOBASE_APP_KEY:-wyld-fyre-nocobase-key}
+      API_BASE_PATH: /api/
+      PLUGIN_PACKAGE_PREFIX: "@nocobase/plugin-"
+    volumes:
+      - nocobase_storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ai-backend
+      - ai-data
+      - ai-frontend
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const http=require('http');http.get('http://localhost:13000/api/app:getInfo',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
 # =============================================================================
 # Networks
 # =============================================================================
@@ -285,3 +331,4 @@ volumes:
   prometheus_data:
   grafana_data:
   loki_data:
+  nocobase_storage:

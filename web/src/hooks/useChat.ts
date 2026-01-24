@@ -235,10 +235,8 @@ export function useChat() {
 
         case "plan_update":
           if (data.plan_content !== undefined) {
-            updatePlan(
-              data.plan_content,
-              normalizePlanStatus(data.plan_status)
-            );
+            const planStatus = normalizePlanStatus(data.plan_status);
+            updatePlan(data.plan_content, planStatus);
             setIsSending(false);
           }
           break;

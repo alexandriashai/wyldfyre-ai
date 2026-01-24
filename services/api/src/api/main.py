@@ -26,6 +26,7 @@ from .routes import (
     files_router,
     grafana_router,
     health_router,
+    integrations_router,
     memory_router,
     notifications_router,
     projects_router,
@@ -152,6 +153,7 @@ def create_app() -> FastAPI:
     app.include_router(grafana_router, prefix="/api")  # Grafana SSO proxy
     app.include_router(usage_router, prefix="/api")  # Usage analytics
     app.include_router(workspace_router, prefix="/api")  # Workspace file/git/deploy
+    app.include_router(integrations_router, prefix="/api")  # Visual builder integrations
     app.include_router(chat_router)  # WebSocket at root level
 
     # Prometheus metrics endpoint

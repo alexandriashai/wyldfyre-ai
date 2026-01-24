@@ -3,8 +3,9 @@
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { PreviewPanel } from "../preview/preview-panel";
 import { WorkspaceChatPanel } from "../chat-panel";
+import { VisualEditorPanel } from "../visual-editor/visual-editor-panel";
 import { Button } from "@/components/ui/button";
-import { Monitor, MessageSquare } from "lucide-react";
+import { Monitor, MessageSquare, Paintbrush } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function RightPanel() {
@@ -42,11 +43,27 @@ export function RightPanel() {
           <MessageSquare className="h-3.5 w-3.5" />
           Chat
         </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn(
+            "h-8 rounded-none border-b-2 text-xs gap-1.5",
+            rightPanelMode === "design"
+              ? "border-b-primary text-primary"
+              : "border-b-transparent text-muted-foreground"
+          )}
+          onClick={() => setRightPanelMode("design")}
+        >
+          <Paintbrush className="h-3.5 w-3.5" />
+          Design
+        </Button>
       </div>
 
       {/* Panel content */}
       <div className="flex-1 min-h-0">
-        {rightPanelMode === "preview" ? <PreviewPanel /> : <WorkspaceChatPanel />}
+        {rightPanelMode === "preview" && <PreviewPanel />}
+        {rightPanelMode === "chat" && <WorkspaceChatPanel />}
+        {rightPanelMode === "design" && <VisualEditorPanel />}
       </div>
     </div>
   );

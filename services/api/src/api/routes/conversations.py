@@ -532,6 +532,7 @@ async def reject_conversation_plan(
 
     conversation.plan_status = PlanStatus.REJECTED
     conversation.plan_approved_at = None
+    conversation.plan_content = None  # Clear plan so it doesn't persist on reload
 
     await db.flush()
     await db.refresh(conversation)
