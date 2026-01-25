@@ -70,7 +70,7 @@ def get_pai_env_vars(
         "PAI_PROJECT_ID": project_id,
         "PAI_PROJECT_NAME": project_name,
         "PAI_PROJECT_ROOT": root_path,
-        "ANTHROPIC_AUTH_TOKEN": token,  # Session passthrough for Claude
+        # Note: Do NOT set ANTHROPIC_AUTH_TOKEN - it conflicts with Claude CLI OAuth
         "PATH": f"{cli_path}:{os.environ.get('PATH', '/usr/bin')}",
         "TERM": "xterm-256color",  # Ensure terminal capabilities work
         # Point Claude CLI to shared credentials location
@@ -108,7 +108,7 @@ def get_docker_env_vars(
         "PAI_PROJECT_ID": project_id,
         "PAI_PROJECT_NAME": project_name,
         "PAI_PROJECT_ROOT": "/app",  # Standard mount point in container
-        "ANTHROPIC_AUTH_TOKEN": token,  # Session passthrough for Claude
+        # Note: Do NOT set ANTHROPIC_AUTH_TOKEN - it conflicts with Claude CLI OAuth
         "TERM": "xterm-256color",  # Required for Claude CLI and proper terminal behavior
         "CLAUDE_CONFIG_DIR": "/home/wyld/.claude-local",  # Writable config location
     }
@@ -287,10 +287,12 @@ def setup_docker_tmux_env(container_name: str, session_name: str, env_vars: dict
                 capture_output=True,
             )
 
-    # Set tmux options for better resize behavior
+    # Set tmux options for better resize behavior and mouse support
     tmux_options = [
         ("aggressive-resize", "on"),  # Resize session to smallest client
         ("window-size", "largest"),   # Window size based on largest client
+        ("mouse", "on"),              # Enable mouse scrolling and selection
+        ("history-limit", "10000"),   # Increase scrollback buffer
     ]
     for option, value in tmux_options:
         subprocess.run(

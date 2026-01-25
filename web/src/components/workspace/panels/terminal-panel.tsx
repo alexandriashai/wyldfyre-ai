@@ -427,11 +427,14 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
       {/* Terminal container - needs explicit height for xterm FitAddon */}
       <div
         ref={terminalRef}
-        className="flex-1 overflow-hidden min-h-0"
+        className="flex-1 min-h-0"
         style={{
-          // Account for header (32px) and mobile keyboard toolbar (~40px on mobile)
+          // Explicit dimensions for FitAddon - calc based on header/toolbar
           height: isMobile ? 'calc(100% - 72px)' : 'calc(100% - 32px)',
-          minHeight: isMobile ? '200px' : 0
+          width: '100%',
+          minHeight: isMobile ? '200px' : '100px',
+          overflow: 'hidden',
+          position: 'relative',
         }}
         onClick={focusTerminal}
         onTouchEnd={(e) => {
