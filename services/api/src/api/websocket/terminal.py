@@ -462,6 +462,26 @@ async def handle_tmux_terminal(
 def resize_docker_tmux(container_name: str, session_name: str, rows: int, cols: int) -> None:
     """Resize a tmux session inside a Docker container."""
     try:
+        # First, detach any other clients that might be limiting the size
+        subprocess.run(
+            [
+                "docker", "exec", "-u", "wyld", container_name,
+                "tmux", "detach-client", "-a", "-t", session_name,
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+
+        # Set window size option to force the size
+        subprocess.run(
+            [
+                "docker", "exec", "-u", "wyld", container_name,
+                "tmux", "set-option", "-t", session_name, "window-size", "manual",
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+
         # Resize the window
         subprocess.run(
             [
@@ -471,7 +491,8 @@ def resize_docker_tmux(container_name: str, session_name: str, rows: int, cols: 
             capture_output=True,
             timeout=5,
         )
-        # Also resize all panes in case window resize doesn't propagate
+
+        # Also resize all panes
         subprocess.run(
             [
                 "docker", "exec", "-u", "wyld", container_name,
@@ -480,17 +501,54 @@ def resize_docker_tmux(container_name: str, session_name: str, rows: int, cols: 
             capture_output=True,
             timeout=5,
         )
-        # Refresh client to apply changes
+
+        # Force refresh all clients
         subprocess.run(
             [
                 "docker", "exec", "-u", "wyld", container_name,
-                "tmux", "refresh-client", "-t", session_name,
+                "tmux", "refresh-client", "-S",
             ],
             capture_output=True,
             timeout=5,
         )
     except Exception:
         pass  # Best effort resize
+
+
+def refresh_docker_tmux(container_name: str, session_name: str) -> None:
+    """Force refresh a tmux session to pick up current terminal size."""
+    try:
+        # Detach other clients that might be limiting size
+        subprocess.run(
+            [
+                "docker", "exec", "-u", "wyld", container_name,
+                "tmux", "detach-client", "-a", "-t", session_name,
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+
+        # Force refresh all clients
+        subprocess.run(
+            [
+                "docker", "exec", "-u", "wyld", container_name,
+                "tmux", "refresh-client", "-S",
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+
+        # Also send SIGWINCH to the shell to force it to check size
+        subprocess.run(
+            [
+                "docker", "exec", "-u", "wyld", container_name,
+                "tmux", "send-keys", "-t", session_name, "", "",  # Empty to trigger refresh
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception:
+        pass  # Best effort refresh
 
 
 async def run_terminal_loop(
@@ -547,6 +605,10 @@ async def run_terminal_loop(
                         # Also resize tmux session inside Docker container
                         if docker_container and docker_session:
                             resize_docker_tmux(docker_container, docker_session, rows, cols)
+                    elif control.get("type") == "tmux-refresh":
+                        # Force tmux to refresh and pick up current size
+                        if docker_container and docker_session:
+                            refresh_docker_tmux(docker_container, docker_session)
                     elif control.get("type") == "input":
                         os.write(master_fd, control["data"].encode())
                 except (json.JSONDecodeError, KeyError):

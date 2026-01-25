@@ -5,7 +5,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useProjectStore } from "@/stores/project-store";
 import { Button } from "@/components/ui/button";
-import { X, Container, Terminal, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { X, Container, Terminal, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 
 // Common terminal keyboard shortcuts for mobile
@@ -39,6 +39,8 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
 
   // Detect mobile viewport (or use prop)
   const [detectedMobile, setDetectedMobile] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const searchAddonRef = useRef<any>(null);
 
   useEffect(() => {
     const checkMobile = () => setDetectedMobile(window.innerWidth < 768);
@@ -81,6 +83,14 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
     focusTerminal();
   }, [focusTerminal]);
 
+  const toggleSearch = useCallback(() => {
+    if (!searchAddonRef.current) return;
+    if (showSearch) {
+      searchAddonRef.current.clearDecorations();
+    }
+    setShowSearch(!showSearch);
+  }, [showSearch]);
+
   const initTerminal = useCallback(async () => {
     if (!terminalRef.current || !token || !activeProjectId || !selectedProject) return;
 
@@ -88,6 +98,12 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
     const { Terminal } = await import("@xterm/xterm");
     const { FitAddon } = await import("@xterm/addon-fit");
     const { WebLinksAddon } = await import("@xterm/addon-web-links");
+    const { SearchAddon } = await import("@xterm/addon-search");
+    const { Unicode11Addon } = await import("@xterm/addon-unicode11");
+
+    // WebGL addon disabled - causes rendering issues on some devices
+    // TODO: Re-enable with proper fallback detection
+    const WebglAddon: any = null;
 
     // Clean up existing instance
     if (xtermRef.current) {
@@ -125,7 +141,7 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
       },
       cursorBlink: true,
       allowProposedApi: true,
-      scrollback: 5000,
+      scrollback: 10000,
       // Mobile-specific settings
       screenReaderMode: false,
       macOptionIsMeta: true,
@@ -133,35 +149,43 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
       rightClickSelectsWord: true,
     });
 
+    // Load addons
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
+    const searchAddon = new SearchAddon();
+    const unicode11Addon = new Unicode11Addon();
 
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
+    term.loadAddon(searchAddon);
+    term.loadAddon(unicode11Addon);
+
+    // Activate unicode 11 for better emoji support
+    term.unicode.activeVersion = '11';
+
+    // Open terminal in DOM
     term.open(terminalRef.current);
+
+    // WebGL addon disabled - see above
 
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
+    searchAddonRef.current = searchAddon;
 
-    // Fit terminal after layout settles
+    // Fit terminal and get dimensions
     const doFit = () => {
-      if (!terminalRef.current) return;
+      if (!terminalRef.current || !fitAddonRef.current) return { rows: 24, cols: 80 };
       const rect = terminalRef.current.getBoundingClientRect();
       // Only fit if container has actual dimensions
       if (rect.width > 50 && rect.height > 50) {
         try {
-          fitAddon.fit();
+          fitAddonRef.current.fit();
+          return { rows: term.rows, cols: term.cols };
         } catch {
           // Ignore fit errors
         }
       }
-    };
-
-    // Use requestAnimationFrame for better timing with layout
-    const rafFit = () => {
-      requestAnimationFrame(() => {
-        doFit();
-      });
+      return { rows: term.rows || 24, cols: term.cols || 80 };
     };
 
     // Build WebSocket URL
@@ -177,20 +201,48 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
       wsUrl += `&terminal_user=${encodeURIComponent(terminalUser)}`;
     }
 
-    // Function to connect WebSocket after terminal is properly sized
-    const connectWebSocket = () => {
-      // Ensure terminal is fitted before connecting
-      doFit();
+    // Initial fit
+    doFit();
+
+    // Connect WebSocket after a brief delay to ensure dimensions are ready
+    const connectTimeout = setTimeout(() => {
+      const { rows, cols } = doFit();
 
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
+      // Send resize function
+      const sendResize = () => {
+        if (ws.readyState === WebSocket.OPEN) {
+          const { rows, cols } = doFit();
+          ws.send(JSON.stringify({ type: "resize", rows, cols }));
+          // Also send a special tmux refresh command
+          ws.send(JSON.stringify({ type: "tmux-refresh" }));
+        }
+      };
+
       ws.onopen = () => {
-        // Send initial size - now we have proper dimensions
-        const { rows, cols } = term;
+        // Send initial size immediately
         console.log(`Terminal connected with size: ${cols}x${rows}`);
         ws.send(JSON.stringify({ type: "resize", rows, cols }));
+
+        // Send multiple resize signals to ensure tmux picks up the size
+        // This is needed because tmux may not resize on first message
+        setTimeout(sendResize, 100);
+        setTimeout(sendResize, 300);
+        setTimeout(sendResize, 500);
+        setTimeout(sendResize, 1000);
+
+        // On mobile, be more aggressive with resize signals
+        if (isMobile) {
+          setTimeout(sendResize, 1500);
+          setTimeout(sendResize, 2000);
+          setTimeout(sendResize, 3000);
+        }
+
+        // Focus terminal after connection
+        setTimeout(() => term.focus(), 200);
       };
 
       ws.onmessage = (event) => {
@@ -209,104 +261,80 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
         term.write("\r\n\x1b[31m[Connection error]\x1b[0m\r\n");
       };
 
-      return ws;
-    };
-
-    // Fit terminal first, then connect after layout settles
-    rafFit();
-    setTimeout(rafFit, 100);
-    setTimeout(rafFit, 250);
-
-    // Connect WebSocket after terminal has had time to properly size
-    let ws: WebSocket;
-    setTimeout(() => {
-      ws = connectWebSocket();
-
-      // Helper to send resize event
-      const sendResize = () => {
+      // Send input to WebSocket
+      term.onData((data) => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "resize", rows: term.rows, cols: term.cols }));
-        }
-      };
-
-      // Continue with additional fit attempts and resize signals
-      // This helps tmux inside Docker containers properly size
-      setTimeout(rafFit, 250);
-      setTimeout(rafFit, 750);
-      setTimeout(() => {
-        doFit();
-        term.focus();
-        sendResize();
-      }, 500);
-
-      // On mobile, send additional resize signals for tmux
-      if (isMobile) {
-        setTimeout(() => { doFit(); sendResize(); }, 1000);
-        setTimeout(() => { doFit(); sendResize(); }, 2000);
-      }
-    }, isMobile ? 500 : 300);
-
-    // Placeholder for ws used in event handlers below
-    const getWs = () => wsRef.current;
-
-    // Send input to WebSocket
-    term.onData((data) => {
-      const currentWs = getWs();
-      if (currentWs?.readyState === WebSocket.OPEN) {
-        currentWs.send(new TextEncoder().encode(data));
-      }
-    });
-
-    // Handle resize
-    term.onResize(({ rows, cols }) => {
-      const currentWs = getWs();
-      if (currentWs?.readyState === WebSocket.OPEN) {
-        currentWs.send(JSON.stringify({ type: "resize", rows, cols }));
-      }
-    });
-
-    // Enable clipboard - copy selection on Ctrl+Shift+C or Cmd+C
-    term.attachCustomKeyEventHandler((event) => {
-      // Copy: Ctrl+Shift+C (Windows/Linux) or Cmd+C (Mac)
-      if ((event.ctrlKey && event.shiftKey && event.key === 'C') ||
-          (event.metaKey && event.key === 'c')) {
-        const selection = term.getSelection();
-        if (selection) {
-          navigator.clipboard.writeText(selection);
-          return false; // Prevent default
-        }
-      }
-      // Paste: Ctrl+Shift+V (Windows/Linux) or Cmd+V (Mac)
-      if ((event.ctrlKey && event.shiftKey && event.key === 'V') ||
-          (event.metaKey && event.key === 'v')) {
-        navigator.clipboard.readText().then(text => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(new TextEncoder().encode(text));
-          }
-        });
-        return false;
-      }
-      return true;
-    });
-
-    // Right-click to copy selection
-    if (terminalRef.current) {
-      terminalRef.current.addEventListener('contextmenu', (e) => {
-        const selection = term.getSelection();
-        if (selection) {
-          e.preventDefault();
-          navigator.clipboard.writeText(selection);
+          ws.send(new TextEncoder().encode(data));
         }
       });
-    }
-  }, [token, activeProjectId, selectedProject, isMobile]);
+
+      // Handle terminal resize - send to backend
+      term.onResize(({ rows, cols }) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", rows, cols }));
+        }
+      });
+
+      // Clipboard handling
+      term.attachCustomKeyEventHandler((event) => {
+        // Ctrl+Shift+F for search
+        if (event.ctrlKey && event.shiftKey && event.key === 'F') {
+          toggleSearch();
+          return false;
+        }
+        // Copy: Ctrl+Shift+C (Windows/Linux) or Cmd+C (Mac)
+        if ((event.ctrlKey && event.shiftKey && event.key === 'C') ||
+            (event.metaKey && event.key === 'c')) {
+          const selection = term.getSelection();
+          if (selection) {
+            navigator.clipboard.writeText(selection);
+            return false;
+          }
+        }
+        // Paste: Ctrl+Shift+V (Windows/Linux) or Cmd+V (Mac)
+        if ((event.ctrlKey && event.shiftKey && event.key === 'V') ||
+            (event.metaKey && event.key === 'v')) {
+          navigator.clipboard.readText().then(text => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(new TextEncoder().encode(text));
+            }
+          });
+          return false;
+        }
+        return true;
+      });
+
+    }, isMobile ? 300 : 100);
+
+    // Right-click to copy selection
+    const contextHandler = (e: MouseEvent) => {
+      const selection = term.getSelection();
+      if (selection) {
+        e.preventDefault();
+        navigator.clipboard.writeText(selection);
+      }
+    };
+    terminalRef.current?.addEventListener('contextmenu', contextHandler);
+
+    // Cleanup function
+    return () => {
+      clearTimeout(connectTimeout);
+      terminalRef.current?.removeEventListener('contextmenu', contextHandler);
+    };
+  }, [token, activeProjectId, selectedProject, isMobile, toggleSearch]);
 
   useEffect(() => {
+    let cleanup: (() => void) | undefined;
+
     if (shouldShow) {
-      initTerminal();
+      const init = async () => {
+        cleanup = await initTerminal();
+      };
+      init();
     }
 
     return () => {
+      cleanup?.();
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
@@ -375,21 +403,83 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
             {(selectedProject as any)?.docker_enabled ? "Container" : "Terminal"} — {selectedProject?.name || "Project"}
           </span>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 text-[#a9b1d6] hover:text-white hover:bg-[#32344a]"
-          onClick={() => {
-            if (isMobile) {
-              setMobileActiveTab("editor");
-            } else {
-              setTerminalOpen(false);
-            }
-          }}
-        >
-          <X className="h-3.5 w-3.5" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-[#a9b1d6] hover:text-white hover:bg-[#32344a]"
+            onClick={toggleSearch}
+            title="Search (Ctrl+Shift+F)"
+          >
+            <Search className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-[#a9b1d6] hover:text-white hover:bg-[#32344a]"
+            onClick={() => {
+              if (isMobile) {
+                setMobileActiveTab("editor");
+              } else {
+                setTerminalOpen(false);
+              }
+            }}
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
+
+      {/* Search bar */}
+      {showSearch && (
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#32344a] bg-[#24253a] shrink-0">
+          <input
+            type="text"
+            placeholder="Search..."
+            className="flex-1 bg-[#1a1b26] text-[#a9b1d6] text-xs px-2 py-1 rounded border border-[#32344a] focus:outline-none focus:border-[#7aa2f7]"
+            onChange={(e) => {
+              if (searchAddonRef.current) {
+                searchAddonRef.current.findNext(e.target.value);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                searchAddonRef.current?.findNext(e.currentTarget.value);
+              } else if (e.key === 'Escape') {
+                setShowSearch(false);
+                searchAddonRef.current?.clearDecorations();
+              }
+            }}
+            autoFocus
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs text-[#a9b1d6] hover:text-white"
+            onClick={() => {
+              const input = containerRef.current?.querySelector('input');
+              if (input && searchAddonRef.current) {
+                searchAddonRef.current.findPrevious(input.value);
+              }
+            }}
+          >
+            Prev
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs text-[#a9b1d6] hover:text-white"
+            onClick={() => {
+              const input = containerRef.current?.querySelector('input');
+              if (input && searchAddonRef.current) {
+                searchAddonRef.current.findNext(input.value);
+              }
+            }}
+          >
+            Next
+          </Button>
+        </div>
+      )}
 
       {/* Mobile keyboard toolbar */}
       {isMobile && (
@@ -424,17 +514,14 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
         </div>
       )}
 
-      {/* Terminal container - needs explicit height for xterm FitAddon */}
+      {/* Terminal container */}
       <div
         ref={terminalRef}
-        className="flex-1 min-h-0"
+        className="flex-1 min-h-0 overflow-hidden"
         style={{
-          // Explicit dimensions for FitAddon - calc based on header/toolbar
-          height: isMobile ? 'calc(100% - 72px)' : 'calc(100% - 32px)',
-          width: '100%',
-          minHeight: isMobile ? '200px' : '100px',
-          overflow: 'hidden',
-          position: 'relative',
+          // Use flexbox to fill remaining space
+          display: 'flex',
+          flexDirection: 'column',
         }}
         onClick={focusTerminal}
         onTouchEnd={(e) => {
