@@ -45,6 +45,7 @@ from ai_core import (
     PermissionLevel,
     agent_active_tasks,
     agent_errors_total,
+    agent_last_heartbeat_timestamp,
     agent_task_duration_seconds,
     agent_tasks_total,
     agent_tool_calls_total,
@@ -684,7 +685,10 @@ class BaseAgent(ABC):
 
             # Execute with Claude (with optional iteration limit override)
             result = await self._execute_with_claude(
-                task_id, user_message, max_iterations=request.max_iterations
+                task_id,
+                user_message,
+                max_iterations=request.max_iterations,
+                pai_learnings=getattr(request, "_pai_context", {}).get("learnings", []) or None,
             )
 
             # Record success
@@ -862,25 +866,53 @@ class BaseAgent(ABC):
             messages_key = f"conversation:{conversation_id}:messages"
             message_ids = await self._redis.lrange(messages_key, 0, 19)  # Last 20 messages
 
-            if not message_ids:
-                return
+            if message_ids:
+                # Reverse to get chronological order (oldest first)
+                message_ids = list(reversed(message_ids))
 
-            # Reverse to get chronological order (oldest first)
-            message_ids = list(reversed(message_ids))
+                # Load each message
+                for msg_id in message_ids:
+                    msg_key = f"message:{msg_id}"
+                    msg_data = await self._redis.hgetall(msg_key)
 
-            # Load each message
-            for msg_id in message_ids:
-                msg_key = f"message:{msg_id}"
-                msg_data = await self._redis.hgetall(msg_key)
+                    if msg_data:
+                        role = msg_data.get("role", "user")
+                        content = msg_data.get("content", "")
 
-                if msg_data:
-                    role = msg_data.get("role", "user")
-                    content = msg_data.get("content", "")
+                        if content:
+                            self._state.conversation_history.append(
+                                ConversationMessage(role=role, content=content)
+                            )
+            else:
+                # Fallback: load from PostgreSQL if Redis is empty
+                try:
+                    from api.database import db_session_context
+                    from database.models import Message
+                    from sqlalchemy import select
 
-                    if content:
-                        self._state.conversation_history.append(
-                            ConversationMessage(role=role, content=content)
+                    async with db_session_context() as session:
+                        result = await session.execute(
+                            select(Message)
+                            .where(Message.conversation_id == conversation_id)
+                            .order_by(Message.created_at.desc())
+                            .limit(20)
                         )
+                        db_messages = list(reversed(result.scalars().all()))
+
+                        for msg in db_messages:
+                            if msg.content:
+                                self._state.conversation_history.append(
+                                    ConversationMessage(role=msg.role, content=msg.content)
+                                )
+
+                    if self._state.conversation_history:
+                        logger.debug(
+                            "Loaded conversation context from DB fallback",
+                            conversation_id=conversation_id,
+                            message_count=len(self._state.conversation_history),
+                        )
+                except Exception as db_err:
+                    logger.debug("DB fallback for conversation context failed", error=str(db_err))
 
             logger.debug(
                 "Loaded conversation context",
@@ -914,6 +946,7 @@ class BaseAgent(ABC):
         task_id: str,
         user_message: str,
         max_iterations: int | None = None,
+        pai_learnings: list | None = None,
     ) -> dict[str, Any]:
         """
         Execute task using Claude with tool use.
@@ -928,9 +961,27 @@ class BaseAgent(ABC):
             task_id: Unique task identifier
             user_message: The message to process
             max_iterations: Override for max tool iterations (uses config default if None)
+            pai_learnings: Relevant learnings from PAI memory to inject into context
         """
         # Determine iteration limit (task override > config default)
         iteration_limit = max_iterations or self.config.max_tool_iterations
+
+        # Cost accumulators for usage reporting
+        from decimal import Decimal
+        total_cost = Decimal("0")
+        total_input_tokens = 0
+        total_output_tokens = 0
+
+        # Inject PAI learnings into user message if available
+        if pai_learnings:
+            learnings_text = "\n".join(
+                f"- {l.get('content', str(l)) if isinstance(l, dict) else str(l)}"
+                for l in pai_learnings[:5]
+            )
+            user_message = (
+                f"[Relevant learnings from previous tasks]\n{learnings_text}\n\n"
+                f"[Current task]\n{user_message}"
+            )
 
         # Add user message to history
         self._state.conversation_history.append(
@@ -955,6 +1006,11 @@ class BaseAgent(ABC):
                     "response": "Task was cancelled by user.",
                     "iterations": iterations,
                     "cancelled": True,
+                    "usage": {
+                        "total_cost": str(total_cost),
+                        "input_tokens": total_input_tokens,
+                        "output_tokens": total_output_tokens,
+                    },
                 }
 
             # === Process Pending Messages ===
@@ -1007,6 +1063,11 @@ class BaseAgent(ABC):
                 cached_tokens=response.cached_tokens,
             )
 
+            # Accumulate usage for response
+            total_cost += usage_cost.total_cost
+            total_input_tokens += response.input_tokens
+            total_output_tokens += response.output_tokens
+
             # Record to database and Prometheus (async, non-blocking)
             asyncio.create_task(
                 get_cost_tracker().record_usage(
@@ -1033,6 +1094,11 @@ class BaseAgent(ABC):
                 return {
                     "response": response.text_content,
                     "iterations": iterations,
+                    "usage": {
+                        "total_cost": str(total_cost),
+                        "input_tokens": total_input_tokens,
+                        "output_tokens": total_output_tokens,
+                    },
                 }
 
             elif response.stop_reason == "tool_use":
@@ -1110,6 +1176,24 @@ class BaseAgent(ABC):
                 async def _execute_single_tool(call: ToolCallRequest) -> tuple[str, dict, str, ToolResult]:
                     nonlocal tool_step
                     tool_step += 1
+
+                    # Direct security validation before any execution
+                    from ai_core.security import validate_tool as security_validate_tool
+                    allowed, sec_msg = security_validate_tool(
+                        call.name, call.arguments, agent_name=self.config.name
+                    )
+                    if not allowed:
+                        logger.warning(
+                            "Tool blocked by security validator",
+                            tool=call.name,
+                            reason=sec_msg,
+                            agent=self.config.name,
+                        )
+                        return call.name, call.arguments, call.tool_use_id, ToolResult(
+                            success=False,
+                            error=f"Blocked by security: {sec_msg}",
+                            output=None,
+                        )
 
                     if self._memory:
                         await self._memory.store_task_trace(
@@ -1240,6 +1324,11 @@ class BaseAgent(ABC):
             "response": "Task incomplete - maximum iterations reached",
             "iterations": iterations,
             "warning": "max_iterations",
+            "usage": {
+                "total_cost": str(total_cost),
+                "input_tokens": total_input_tokens,
+                "output_tokens": total_output_tokens,
+            },
         }
 
     def _has_tool_use(self, msg: ConversationMessage) -> bool:
@@ -1430,6 +1519,9 @@ class BaseAgent(ABC):
                         # Claude response is stored in "response" key
                         content = response.result.get("response", "")
 
+                    # Extract usage from result if available
+                    usage = response.result.get("usage") if response.result else None
+
                     await self._pubsub.publish(
                         "agent:responses",
                         {
@@ -1441,6 +1533,7 @@ class BaseAgent(ABC):
                             "agent": self.agent_type.value,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                             "error": response.error,
+                            "usage": usage,
                         },
                     )
 
@@ -1534,6 +1627,12 @@ class BaseAgent(ABC):
 
         from datetime import datetime, timezone
         import json
+
+        # Update Prometheus gauge for heartbeat monitoring
+        agent_last_heartbeat_timestamp.labels(
+            agent_name=self.config.name,
+            agent_type=self.agent_type.value,
+        ).set_to_current_time()
 
         uptime = int(time.time() - self._state.start_time)
         now = datetime.now(timezone.utc)

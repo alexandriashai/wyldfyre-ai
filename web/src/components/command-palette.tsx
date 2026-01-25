@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/command";
 import { useAuthStore } from "@/stores/auth-store";
 import { useChatStore } from "@/stores/chat-store";
+import { useProjectStore } from "@/stores/project-store";
 
 export function CommandPalette() {
   const [open, setOpen] = React.useState(false);
@@ -38,6 +39,7 @@ export function CommandPalette() {
   const { logout } = useAuthStore();
   const { createConversation } = useChatStore();
   const { token } = useAuthStore();
+  const { selectedProject } = useProjectStore();
 
   React.useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -65,9 +67,9 @@ export function CommandPalette() {
   };
 
   const handleNewChat = async () => {
-    if (token) {
-      await createConversation(token);
-      router.push("/chat");
+    if (token && selectedProject?.id) {
+      await createConversation(token, selectedProject.id);
+      router.push("/workspace/chats");
     }
   };
 

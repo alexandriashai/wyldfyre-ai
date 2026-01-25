@@ -1,20 +1,14 @@
 "use client";
 
 import { useEffect } from "react";
-import { useAuthStore } from "@/stores/auth-store";
-import { useProjectStore } from "@/stores/project-store";
-import { WorkspaceLayout } from "@/components/workspace/workspace-layout";
+import { useRouter } from "next/navigation";
 
 export default function WorkspacePage() {
-  const { token } = useAuthStore();
-  const { fetchProjects, projects } = useProjectStore();
+  const router = useRouter();
 
-  // Ensure projects are loaded
   useEffect(() => {
-    if (token && projects.length === 0) {
-      fetchProjects(token);
-    }
-  }, [token, projects.length, fetchProjects]);
+    router.replace("/workspace/files");
+  }, [router]);
 
-  return <WorkspaceLayout />;
+  return null;
 }

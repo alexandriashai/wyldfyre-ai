@@ -21,6 +21,7 @@ from .routes import (
     agents_router,
     auth_router,
     chat_router,
+    containers_router,
     conversations_router,
     domains_router,
     files_router,
@@ -37,6 +38,7 @@ from .routes import (
 )
 from .websocket.handlers import AgentResponseHandler
 from .websocket.manager import get_connection_manager
+from .websocket.terminal import router as terminal_router
 
 logger = get_logger(__name__)
 
@@ -154,7 +156,9 @@ def create_app() -> FastAPI:
     app.include_router(usage_router, prefix="/api")  # Usage analytics
     app.include_router(workspace_router, prefix="/api")  # Workspace file/git/deploy
     app.include_router(integrations_router, prefix="/api")  # Visual builder integrations
+    app.include_router(containers_router, prefix="/api")  # Docker container management
     app.include_router(chat_router)  # WebSocket at root level
+    app.include_router(terminal_router)  # Terminal WebSocket
 
     # Prometheus metrics endpoint
     @app.get("/metrics", include_in_schema=False)

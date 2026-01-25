@@ -4,8 +4,11 @@ import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { Button } from "@/components/ui/button";
-import { X, Circle, PanelLeftOpen, Image as ImageIcon } from "lucide-react";
+import { X, Circle, PanelLeftOpen, Image as ImageIcon, Terminal, SplitSquareHorizontal, GitBranch } from "lucide-react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { cn } from "@/lib/utils";
+import { Breadcrumbs } from "../editor/breadcrumbs";
+import { GitDiffEditor } from "../editor/diff-editor";
 
 // Dynamically import Monaco to avoid SSR issues
 const MonacoEditor = dynamic(
@@ -26,8 +29,27 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
     updateFileContent,
     isFileTreeCollapsed,
     setFileTreeCollapsed,
+    isTerminalOpen,
+    setTerminalOpen,
+    splitEditor,
+    splitFilePath,
+    setSplitEditor,
+    diffMode,
+    diffFilePath,
+    setDiffMode,
+    gitStatus,
     activeProjectId,
+    setMobileActiveTab,
   } = useWorkspaceStore();
+
+  // Detect mobile viewport
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
 
   const activeFile = openFiles.find((f) => f.path === activeFilePath);
 
@@ -111,11 +133,73 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
             </button>
           </div>
         ))}
+        {/* Spacer + toolbar buttons */}
+        <div className="ml-auto shrink-0 flex items-center gap-0.5 pr-1">
+          {activeFile && gitStatus?.modified?.some((f) => f.path === activeFile.path) && (
+            <Button
+              variant={diffMode ? "secondary" : "ghost"}
+              size="icon"
+              className="h-6 w-6"
+              onClick={() => {
+                if (diffMode && diffFilePath === activeFile.path) {
+                  setDiffMode(false);
+                } else {
+                  setDiffMode(true, activeFile.path);
+                }
+              }}
+              title="Toggle Git Diff"
+            >
+              <GitBranch className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {/* Hide split editor button on mobile - not practical on small screens */}
+          {!isMobile && (
+            <Button
+              variant={splitEditor ? "secondary" : "ghost"}
+              size="icon"
+              className="h-6 w-6"
+              onClick={() => {
+                if (splitEditor) {
+                  setSplitEditor(false);
+                } else if (openFiles.length > 1) {
+                  const otherFile = openFiles.find((f) => f.path !== activeFilePath);
+                  setSplitEditor(true, otherFile?.path || null);
+                }
+              }}
+              title="Split Editor"
+              disabled={openFiles.length < 2}
+            >
+              <SplitSquareHorizontal className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          <Button
+            variant={isTerminalOpen ? "secondary" : "ghost"}
+            size="icon"
+            className="h-6 w-6"
+            onClick={() => {
+              if (isMobile) {
+                // On mobile, switch to terminal tab
+                setMobileActiveTab("terminal");
+              } else {
+                // On desktop, toggle terminal panel
+                setTerminalOpen(!isTerminalOpen);
+              }
+            }}
+            title="Toggle Terminal (Ctrl+`)"
+          >
+            <Terminal className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
+
+      {/* Breadcrumbs */}
+      <Breadcrumbs />
 
       {/* Editor content */}
       <div className="flex-1 min-h-0">
-        {activeFile?.is_binary ? (
+        {diffMode && diffFilePath ? (
+          <GitDiffEditor />
+        ) : activeFile?.is_binary ? (
           <div className="flex-1 flex items-center justify-center h-full">
             <div className="text-center space-y-2">
               <ImageIcon className="h-12 w-12 text-muted-foreground mx-auto" />
@@ -123,6 +207,87 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
               <p className="text-xs text-muted-foreground">{activeFile.path}</p>
             </div>
           </div>
+        ) : activeFile && splitEditor ? (
+          <PanelGroup direction="horizontal">
+            <Panel defaultSize={50} minSize={25}>
+              <MonacoEditor
+                height="100%"
+                language={activeFile.language || "plaintext"}
+                value={activeFile.content}
+                theme={editorTheme}
+                onChange={(value) => {
+                  if (value !== undefined) {
+                    updateFileContent(activeFile.path, value);
+                  }
+                }}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  wordWrap: "on",
+                  automaticLayout: true,
+                  scrollBeyondLastLine: false,
+                  lineNumbers: "on",
+                  tabSize: 2,
+                  renderWhitespace: "selection",
+                  bracketPairColorization: { enabled: true },
+                  padding: { top: 8 },
+                }}
+              />
+            </Panel>
+            <PanelResizeHandle className="w-[3px] bg-border hover:bg-primary/50 transition-colors" />
+            <Panel defaultSize={50} minSize={25}>
+              {(() => {
+                const splitFile = openFiles.find((f) => f.path === splitFilePath);
+                if (!splitFile) return (
+                  <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+                    No file selected for split view
+                  </div>
+                );
+                return (
+                  <div className="flex flex-col h-full">
+                    <div className="flex items-center justify-between px-2 py-1 border-b bg-muted/30 shrink-0">
+                      <span className="text-[11px] text-muted-foreground truncate">
+                        {splitFile.path.split("/").pop()}
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-5 w-5"
+                        onClick={() => setSplitEditor(false)}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </div>
+                    <div className="flex-1 min-h-0">
+                      <MonacoEditor
+                        height="100%"
+                        language={splitFile.language || "plaintext"}
+                        value={splitFile.content}
+                        theme={editorTheme}
+                        onChange={(value) => {
+                          if (value !== undefined) {
+                            updateFileContent(splitFile.path, value);
+                          }
+                        }}
+                        options={{
+                          minimap: { enabled: false },
+                          fontSize: 13,
+                          wordWrap: "on",
+                          automaticLayout: true,
+                          scrollBeyondLastLine: false,
+                          lineNumbers: "on",
+                          tabSize: 2,
+                          renderWhitespace: "selection",
+                          bracketPairColorization: { enabled: true },
+                          padding: { top: 8 },
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
+            </Panel>
+          </PanelGroup>
         ) : activeFile ? (
           <MonacoEditor
             height="100%"

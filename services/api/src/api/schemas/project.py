@@ -17,8 +17,20 @@ class ProjectCreate(BaseModel):
     agent_context: str | None = None
     root_path: str | None = Field(None, max_length=500)
     primary_url: str | None = Field(None, max_length=500)
+    terminal_user: str | None = Field(None, max_length=100)
     color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str | None = Field(None, max_length=50)
+
+    # Docker settings
+    docker_enabled: bool = False
+    docker_project_type: str | None = Field(None, max_length=50)
+    docker_node_version: str | None = Field(None, max_length=20)
+    docker_php_version: str | None = Field(None, max_length=20)
+    docker_python_version: str | None = Field(None, max_length=20)
+    docker_memory_limit: str | None = Field(None, max_length=20)
+    docker_cpu_limit: str | None = Field(None, max_length=20)
+    docker_expose_ports: str | None = None
+    docker_env_vars: str | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -29,9 +41,21 @@ class ProjectUpdate(BaseModel):
     agent_context: str | None = None
     root_path: str | None = Field(None, max_length=500)
     primary_url: str | None = Field(None, max_length=500)
+    terminal_user: str | None = Field(None, max_length=100)
     status: ProjectStatus | None = None
     color: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     icon: str | None = Field(None, max_length=50)
+
+    # Docker settings
+    docker_enabled: bool | None = None
+    docker_project_type: str | None = Field(None, max_length=50)
+    docker_node_version: str | None = Field(None, max_length=20)
+    docker_php_version: str | None = Field(None, max_length=20)
+    docker_python_version: str | None = Field(None, max_length=20)
+    docker_memory_limit: str | None = Field(None, max_length=20)
+    docker_cpu_limit: str | None = Field(None, max_length=20)
+    docker_expose_ports: str | None = None
+    docker_env_vars: str | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -43,10 +67,23 @@ class ProjectResponse(BaseModel):
     agent_context: str | None
     root_path: str | None
     primary_url: str | None
+    terminal_user: str | None
     status: ProjectStatus
     color: str | None
     icon: str | None
     user_id: str
+
+    # Docker settings
+    docker_enabled: bool = False
+    docker_project_type: str | None = None
+    docker_node_version: str | None = None
+    docker_php_version: str | None = None
+    docker_python_version: str | None = None
+    docker_memory_limit: str | None = None
+    docker_cpu_limit: str | None = None
+    docker_expose_ports: str | None = None
+    docker_env_vars: str | None = None
+    docker_container_status: str | None = None
 
     # Timestamps
     created_at: datetime
@@ -94,6 +131,11 @@ class ProjectContextResponse(BaseModel):
     root_path: str | None
     primary_url: str | None
     domains: list[ProjectDomainInfo] = []
+
+    # Docker context for agents
+    docker_enabled: bool = False
+    docker_project_type: str | None = None
+    docker_container_status: str | None = None
 
     class Config:
         from_attributes = True

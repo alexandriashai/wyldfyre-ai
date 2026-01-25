@@ -61,9 +61,16 @@ interface WorkspaceState {
   rightPanelMode: 'preview' | 'chat' | 'design';
   panelSizes: number[];
   isFileTreeCollapsed: boolean;
+  isFileChatExpanded: boolean;
+  isChatSidebarCollapsed: boolean;
+  isTerminalOpen: boolean;
+  splitEditor: boolean;
+  splitFilePath: string | null;
+  diffMode: boolean;
+  diffFilePath: string | null;
 
   // Mobile
-  mobileActiveTab: 'files' | 'editor' | 'preview' | 'chat';
+  mobileActiveTab: 'files' | 'editor' | 'terminal' | 'preview' | 'chat';
 
   // Settings
   autoSave: boolean;
@@ -101,7 +108,12 @@ interface WorkspaceState {
   setRightPanelMode: (mode: 'preview' | 'chat' | 'design') => void;
   setPanelSizes: (sizes: number[]) => void;
   setFileTreeCollapsed: (collapsed: boolean) => void;
-  setMobileActiveTab: (tab: 'files' | 'editor' | 'preview' | 'chat') => void;
+  setFileChatExpanded: (expanded: boolean) => void;
+  setChatSidebarCollapsed: (collapsed: boolean) => void;
+  setTerminalOpen: (open: boolean) => void;
+  setSplitEditor: (split: boolean, filePath?: string | null) => void;
+  setDiffMode: (enabled: boolean, filePath?: string | null) => void;
+  setMobileActiveTab: (tab: 'files' | 'editor' | 'terminal' | 'preview' | 'chat') => void;
   setAutoSave: (enabled: boolean) => void;
   setShowHiddenFiles: (show: boolean) => void;
   setDeployStatus: (status: Partial<DeployStatus>) => void;
@@ -128,6 +140,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       rightPanelMode: 'preview',
       panelSizes: [15, 55, 30],
       isFileTreeCollapsed: false,
+      isFileChatExpanded: true,
+      isChatSidebarCollapsed: false,
+      isTerminalOpen: false,
+      splitEditor: false,
+      splitFilePath: null,
+      diffMode: false,
+      diffFilePath: null,
       mobileActiveTab: 'files',
       autoSave: true,
       autoSaveDelay: 10000,
@@ -209,6 +228,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       setRightPanelMode: (mode) => set({ rightPanelMode: mode }),
       setPanelSizes: (sizes) => set({ panelSizes: sizes }),
       setFileTreeCollapsed: (collapsed) => set({ isFileTreeCollapsed: collapsed }),
+      setFileChatExpanded: (expanded) => set({ isFileChatExpanded: expanded }),
+      setChatSidebarCollapsed: (collapsed) => set({ isChatSidebarCollapsed: collapsed }),
+      setTerminalOpen: (open) => set({ isTerminalOpen: open }),
+      setSplitEditor: (split, filePath = null) => set({ splitEditor: split, splitFilePath: filePath }),
+      setDiffMode: (enabled, filePath = null) => set({ diffMode: enabled, diffFilePath: filePath }),
       setMobileActiveTab: (tab) => set({ mobileActiveTab: tab }),
       setAutoSave: (enabled) => set({ autoSave: enabled }),
       setShowHiddenFiles: (show) => set({ showHiddenFiles: show }),
@@ -250,6 +274,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         panelSizes: state.panelSizes,
         rightPanelMode: state.rightPanelMode,
         isFileTreeCollapsed: state.isFileTreeCollapsed,
+        isFileChatExpanded: state.isFileChatExpanded,
+        isChatSidebarCollapsed: state.isChatSidebarCollapsed,
         autoSave: state.autoSave,
         pinnedFiles: state.pinnedFiles,
         recentFiles: state.recentFiles,

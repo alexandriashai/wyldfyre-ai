@@ -2,6 +2,7 @@
 WebSocket message handlers.
 """
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -208,6 +209,26 @@ class MessageHandler:
         conv_key = f"conversation:{conversation_id}"
         await self.redis.hset(conv_key, "updated_at", timestamp)
         await self.redis.hincrby(conv_key, "message_count", 1)
+
+        # Persist to PostgreSQL asynchronously
+        asyncio.create_task(
+            self._persist_message_to_db(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                role="user",
+                content=content,
+                user_id=connection.user_id,
+            )
+        )
+
+        # Generate conversation title from first message (async, non-blocking)
+        asyncio.create_task(
+            self._maybe_generate_title(
+                conversation_id=conversation_id,
+                user_id=connection.user_id,
+                user_message=content,
+            )
+        )
 
         # If hashtags found, save to memory
         if memory_tags:
@@ -621,6 +642,36 @@ class MessageHandler:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
+    async def _persist_message_to_db(
+        self,
+        message_id: str,
+        conversation_id: str,
+        role: str,
+        content: str,
+        agent: str | None = None,
+        user_id: str | None = None,
+    ) -> None:
+        """Persist a message to PostgreSQL asynchronously."""
+        try:
+            from database.models import Message
+
+            async with db_session_context() as session:
+                msg = Message(
+                    id=message_id,
+                    conversation_id=conversation_id,
+                    role=role,
+                    content=content,
+                    agent=agent,
+                    user_id=user_id,
+                )
+                session.add(msg)
+        except Exception as e:
+            logger.warning(
+                "Failed to persist message to DB",
+                message_id=message_id,
+                error=str(e),
+            )
+
     async def _send_error(
         self,
         connection: Connection,
@@ -635,6 +686,143 @@ class MessageHandler:
             })
         except Exception as e:
             logger.warning("Failed to send error", error=str(e))
+
+    async def _maybe_generate_title(
+        self,
+        conversation_id: str,
+        user_id: str,
+        user_message: str,
+    ) -> None:
+        """
+        Check if conversation needs a title and generate one from the first message.
+        Only generates for conversations with generic titles after the first exchange.
+        """
+        try:
+            from database.models import Conversation
+
+            async with db_session_context() as session:
+                result = await session.execute(
+                    select(Conversation).where(Conversation.id == conversation_id)
+                )
+                conversation = result.scalar_one_or_none()
+
+                if not conversation:
+                    return
+
+                # Only generate title for new conversations with generic titles
+                generic_titles = {
+                    None, "", "New Chat", "New Conversation", "Chat with Wyld",
+                    "Workspace Chat", "File Assistant", "Untitled"
+                }
+                if conversation.title not in generic_titles:
+                    return
+
+                # Only generate after first message (message_count should be 1 or 2)
+                if conversation.message_count > 3:
+                    return
+
+                # Generate title using LLM
+                title = await self._generate_title_from_message(user_message)
+
+                if title:
+                    # Update database
+                    conversation.title = title
+                    await session.commit()
+
+                    # Publish rename event
+                    await self.pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "conversation_renamed",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "title": title,
+                        },
+                    )
+                    logger.info(
+                        "Auto-generated conversation title",
+                        conversation_id=conversation_id,
+                        title=title,
+                    )
+        except Exception as e:
+            logger.warning(
+                "Failed to generate conversation title",
+                conversation_id=conversation_id,
+                error=str(e),
+            )
+
+    async def _generate_title_from_message(self, message: str) -> str | None:
+        """Generate a concise title from the user's message using LLM."""
+        import httpx
+        import os
+
+        prompt = f"Generate a very short (3-6 words) title for this conversation. Just output the title, nothing else.\n\nUser message: {message[:500]}"
+
+        # Try Anthropic first
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+        if anthropic_key:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "x-api-key": anthropic_key,
+                            "anthropic-version": "2023-06-01",
+                            "content-type": "application/json",
+                        },
+                        json={
+                            "model": "claude-3-5-haiku-latest",
+                            "max_tokens": 30,
+                            "messages": [{"role": "user", "content": prompt}],
+                        },
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        title = data.get("content", [{}])[0].get("text", "").strip()
+                        title = title.strip('"\'').strip()
+                        if title:
+                            if len(title) > 60:
+                                title = title[:57] + "..."
+                            return title
+            except Exception as e:
+                logger.warning("Anthropic title generation failed, trying OpenAI", error=str(e))
+
+        # Try OpenAI as fallback
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        if openai_key:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {openai_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": "gpt-4o-mini",
+                            "max_tokens": 30,
+                            "messages": [{"role": "user", "content": prompt}],
+                        },
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        title = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                        title = title.strip('"\'').strip()
+                        if title:
+                            if len(title) > 60:
+                                title = title[:57] + "..."
+                            return title
+            except Exception as e:
+                logger.warning("OpenAI title generation failed", error=str(e))
+
+        # Final fallback: extract first meaningful words
+        words = message.strip().split()[:6]
+        if words:
+            title = " ".join(words)
+            if len(title) > 50:
+                title = title[:47] + "..."
+            return title
+        return None
 
 
 class AgentResponseHandler:
@@ -686,6 +874,167 @@ class AgentResponseHandler:
     async def stop(self) -> None:
         """Stop listening for agent responses."""
         self._running = False
+
+    async def _persist_agent_message_to_db(
+        self,
+        message_id: str,
+        conversation_id: str,
+        content: str,
+        agent: str,
+        user_id: str | None = None,
+    ) -> None:
+        """Persist an agent message to PostgreSQL asynchronously."""
+        try:
+            from database.models import Message
+
+            async with db_session_context() as session:
+                msg = Message(
+                    id=message_id,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=content,
+                    agent=agent,
+                    user_id=user_id,
+                )
+                session.add(msg)
+        except Exception as e:
+            logger.warning(
+                "Failed to persist agent message to DB",
+                message_id=message_id,
+                error=str(e),
+            )
+
+    async def _maybe_generate_title(
+        self,
+        conversation_id: str,
+        user_id: str,
+        user_message: str,
+    ) -> None:
+        """
+        Check if conversation needs a title and generate one from the first message.
+        Only generates for conversations with generic titles after the first exchange.
+        """
+        try:
+            from database.models import Conversation
+
+            async with db_session_context() as session:
+                result = await session.execute(
+                    select(Conversation).where(Conversation.id == conversation_id)
+                )
+                conversation = result.scalar_one_or_none()
+
+                if not conversation:
+                    return
+
+                # Only generate title for new conversations with generic titles
+                generic_titles = {
+                    None, "", "New Chat", "New Conversation", "Chat with Wyld",
+                    "Workspace Chat", "File Assistant", "Untitled"
+                }
+                if conversation.title not in generic_titles:
+                    return
+
+                # Only generate after first message (message_count should be 1 or 2)
+                if conversation.message_count > 3:
+                    return
+
+                # Generate title using LLM
+                title = await self._generate_title_from_message(user_message)
+
+                if title:
+                    # Update database
+                    conversation.title = title
+                    await session.commit()
+
+                    # Publish rename event
+                    await self.pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "conversation_renamed",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "title": title,
+                        },
+                    )
+                    logger.info(
+                        "Auto-generated conversation title",
+                        conversation_id=conversation_id,
+                        title=title,
+                    )
+        except Exception as e:
+            logger.warning(
+                "Failed to generate conversation title",
+                conversation_id=conversation_id,
+                error=str(e),
+            )
+
+    async def _generate_title_from_message(self, message: str) -> str | None:
+        """Generate a concise title from the user's message using LLM."""
+        try:
+            import httpx
+
+            # Use a fast, small model for title generation
+            api_key = None
+            try:
+                import os
+                api_key = os.environ.get("ANTHROPIC_API_KEY")
+            except Exception:
+                pass
+
+            if not api_key:
+                # Fallback: extract first meaningful words
+                words = message.strip().split()[:8]
+                if words:
+                    title = " ".join(words)
+                    if len(title) > 50:
+                        title = title[:47] + "..."
+                    return title
+                return None
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": "claude-3-5-haiku-latest",
+                        "max_tokens": 30,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": f"Generate a very short (3-6 words) title for this conversation. Just output the title, nothing else.\n\nUser message: {message[:500]}",
+                            }
+                        ],
+                    },
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    title = data.get("content", [{}])[0].get("text", "").strip()
+                    # Clean up and limit length
+                    title = title.strip('"\'').strip()
+                    if len(title) > 60:
+                        title = title[:57] + "..."
+                    return title if title else None
+                else:
+                    logger.warning(
+                        "Title generation API call failed",
+                        status_code=response.status_code,
+                    )
+                    return None
+        except Exception as e:
+            logger.warning("Title generation failed", error=str(e))
+            # Fallback: extract first meaningful words
+            words = message.strip().split()[:6]
+            if words:
+                title = " ".join(words)
+                if len(title) > 50:
+                    title = title[:47] + "..."
+                return title
+            return None
 
     async def _handle_agent_response(self, data: dict[str, Any]) -> None:
         """Process an agent response and route to user."""
@@ -752,19 +1101,32 @@ class AgentResponseHandler:
                 await self.redis.hset(conv_key, "updated_at", timestamp or datetime.now(timezone.utc).isoformat())
                 await self.redis.hincrby(conv_key, "message_count", 1)
 
-            # Send to WebSocket
-            await self.manager.send_personal(
-                user_id,
-                {
-                    "type": "message",
-                    "conversation_id": conversation_id,
-                    "message_id": message_id,
-                    "content": content,
-                    "agent": agent,
-                    "timestamp": timestamp,
-                    "role": "assistant",
-                },
-            )
+                # Persist to PostgreSQL asynchronously
+                asyncio.create_task(
+                    self._persist_agent_message_to_db(
+                        message_id=agent_message_id,
+                        conversation_id=conversation_id,
+                        content=content,
+                        agent=agent or "supervisor",
+                        user_id=user_id,
+                    )
+                )
+
+            # Send to WebSocket (include usage data if available)
+            ws_message: dict[str, Any] = {
+                "type": "message",
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "content": content,
+                "agent": agent,
+                "timestamp": timestamp,
+                "role": "assistant",
+            }
+            usage = data.get("usage")
+            if usage:
+                ws_message["usage"] = usage
+
+            await self.manager.send_personal(user_id, ws_message)
 
         elif response_type == "status":
             # Agent status update

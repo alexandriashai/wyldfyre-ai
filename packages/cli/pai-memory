@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""
+PAI Memory CLI - Access PAI memory system from the terminal.
+
+Usage:
+    pai-memory search <query> [--limit N]
+    pai-memory store <content> [--tags TAG1,TAG2]
+    pai-memory list [--collection NAME]
+    pai-memory get <id>
+    pai-memory delete <id>
+    pai-memory stats
+
+Environment:
+    PAI_API_URL - API base URL (default: http://localhost:8000)
+    PAI_TOKEN - Authentication token
+    PAI_PROJECT_ID - Current project ID
+"""
+
+import argparse
+import json
+import os
+import sys
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+
+
+API_URL = os.environ.get("PAI_API_URL", "http://localhost:8000")
+TOKEN = os.environ.get("PAI_TOKEN", "")
+PROJECT_ID = os.environ.get("PAI_PROJECT_ID", "")
+
+
+def api_request(method: str, endpoint: str, data: dict = None) -> dict:
+    """Make an API request."""
+    url = f"{API_URL}/api{endpoint}"
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    body = json.dumps(data).encode() if data else None
+    req = Request(url, data=body, headers=headers, method=method)
+
+    try:
+        with urlopen(req, timeout=30) as response:
+            return json.loads(response.read().decode())
+    except HTTPError as e:
+        error_body = e.read().decode() if e.fp else str(e)
+        print(f"Error {e.code}: {error_body}", file=sys.stderr)
+        sys.exit(1)
+    except URLError as e:
+        print(f"Connection error: {e.reason}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_search(args):
+    """Search memories."""
+    params = f"?q={args.query}&limit={args.limit}"
+    if PROJECT_ID:
+        params += f"&project_id={PROJECT_ID}"
+
+    result = api_request("GET", f"/memory/search{params}")
+
+    if not result.get("results"):
+        print("No memories found.")
+        return
+
+    for mem in result["results"]:
+        print(f"\n{'='*60}")
+        print(f"ID: {mem.get('id', 'N/A')}")
+        print(f"Collection: {mem.get('collection', 'default')}")
+        print(f"Score: {mem.get('score', 0):.3f}")
+        print(f"Tags: {', '.join(mem.get('tags', []))}")
+        print(f"Content: {mem.get('content', '')[:500]}")
+        if mem.get('metadata'):
+            print(f"Metadata: {json.dumps(mem['metadata'], indent=2)}")
+
+
+def cmd_store(args):
+    """Store a new memory."""
+    data = {
+        "content": args.content,
+        "collection": args.collection or "default",
+    }
+    if args.tags:
+        data["tags"] = [t.strip() for t in args.tags.split(",")]
+    if PROJECT_ID:
+        data["project_id"] = PROJECT_ID
+    if args.metadata:
+        data["metadata"] = json.loads(args.metadata)
+
+    result = api_request("POST", "/memory", data)
+    print(f"Memory stored with ID: {result.get('id')}")
+
+
+def cmd_list(args):
+    """List memory collections."""
+    result = api_request("GET", "/memory/collections")
+
+    if not result.get("collections"):
+        print("No collections found.")
+        return
+
+    print("\nMemory Collections:")
+    print("-" * 40)
+    for coll in result["collections"]:
+        name = coll.get("name", "unknown")
+        count = coll.get("count", 0)
+        print(f"  {name}: {count} memories")
+
+
+def cmd_get(args):
+    """Get a specific memory by ID."""
+    result = api_request("GET", f"/memory/{args.id}")
+
+    print(f"\nMemory: {args.id}")
+    print("=" * 60)
+    print(f"Collection: {result.get('collection', 'default')}")
+    print(f"Tags: {', '.join(result.get('tags', []))}")
+    print(f"Created: {result.get('created_at', 'N/A')}")
+    print(f"\nContent:\n{result.get('content', '')}")
+    if result.get('metadata'):
+        print(f"\nMetadata:\n{json.dumps(result['metadata'], indent=2)}")
+
+
+def cmd_delete(args):
+    """Delete a memory."""
+    api_request("DELETE", f"/memory/{args.id}")
+    print(f"Memory {args.id} deleted.")
+
+
+def cmd_stats(args):
+    """Show memory statistics."""
+    result = api_request("GET", "/memory/stats")
+
+    print("\nPAI Memory Statistics")
+    print("=" * 40)
+    print(f"Total memories: {result.get('total_memories', 0)}")
+    print(f"Total collections: {result.get('total_collections', 0)}")
+    print(f"Storage used: {result.get('storage_bytes', 0) / 1024 / 1024:.2f} MB")
+
+    if result.get("collections"):
+        print("\nBy Collection:")
+        for name, count in result["collections"].items():
+            print(f"  {name}: {count}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="PAI Memory CLI - Access PAI memory system",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+
+    # Search command
+    search_parser = subparsers.add_parser("search", help="Search memories")
+    search_parser.add_argument("query", help="Search query")
+    search_parser.add_argument("--limit", "-n", type=int, default=10, help="Max results")
+    search_parser.set_defaults(func=cmd_search)
+
+    # Store command
+    store_parser = subparsers.add_parser("store", help="Store a memory")
+    store_parser.add_argument("content", help="Memory content")
+    store_parser.add_argument("--tags", "-t", help="Comma-separated tags")
+    store_parser.add_argument("--collection", "-c", help="Collection name")
+    store_parser.add_argument("--metadata", "-m", help="JSON metadata")
+    store_parser.set_defaults(func=cmd_store)
+
+    # List command
+    list_parser = subparsers.add_parser("list", help="List collections")
+    list_parser.set_defaults(func=cmd_list)
+
+    # Get command
+    get_parser = subparsers.add_parser("get", help="Get a memory by ID")
+    get_parser.add_argument("id", help="Memory ID")
+    get_parser.set_defaults(func=cmd_get)
+
+    # Delete command
+    delete_parser = subparsers.add_parser("delete", help="Delete a memory")
+    delete_parser.add_argument("id", help="Memory ID")
+    delete_parser.set_defaults(func=cmd_delete)
+
+    # Stats command
+    stats_parser = subparsers.add_parser("stats", help="Show statistics")
+    stats_parser.set_defaults(func=cmd_stats)
+
+    args = parser.parse_args()
+
+    if not TOKEN:
+        print("Error: PAI_TOKEN environment variable not set", file=sys.stderr)
+        sys.exit(1)
+
+    if args.command:
+        args.func(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

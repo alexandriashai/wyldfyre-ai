@@ -26,6 +26,7 @@ interface Conversation {
   plan_status?: string | null;
   plan_approved_at?: string | null;
   message_count?: number;
+  tags?: string[];
 }
 
 type PlanStatus = "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null;
@@ -75,12 +76,13 @@ interface ChatState {
   searchQuery: string;
 
   // Filters
+  tagFilter: string[];
   projectFilter: string | null;
 
   // Actions
   fetchConversations: (token: string, projectId?: string | null) => Promise<void>;
   selectConversation: (token: string, id: string) => Promise<void>;
-  createConversation: (token: string, title?: string, projectId?: string, domainId?: string) => Promise<Conversation>;
+  createConversation: (token: string, projectId: string, title?: string, domainId?: string) => Promise<Conversation>;
   updateConversation: (token: string, id: string, data: { title?: string; project_id?: string }) => Promise<void>;
   deleteConversation: (token: string, id: string) => Promise<void>;
   addMessage: (message: Message) => void;
@@ -117,6 +119,11 @@ interface ChatState {
   togglePinConversation: (conversationId: string) => void;
   setSearchQuery: (query: string) => void;
 
+  // Tag actions
+  toggleTagFilter: (tag: string) => void;
+  setTagFilter: (tags: string[]) => void;
+  updateConversationTags: (token: string, id: string, tags: string[]) => Promise<void>;
+
   // Filter actions
   setProjectFilter: (projectId: string | null) => void;
 }
@@ -139,6 +146,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentStepIndex: 0,
   pinnedConversations: new Set<string>(),
   searchQuery: "",
+  tagFilter: [],
   projectFilter: null,
 
   fetchConversations: async (token: string, projectId?: string | null) => {
@@ -159,6 +167,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           plan_content: c.plan_content,
           plan_status: c.plan_status,
           plan_approved_at: c.plan_approved_at,
+          tags: c.tags || [],
         })),
       });
     } catch (err) {
@@ -207,7 +216,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  createConversation: async (token: string, title?: string, projectId?: string, domainId?: string) => {
+  createConversation: async (token: string, projectId: string, title?: string, domainId?: string) => {
     set({ isLoading: true, error: null });
     try {
       const conversation = await conversationsApi.create(token, {
@@ -511,6 +520,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setSearchQuery: (query: string) => {
     set({ searchQuery: query });
+  },
+
+  // Tag actions
+  toggleTagFilter: (tag: string) => {
+    set((state) => {
+      const newFilter = state.tagFilter.includes(tag)
+        ? state.tagFilter.filter((t) => t !== tag)
+        : [...state.tagFilter, tag];
+      return { tagFilter: newFilter };
+    });
+  },
+
+  setTagFilter: (tags: string[]) => {
+    set({ tagFilter: tags });
+  },
+
+  updateConversationTags: async (token: string, id: string, tags: string[]) => {
+    try {
+      const updated = await conversationsApi.updateTags(token, id, tags);
+      set((state) => ({
+        conversations: state.conversations.map((c) =>
+          c.id === id ? { ...c, tags: updated.tags || tags } : c
+        ),
+      }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to update tags";
+      set({ error: message });
+    }
   },
 
   // Filter actions

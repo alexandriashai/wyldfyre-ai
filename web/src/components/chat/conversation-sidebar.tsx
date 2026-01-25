@@ -41,10 +41,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
+import { getTagInfo } from "@/lib/constants";
+import { TagFilter } from "./tag-filter";
+import { TagEditor } from "./tag-editor";
 
 interface ConversationSidebarProps {
   isCollapsed?: boolean;
   onToggle?: () => void;
+  projectId?: string;
 }
 
 type DateGroup = "Pinned" | "Today" | "Yesterday" | "Last 7 Days" | "Last 30 Days" | "Older";
@@ -81,6 +85,7 @@ function formatRelativeTime(dateString: string): string {
 export function ConversationSidebar({
   isCollapsed = false,
   onToggle,
+  projectId,
 }: ConversationSidebarProps) {
   const { token } = useAuthStore();
   const {
@@ -137,9 +142,9 @@ export function ConversationSidebar({
   }, [conversations, searchQuery, pinnedConversations]);
 
   const handleCreateConversation = async () => {
-    if (!token) return;
+    if (!token || !selectedProject?.id) return;
     try {
-      await createConversation(token, "New Chat", selectedProject?.id);
+      await createConversation(token, selectedProject.id, "New Chat");
     } catch (error) {
       console.error("Failed to create conversation:", error);
     }
@@ -283,10 +288,27 @@ export function ConversationSidebar({
                 )}>
                   {conv.title || "Untitled"}
                 </p>
-                <p className="text-[10px] text-muted-foreground truncate">
-                  {formatRelativeTime(conv.updated_at || conv.created_at)}
-                  {(conv.message_count ?? 0) > 0 && ` · ${conv.message_count} msgs`}
-                </p>
+                <div className="flex items-center gap-1">
+                  <p className="text-[10px] text-muted-foreground truncate">
+                    {formatRelativeTime(conv.updated_at || conv.created_at)}
+                    {(conv.message_count ?? 0) > 0 && ` · ${conv.message_count} msgs`}
+                  </p>
+                  {conv.tags && conv.tags.length > 0 && (
+                    <div className="flex gap-0.5 shrink-0">
+                      {conv.tags.slice(0, 2).map((tag) => {
+                        const info = getTagInfo(tag);
+                        return (
+                          <span
+                            key={tag}
+                            className="h-1.5 w-1.5 rounded-full"
+                            style={{ backgroundColor: info?.color || "#6B7280" }}
+                            title={info?.label || tag}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {!isMultiSelect && (
@@ -313,6 +335,11 @@ export function ConversationSidebar({
                       ) : (
                         <><Star className="h-4 w-4 mr-2" />Pin</>
                       )}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild onClick={(e) => e.stopPropagation()}>
+                      <div>
+                        <TagEditor conversationId={conv.id} currentTags={conv.tags || []} />
+                      </div>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
@@ -383,6 +410,9 @@ export function ConversationSidebar({
           )}
         </div>
       </div>
+
+      {/* Tag Filter */}
+      <TagFilter />
 
       {/* Bulk actions bar */}
       {isMultiSelect && selectedIds.size > 0 && (

@@ -18,6 +18,7 @@ from .settings import router as settings_router
 from .tasks import router as tasks_router
 from .usage import router as usage_router
 from .workspace import router as workspace_router
+from .containers import router as containers_router
 
 __all__ = [
     "agents_router",
@@ -36,4 +37,5 @@ __all__ = [
     "tasks_router",
     "usage_router",
     "workspace_router",
+    "containers_router",
 ]

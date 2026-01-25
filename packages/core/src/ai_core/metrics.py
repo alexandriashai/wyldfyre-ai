@@ -250,3 +250,19 @@ system_uptime_seconds = Gauge(
     "System uptime in seconds",
     ["service"],
 )
+
+agent_last_heartbeat_timestamp = Gauge(
+    "agent_last_heartbeat_timestamp",
+    "Unix timestamp of the last heartbeat from each agent",
+    ["agent_name", "agent_type"],
+)
+
+# =============================================================================
+# Security Metrics
+# =============================================================================
+
+security_violations_total = Counter(
+    "security_violations_total",
+    "Total security violations detected",
+    ["threat_level", "rule_name", "agent"],
+)

@@ -144,6 +144,7 @@ from .plugin_integration import (
 from .metrics import (
     agent_active_tasks,
     agent_errors_total,
+    agent_last_heartbeat_timestamp,
     agent_task_duration_seconds,
     agent_tasks_total,
     agent_tool_calls_total,
@@ -173,6 +174,7 @@ from .metrics import (
     pai_phase_executions_total,
     routing_decisions_total,
     routing_latency_seconds,
+    security_violations_total,
     system_uptime_seconds,
 )
 

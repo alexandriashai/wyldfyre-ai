@@ -394,12 +394,24 @@ export interface Project {
   agent_context: string | null;
   root_path: string | null;
   primary_url: string | null;
+  terminal_user: string | null;
   status: 'active' | 'archived' | 'completed';
   color: string | null;
   icon: string | null;
   user_id: string;
   created_at: string;
   updated_at: string;
+  // Docker settings
+  docker_enabled: boolean;
+  docker_project_type: string | null;
+  docker_node_version: string | null;
+  docker_php_version: string | null;
+  docker_python_version: string | null;
+  docker_memory_limit: string | null;
+  docker_cpu_limit: string | null;
+  docker_expose_ports: string | null;
+  docker_env_vars: string | null;
+  docker_container_status: string | null;
 }
 
 export interface ProjectWithStats extends Project {
@@ -446,7 +458,27 @@ export const projectsApi = {
     return handleResponse<Project>(response);
   },
 
-  async update(token: string, id: string, data: { name?: string; description?: string; agent_context?: string; root_path?: string; primary_url?: string; status?: string; color?: string; icon?: string }) {
+  async update(token: string, id: string, data: {
+    name?: string;
+    description?: string;
+    agent_context?: string;
+    root_path?: string;
+    primary_url?: string;
+    terminal_user?: string;
+    status?: string;
+    color?: string;
+    icon?: string;
+    // Docker settings
+    docker_enabled?: boolean;
+    docker_project_type?: string;
+    docker_node_version?: string;
+    docker_php_version?: string;
+    docker_python_version?: string;
+    docker_memory_limit?: string;
+    docker_cpu_limit?: string;
+    docker_expose_ports?: string;
+    docker_env_vars?: string;
+  }) {
     const response = await fetch(`${API_BASE_URL}/api/projects/${id}`, {
       method: 'PATCH',
       headers: getHeaders(token),
@@ -478,6 +510,7 @@ export interface Conversation {
   user_id: string;
   project_id: string | null;
   domain_id: string | null;
+  tags: string[];
   created_at: string;
   updated_at: string;
 }
@@ -489,6 +522,7 @@ export const conversationsApi = {
     domain_id?: string;
     status?: string;
     search?: string;
+    tags?: string[];
     page?: number;
     page_size?: number;
   }) {
@@ -497,6 +531,7 @@ export const conversationsApi = {
     if (params?.domain_id) searchParams.set('domain_id', params.domain_id);
     if (params?.status) searchParams.set('status', params.status);
     if (params?.search) searchParams.set('search', params.search);
+    if (params?.tags?.length) searchParams.set('tags', params.tags.join(','));
     if (params?.page) searchParams.set('page', params.page.toString());
     if (params?.page_size) searchParams.set('page_size', params.page_size.toString());
 
@@ -538,7 +573,7 @@ export const conversationsApi = {
     };
   },
 
-  async create(token: string, data: { title?: string; project_id?: string; domain_id?: string }) {
+  async create(token: string, data: { title?: string; project_id: string; domain_id?: string }) {
     const response = await fetch(`${API_BASE_URL}/api/conversations`, {
       method: 'POST',
       headers: getHeaders(token),
@@ -615,6 +650,15 @@ export const conversationsApi = {
       plan_status: string;
       message: string;
     }>(response);
+  },
+
+  async updateTags(token: string, id: string, tags: string[]) {
+    const response = await fetch(`${API_BASE_URL}/api/conversations/${id}/tags`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify({ tags }),
+    });
+    return handleResponse<Conversation>(response);
   },
 };
 
@@ -1199,6 +1243,14 @@ export const workspaceApi = {
       headers: getHeaders(token),
     });
     return handleResponse<{ diff: string; files_changed: number; insertions: number; deletions: number }>(response);
+  },
+
+  async getGitFileContent(token: string, projectId: string, path: string, ref: string = "HEAD") {
+    const searchParams = new URLSearchParams({ path, ref });
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/file-content?${searchParams}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ content: string; ref: string; path: string }>(response);
   },
 
   // Deploy operations

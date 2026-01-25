@@ -12,6 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
+    from .conversation_tag import ConversationTag
     from .domain import Domain
     from .project import Project
     from .task import Task
@@ -98,6 +99,11 @@ class Conversation(Base, UUIDMixin, TimestampMixin):
     tasks: Mapped[list["Task"]] = relationship(
         "Task",
         back_populates="conversation",
+    )
+    tags: Mapped[list["ConversationTag"]] = relationship(
+        "ConversationTag",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

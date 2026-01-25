@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_core import get_logger
-from database.models import Conversation, ConversationStatus, PlanStatus
+from database.models import Conversation, ConversationStatus, ConversationTag, PlanStatus
 from ai_messaging import RedisClient
 
 from ..database import get_db_session
@@ -27,6 +27,7 @@ from ..schemas.conversation import (
     ConversationWithMessagesResponse,
     MessageResponse,
     PlanUpdate,
+    TagsUpdate,
 )
 
 logger = get_logger(__name__)
@@ -42,6 +43,7 @@ async def list_conversations(
     project_id: str | None = Query(None, description="Filter by project"),
     domain_id: str | None = Query(None, description="Filter by domain"),
     status_filter: ConversationStatus | None = Query(None, alias="status"),
+    tags: str | None = Query(None, description="Comma-separated tags to filter by"),
     search: str | None = Query(None, description="Search in title"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
@@ -49,8 +51,12 @@ async def list_conversations(
     """
     List conversations for the current user with optional filters.
     """
+    from sqlalchemy.orm import selectinload
+
     # Build query
-    query = select(Conversation).where(Conversation.user_id == current_user.sub)
+    query = select(Conversation).options(selectinload(Conversation.tags)).where(
+        Conversation.user_id == current_user.sub
+    )
 
     if project_id:
         query = query.where(Conversation.project_id == project_id)
@@ -67,6 +73,17 @@ async def list_conversations(
     if search:
         query = query.where(Conversation.title.ilike(f"%{search}%"))
 
+    if tags:
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        if tag_list:
+            query = query.where(
+                Conversation.id.in_(
+                    select(ConversationTag.conversation_id).where(
+                        ConversationTag.tag.in_(tag_list)
+                    )
+                )
+            )
+
     # Get total count
     count_query = select(func.count(Conversation.id)).where(
         Conversation.user_id == current_user.sub
@@ -81,6 +98,16 @@ async def list_conversations(
         count_query = count_query.where(Conversation.status != ConversationStatus.DELETED)
     if search:
         count_query = count_query.where(Conversation.title.ilike(f"%{search}%"))
+    if tags:
+        tag_list_count = [t.strip() for t in tags.split(",") if t.strip()]
+        if tag_list_count:
+            count_query = count_query.where(
+                Conversation.id.in_(
+                    select(ConversationTag.conversation_id).where(
+                        ConversationTag.tag.in_(tag_list_count)
+                    )
+                )
+            )
 
     count_result = await db.execute(count_query)
     total = count_result.scalar() or 0
@@ -96,7 +123,7 @@ async def list_conversations(
     conversations = list(result.scalars().all())
 
     return ConversationListResponse(
-        conversations=[ConversationResponse.model_validate(c) for c in conversations],
+        conversations=[ConversationResponse.from_conversation(c) for c in conversations],
         total=total,
         page=page,
         page_size=page_size,
@@ -127,6 +154,17 @@ async def create_conversation(
     await db.flush()
     await db.refresh(conversation)
 
+    # Add tags if provided
+    if request.tags:
+        for tag_value in request.tags:
+            tag = ConversationTag(
+                conversation_id=conversation.id,
+                tag=tag_value,
+            )
+            db.add(tag)
+        await db.flush()
+        await db.refresh(conversation)
+
     # Also store in Redis for fast access
     conv_key = f"conversation:{conversation.id}"
     now = datetime.now(timezone.utc).isoformat()
@@ -155,7 +193,7 @@ async def create_conversation(
         project_id=request.project_id,
     )
 
-    return ConversationResponse.model_validate(conversation)
+    return ConversationResponse.from_conversation(conversation)
 
 
 @router.get("/{conversation_id}", response_model=ConversationWithMessagesResponse)
@@ -171,9 +209,13 @@ async def get_conversation(
 
     Conversation metadata comes from DB, messages from Redis.
     """
+    from sqlalchemy.orm import selectinload
+
     # Get conversation from DB
     result = await db.execute(
-        select(Conversation).where(
+        select(Conversation)
+        .options(selectinload(Conversation.tags))
+        .where(
             Conversation.id == conversation_id,
             Conversation.user_id == current_user.sub,
         )
@@ -203,8 +245,28 @@ async def get_conversation(
                 "timestamp": msg_data.get("timestamp", ""),
             })
 
+    # Fallback: if Redis returned no messages, query PostgreSQL
+    if not messages:
+        from database.models import Message
+
+        msg_result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at.asc())
+            .limit(message_limit)
+        )
+        db_messages = msg_result.scalars().all()
+        for msg in db_messages:
+            messages.append({
+                "id": msg.id,
+                "role": msg.role,
+                "content": msg.content,
+                "agent": msg.agent,
+                "timestamp": msg.created_at.isoformat() if msg.created_at else "",
+            })
+
     return ConversationWithMessagesResponse(
-        conversation=ConversationResponse.model_validate(conversation),
+        conversation=ConversationResponse.from_conversation(conversation),
         messages=messages,
     )
 
@@ -220,8 +282,12 @@ async def update_conversation(
     """
     Update a conversation.
     """
+    from sqlalchemy.orm import selectinload
+
     result = await db.execute(
-        select(Conversation).where(
+        select(Conversation)
+        .options(selectinload(Conversation.tags))
+        .where(
             Conversation.id == conversation_id,
             Conversation.user_id == current_user.sub,
         )
@@ -257,7 +323,7 @@ async def update_conversation(
         user_id=current_user.sub,
     )
 
-    return ConversationResponse.model_validate(conversation)
+    return ConversationResponse.from_conversation(conversation)
 
 
 @router.delete("/{conversation_id}")
@@ -307,6 +373,65 @@ async def delete_conversation(
     )
 
     return {"message": f"Conversation {conversation_id} deleted"}
+
+
+@router.put("/{conversation_id}/tags", response_model=ConversationResponse)
+async def update_conversation_tags(
+    conversation_id: str,
+    request: TagsUpdate,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> ConversationResponse:
+    """
+    Set tags for a conversation (replaces existing tags).
+    """
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(Conversation)
+        .options(selectinload(Conversation.tags))
+        .where(
+            Conversation.id == conversation_id,
+            Conversation.user_id == current_user.sub,
+        )
+    )
+    conversation = result.scalar_one_or_none()
+
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation {conversation_id} not found",
+        )
+
+    # Remove existing tags
+    for existing_tag in list(conversation.tags):
+        await db.delete(existing_tag)
+
+    # Add new tags
+    for tag_value in request.tags:
+        tag = ConversationTag(
+            conversation_id=conversation.id,
+            tag=tag_value.strip(),
+        )
+        db.add(tag)
+
+    await db.flush()
+    await db.refresh(conversation)
+    # Reload tags relationship
+    result = await db.execute(
+        select(Conversation)
+        .options(selectinload(Conversation.tags))
+        .where(Conversation.id == conversation_id)
+    )
+    conversation = result.scalar_one()
+
+    logger.info(
+        "Conversation tags updated",
+        conversation_id=conversation_id,
+        tags=request.tags,
+    )
+
+    return ConversationResponse.from_conversation(conversation)
 
 
 # --- Plan Management Endpoints (Claude CLI Style) ---

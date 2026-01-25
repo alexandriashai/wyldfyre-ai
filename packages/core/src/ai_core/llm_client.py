@@ -61,6 +61,79 @@ FALLBACK_RECOVERY_INTERVAL = 300
 # Redis key that disables primary provider until manually deleted
 FALLBACK_DISABLED_KEY = "llm:primary_disabled"
 
+# Circuit breaker configuration
+CIRCUIT_FAILURE_THRESHOLD = 5
+CIRCUIT_RECOVERY_TIMEOUT = 60  # seconds
+
+
+class CircuitState:
+    """Circuit breaker states."""
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+class CircuitOpenError(Exception):
+    """Raised when circuit breaker is open."""
+    pass
+
+
+class CircuitBreaker:
+    """
+    Simple circuit breaker for LLM calls.
+
+    Tracks consecutive failures. After threshold failures, opens the circuit
+    and fast-fails for a timeout period. After timeout, allows one test call
+    (half-open). If that succeeds, closes the circuit. If it fails, re-opens.
+    """
+
+    def __init__(self, name: str, failure_threshold: int = CIRCUIT_FAILURE_THRESHOLD, timeout: float = CIRCUIT_RECOVERY_TIMEOUT):
+        self.name = name
+        self.failure_threshold = failure_threshold
+        self.timeout = timeout
+        self._state = CircuitState.CLOSED
+        self._failure_count = 0
+        self._last_failure_time: float = 0
+
+    @property
+    def state(self) -> str:
+        if self._state == CircuitState.OPEN:
+            # Check if timeout has elapsed
+            if time.time() - self._last_failure_time >= self.timeout:
+                self._state = CircuitState.HALF_OPEN
+                logger.info("Circuit breaker half-open", name=self.name)
+        return self._state
+
+    def record_success(self) -> None:
+        """Record a successful call."""
+        self._failure_count = 0
+        if self._state != CircuitState.CLOSED:
+            logger.info("Circuit breaker closed", name=self.name)
+        self._state = CircuitState.CLOSED
+
+    def record_failure(self) -> None:
+        """Record a failed call."""
+        self._failure_count += 1
+        self._last_failure_time = time.time()
+
+        if self._failure_count >= self.failure_threshold:
+            self._state = CircuitState.OPEN
+            logger.warning(
+                "Circuit breaker opened",
+                name=self.name,
+                failures=self._failure_count,
+                timeout=self.timeout,
+            )
+
+    def check(self) -> None:
+        """Check if call is allowed. Raises CircuitOpenError if not."""
+        state = self.state  # triggers timeout check
+        if state == CircuitState.OPEN:
+            raise CircuitOpenError(
+                f"Circuit breaker '{self.name}' is open after {self._failure_count} failures. "
+                f"Retry after {self.timeout}s."
+            )
+
 
 def _is_credit_error(error: Exception) -> bool:
     """Check if error is a credit/billing issue (non-transient)."""
@@ -123,6 +196,7 @@ class LLMClient:
         self._fallback_reason: str = ""  # why we fell back
         self._redis = redis  # Optional RedisClient for persistent fallback state
         self._content_router = get_content_router(redis=redis)
+        self._circuit_breaker = CircuitBreaker("llm-primary")
 
         anthropic_key = settings.api.anthropic_api_key.get_secret_value()
         openai_key = settings.api.openai_api_key.get_secret_value()
@@ -305,13 +379,34 @@ class LLMClient:
                 and primary_model == TIER_MODELS[LLMProviderType.OPENAI][ModelTier.POWERFUL]):
             effective_effort = "high"
 
+        # Check circuit breaker before calling primary
+        try:
+            self._circuit_breaker.check()
+        except CircuitOpenError:
+            if self._fallback:
+                logger.warning(
+                    "Circuit breaker open, fast-failing to fallback",
+                    primary=self._primary.provider_type.value,
+                )
+                fallback_model = await self._resolve_model(
+                    model, self._fallback.provider_type, tier, max_tokens, tools, system, messages
+                )
+                return await self._call_with_retry(
+                    self._fallback, fallback_model, max_tokens, system, messages, tools,
+                    reasoning_effort=reasoning_effort,
+                )
+            raise
+
         # Try primary provider with retry
         try:
-            return await self._call_with_retry(
+            result = await self._call_with_retry(
                 self._primary, primary_model, max_tokens, system, messages, tools,
                 reasoning_effort=effective_effort,
             )
+            self._circuit_breaker.record_success()
+            return result
         except Exception as e:
+            self._circuit_breaker.record_failure()
             # Only fall back for credit/rate errors, not arbitrary failures
             if self._fallback and _should_fallback(e):
                 reason = "credit_exhausted" if _is_credit_error(e) else "rate_limited"

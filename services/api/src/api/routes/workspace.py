@@ -41,6 +41,7 @@ from ..schemas.workspace import (
     GitCommitRequest,
     GitCommitResponse,
     GitDiffResponse,
+    GitFileContentResponse,
     GitFileStatus,
     GitLogEntry,
     GitLogResponse,
@@ -939,6 +940,44 @@ async def git_diff(
         files_changed=files_changed,
         insertions=insertions,
         deletions=deletions,
+    )
+
+
+@router.get("/git/file-content", response_model=GitFileContentResponse)
+async def git_file_content(
+    project_id: str,
+    current_user: CurrentUserDep,
+    path: str = Query(..., description="File path relative to project root"),
+    ref: str = Query("HEAD", description="Git ref (commit, branch, tag)"),
+    db: AsyncSession = Depends(get_db_session),
+) -> GitFileContentResponse:
+    """Get file content at a specific git ref."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    # Validate path doesn't escape project root
+    try:
+        full_path = Path(project.root_path) / path.lstrip("/")
+        full_path.relative_to(project.root_path)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    # Use git show to get file content at ref
+    try:
+        result = await run_git_command(
+            project.root_path, "show", f"{ref}:{path.lstrip('/')}", check=True
+        )
+        content = result.stdout
+    except Exception:
+        # File might not exist at this ref (new file)
+        raise HTTPException(
+            status_code=404,
+            detail=f"File not found at ref '{ref}'"
+        )
+
+    return GitFileContentResponse(
+        content=content,
+        ref=ref,
+        path=path,
     )
 
 

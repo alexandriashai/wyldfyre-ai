@@ -158,6 +158,14 @@ class GitDiffResponse(BaseModel):
     deletions: int
 
 
+class GitFileContentResponse(BaseModel):
+    """Response for git file content at a specific ref."""
+
+    content: str
+    ref: str
+    path: str
+
+
 # --- Deploy API Schemas ---
 
 

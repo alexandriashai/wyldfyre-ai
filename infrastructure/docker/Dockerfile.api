@@ -41,11 +41,38 @@ FROM python:3.12-slim as runtime
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies including tmux for terminal and docker CLI for container management
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    tmux \
+    sudo \
+    ca-certificates \
+    gnupg \
+    ncurses-term \
+    git \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -m -u 1000 appuser
+    # Install Docker CLI from official Docker repo
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 988 docker 2>/dev/null || true \
+    && useradd -m -u 1000 -G docker appuser \
+    && (groupadd -g 2000 wyld 2>/dev/null || true) \
+    && useradd -m -u 1015 -g 2000 -G docker wyld-api 2>/dev/null || usermod -aG docker wyld-api \
+    && echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/appuser \
+    && echo "wyld-api ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/wyld-api \
+    && echo "set -g default-terminal 'xterm-256color'" > /etc/tmux.conf \
+    && echo "set -g terminal-overrides ',xterm-256color:Tc'" >> /etc/tmux.conf
+
+# Install Node.js for Claude Code CLI
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @anthropic-ai/claude-code
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv

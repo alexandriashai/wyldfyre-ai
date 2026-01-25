@@ -35,15 +35,15 @@ scrape_configs:
       - targets: ['ai-voice:8001']
     metrics_path: '/metrics'
 
-  # Redis (requires redis_exporter sidecar for metrics)
+  # Redis metrics via redis_exporter
   - job_name: 'redis'
     static_configs:
-      - targets: ['ai-redis:6379']
+      - targets: ['redis-exporter:9121']
 
-  # PostgreSQL (requires postgres_exporter sidecar for metrics)
+  # PostgreSQL metrics via postgres_exporter
   - job_name: 'postgres'
     static_configs:
-      - targets: ['ai-postgres:5432']
+      - targets: ['postgres-exporter:9187']
 
   # Qdrant
   - job_name: 'qdrant'

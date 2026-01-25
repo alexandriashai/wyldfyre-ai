@@ -1,0 +1,505 @@
+#!/usr/bin/env python3
+"""
+Wyld Claude - Spawn Claude Code with project context and PAI memory access.
+
+This wrapper:
+1. Injects project context (root path, name, settings)
+2. Provides PAI memory access via CLAUDE.md instructions
+3. Passes through authentication from the Wyld session
+
+Usage:
+    wyld-claude [claude args...]
+    wyld-claude --setup  # First-time setup
+
+Environment:
+    PAI_API_URL - API base URL
+    PAI_TOKEN - Authentication token
+    PAI_PROJECT_ID - Current project ID
+    PAI_PROJECT_ROOT - Project root path
+    PAI_PROJECT_NAME - Project name
+    ANTHROPIC_AUTH_TOKEN - Anthropic session token for subscription auth
+"""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def get_project_context() -> dict:
+    """Get project context from environment."""
+    return {
+        "project_id": os.environ.get("PAI_PROJECT_ID", ""),
+        "project_name": os.environ.get("PAI_PROJECT_NAME", ""),
+        "project_root": os.environ.get("PAI_PROJECT_ROOT", os.getcwd()),
+        "api_url": os.environ.get("PAI_API_URL", "http://localhost:8000"),
+        "token": os.environ.get("PAI_TOKEN", ""),
+    }
+
+
+def fetch_project_memories(ctx: dict, limit: int = 10) -> list:
+    """Fetch relevant memories for the project."""
+    if not ctx["token"] or not ctx["project_id"]:
+        return []
+
+    try:
+        from urllib.request import Request, urlopen
+        import json
+
+        url = f"{ctx['api_url']}/api/memory/search?project_id={ctx['project_id']}&limit={limit}"
+        headers = {
+            "Authorization": f"Bearer {ctx['token']}",
+            "Content-Type": "application/json",
+        }
+        req = Request(url, headers=headers)
+
+        with urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            return data.get("results", [])
+    except Exception as e:
+        print(f"Warning: Could not fetch memories: {e}", file=sys.stderr)
+        return []
+
+
+def fetch_project_learnings(ctx: dict) -> list:
+    """Fetch PAI learnings for the project."""
+    if not ctx["token"] or not ctx["project_id"]:
+        return []
+
+    try:
+        from urllib.request import Request, urlopen
+        import json
+
+        url = f"{ctx['api_url']}/api/memory/learnings?project_id={ctx['project_id']}&limit=20"
+        headers = {
+            "Authorization": f"Bearer {ctx['token']}",
+            "Content-Type": "application/json",
+        }
+        req = Request(url, headers=headers)
+
+        with urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            return data.get("learnings", [])
+    except Exception:
+        return []
+
+
+def detect_installed_tools() -> dict:
+    """Detect which tools are available in the current environment."""
+    import shutil
+
+    tools = {
+        "available": [],
+        "languages": [],
+        "frameworks": [],
+        "databases": [],
+    }
+
+    # Check languages
+    lang_checks = [
+        ("python3", "Python 3"),
+        ("node", "Node.js"),
+        ("php", "PHP"),
+        ("ruby", "Ruby"),
+        ("go", "Go"),
+        ("rustc", "Rust"),
+        ("java", "Java"),
+    ]
+    for cmd, name in lang_checks:
+        if shutil.which(cmd):
+            tools["languages"].append(name)
+            tools["available"].append(cmd)
+
+    # Check package managers
+    pkg_checks = [
+        ("npm", "npm"),
+        ("yarn", "yarn"),
+        ("pnpm", "pnpm"),
+        ("pip3", "pip"),
+        ("composer", "composer"),
+        ("cargo", "cargo"),
+        ("gem", "gem"),
+    ]
+    for cmd, name in pkg_checks:
+        if shutil.which(cmd):
+            tools["available"].append(cmd)
+
+    # Check common tools
+    tool_checks = [
+        "git", "curl", "wget", "jq", "rsync", "ssh", "docker",
+        "vim", "nano", "grep", "sed", "awk", "find", "tar",
+    ]
+    for cmd in tool_checks:
+        if shutil.which(cmd):
+            tools["available"].append(cmd)
+
+    # Check databases/services
+    db_checks = [
+        ("mysql", "MySQL"),
+        ("psql", "PostgreSQL"),
+        ("redis-cli", "Redis"),
+        ("mongosh", "MongoDB"),
+        ("sqlite3", "SQLite"),
+    ]
+    for cmd, name in db_checks:
+        if shutil.which(cmd):
+            tools["databases"].append(name)
+            tools["available"].append(cmd)
+
+    # Detect frameworks from project files
+    project_root = os.environ.get("PAI_PROJECT_ROOT", os.getcwd())
+
+    framework_files = {
+        "package.json": ["Node.js project"],
+        "composer.json": ["PHP/Composer project"],
+        "requirements.txt": ["Python project"],
+        "Pipfile": ["Python/Pipenv project"],
+        "pyproject.toml": ["Python project"],
+        "Gemfile": ["Ruby project"],
+        "go.mod": ["Go project"],
+        "Cargo.toml": ["Rust project"],
+        "next.config.js": ["Next.js"],
+        "next.config.mjs": ["Next.js"],
+        "nuxt.config.js": ["Nuxt.js"],
+        "vue.config.js": ["Vue.js"],
+        "angular.json": ["Angular"],
+        "svelte.config.js": ["SvelteKit"],
+        "astro.config.mjs": ["Astro"],
+        "vite.config.js": ["Vite"],
+        "webpack.config.js": ["Webpack"],
+        "tailwind.config.js": ["Tailwind CSS"],
+        "wp-config.php": ["WordPress"],
+        "artisan": ["Laravel"],
+        "manage.py": ["Django"],
+        "app.py": ["Flask"],
+        "Dockerfile": ["Docker"],
+        "docker-compose.yml": ["Docker Compose"],
+        ".github/workflows": ["GitHub Actions"],
+    }
+
+    for file, frameworks in framework_files.items():
+        check_path = os.path.join(project_root, file)
+        if os.path.exists(check_path):
+            tools["frameworks"].extend(frameworks)
+
+    # Deduplicate
+    tools["frameworks"] = list(set(tools["frameworks"]))
+
+    return tools
+
+
+def get_project_dependencies() -> dict:
+    """Parse project dependency files to get installed packages."""
+    project_root = os.environ.get("PAI_PROJECT_ROOT", os.getcwd())
+    deps = {
+        "node": [],
+        "python": [],
+        "php": [],
+    }
+
+    # Parse package.json
+    pkg_json = os.path.join(project_root, "package.json")
+    if os.path.exists(pkg_json):
+        try:
+            with open(pkg_json) as f:
+                data = json.load(f)
+                all_deps = {}
+                all_deps.update(data.get("dependencies", {}))
+                all_deps.update(data.get("devDependencies", {}))
+                deps["node"] = list(all_deps.keys())[:50]  # Limit to 50
+        except Exception:
+            pass
+
+    # Parse requirements.txt
+    req_txt = os.path.join(project_root, "requirements.txt")
+    if os.path.exists(req_txt):
+        try:
+            with open(req_txt) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        # Extract package name (before ==, >=, etc.)
+                        pkg = line.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
+                        if pkg:
+                            deps["python"].append(pkg)
+            deps["python"] = deps["python"][:50]
+        except Exception:
+            pass
+
+    # Parse pyproject.toml (basic)
+    pyproject = os.path.join(project_root, "pyproject.toml")
+    if os.path.exists(pyproject) and not deps["python"]:
+        try:
+            with open(pyproject) as f:
+                content = f.read()
+                # Simple regex to find dependencies
+                import re
+                matches = re.findall(r'"([a-zA-Z0-9_-]+)"', content)
+                deps["python"] = list(set(matches))[:30]
+        except Exception:
+            pass
+
+    # Parse composer.json
+    composer = os.path.join(project_root, "composer.json")
+    if os.path.exists(composer):
+        try:
+            with open(composer) as f:
+                data = json.load(f)
+                all_deps = {}
+                all_deps.update(data.get("require", {}))
+                all_deps.update(data.get("require-dev", {}))
+                deps["php"] = [k for k in all_deps.keys() if not k.startswith("php")][:50]
+        except Exception:
+            pass
+
+    return deps
+
+
+def get_version_info() -> dict:
+    """Get version info for key tools."""
+    import subprocess
+
+    versions = {}
+
+    version_cmds = {
+        "node": ["node", "--version"],
+        "npm": ["npm", "--version"],
+        "python": ["python3", "--version"],
+        "php": ["php", "--version"],
+        "git": ["git", "--version"],
+        "docker": ["docker", "--version"],
+    }
+
+    for name, cmd in version_cmds.items():
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                version = result.stdout.strip().split('\n')[0]
+                versions[name] = version
+        except Exception:
+            pass
+
+    return versions
+
+
+def generate_claude_md(ctx: dict) -> str:
+    """Generate CLAUDE.md content with project context, tools, and PAI memories."""
+    memories = fetch_project_memories(ctx)
+    learnings = fetch_project_learnings(ctx)
+    tools = detect_installed_tools()
+    versions = get_version_info()
+    deps = get_project_dependencies()
+
+    content = f"""# Project: {ctx['project_name'] or 'Wyld Project'}
+
+## Project Context
+- **Root Path**: {ctx['project_root']}
+- **Project ID**: {ctx['project_id']}
+
+## Available Tools & Capabilities
+
+### Languages
+{', '.join(tools['languages']) if tools['languages'] else 'None detected'}
+
+### Detected Frameworks
+{', '.join(tools['frameworks']) if tools['frameworks'] else 'None detected'}
+
+### Databases
+{', '.join(tools['databases']) if tools['databases'] else 'None detected'}
+
+### Version Info
+"""
+    for name, version in versions.items():
+        content += f"- **{name}**: {version}\n"
+
+    content += f"""
+### Available Commands
+```
+{' '.join(sorted(set(tools['available'])))}
+```
+
+### Project Dependencies
+"""
+    if deps["node"]:
+        content += f"**Node.js packages**: {', '.join(deps['node'][:20])}"
+        if len(deps['node']) > 20:
+            content += f" (+{len(deps['node']) - 20} more)"
+        content += "\n\n"
+
+    if deps["python"]:
+        content += f"**Python packages**: {', '.join(deps['python'][:20])}"
+        if len(deps['python']) > 20:
+            content += f" (+{len(deps['python']) - 20} more)"
+        content += "\n\n"
+
+    if deps["php"]:
+        content += f"**PHP packages**: {', '.join(deps['php'][:20])}"
+        if len(deps['php']) > 20:
+            content += f" (+{len(deps['php']) - 20} more)"
+        content += "\n\n"
+
+    if not any([deps["node"], deps["python"], deps["php"]]):
+        content += "_No dependency files found._\n\n"
+
+    content += """
+## PAI Memory Integration
+
+You have access to the PAI memory system. Use the `pai-memory` CLI tool:
+
+```bash
+# Search memories
+pai-memory search "query"
+
+# Store new memory
+pai-memory store "content" --tags "tag1,tag2"
+
+# List collections
+pai-memory list
+
+# Get memory by ID
+pai-memory get <id>
+
+# Delete memory
+pai-memory delete <id>
+
+# Show statistics
+pai-memory stats
+```
+
+## Relevant Memories
+
+"""
+
+    if memories:
+        for mem in memories[:5]:
+            content += f"### {mem.get('collection', 'Memory')}\n"
+            content += f"{mem.get('content', '')[:500]}\n\n"
+    else:
+        content += "_No relevant memories found for this project._\n\n"
+
+    if learnings:
+        content += "## PAI Learnings\n\n"
+        for learning in learnings[:10]:
+            content += f"- {learning.get('insight', '')}\n"
+        content += "\n"
+
+    content += """## Guidelines
+
+1. **Use available tools** - Only use commands listed above; others may not be available
+2. **Save discoveries** - Use `pai-memory store` to save important patterns or decisions
+3. **Check memories first** - Search memories before starting complex tasks
+4. **Stay in scope** - Work within the project root directory
+5. **Framework conventions** - Follow the detected framework's best practices
+
+## Restrictions
+
+- You are scoped to this project directory only
+- Network access may be limited
+- Some system commands are restricted
+- Use the PAI memory system to persist knowledge across sessions
+
+"""
+    return content
+
+
+def setup_claude_md(ctx: dict):
+    """Create or update .claude/CLAUDE.md in the project root."""
+    claude_dir = Path(ctx["project_root"]) / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+
+    claude_md_path = claude_dir / "CLAUDE.md"
+    content = generate_claude_md(ctx)
+
+    claude_md_path.write_text(content)
+    print(f"Created {claude_md_path}")
+
+
+def setup_auth():
+    """Set up Claude authentication using session passthrough."""
+    auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+
+    if auth_token:
+        # For subscription auth, we need to set up the Claude config
+        claude_config_dir = Path.home() / ".claude"
+        claude_config_dir.mkdir(exist_ok=True)
+
+        # Write session config
+        config_path = claude_config_dir / "config.json"
+        config = {}
+        if config_path.exists():
+            try:
+                config = json.loads(config_path.read_text())
+            except Exception:
+                pass
+
+        config["auth"] = {
+            "type": "session",
+            "token": auth_token,
+        }
+
+        config_path.write_text(json.dumps(config, indent=2))
+        print("Claude authentication configured via session passthrough.")
+        return True
+
+    # Check for API key fallback
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        print("Using ANTHROPIC_API_KEY for authentication.")
+        return True
+
+    print("Warning: No authentication configured.", file=sys.stderr)
+    print("Set ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY", file=sys.stderr)
+    return False
+
+
+def run_claude(args: list):
+    """Run Claude Code with the given arguments."""
+    ctx = get_project_context()
+
+    # Ensure CLAUDE.md is up to date
+    setup_claude_md(ctx)
+
+    # Set up auth if needed
+    setup_auth()
+
+    # Build Claude command
+    claude_cmd = ["claude"] + args
+
+    # Set working directory to project root
+    cwd = ctx["project_root"] if ctx["project_root"] else None
+
+    # Execute Claude
+    try:
+        result = subprocess.run(
+            claude_cmd,
+            cwd=cwd,
+            env=os.environ,
+        )
+        sys.exit(result.returncode)
+    except FileNotFoundError:
+        print("Error: Claude Code CLI not found.", file=sys.stderr)
+        print("Install it with: npm install -g @anthropic-ai/claude-code", file=sys.stderr)
+        sys.exit(1)
+
+
+def main():
+    args = sys.argv[1:]
+
+    if "--setup" in args:
+        ctx = get_project_context()
+        setup_claude_md(ctx)
+        setup_auth()
+        print("\nSetup complete! Run 'wyld-claude' to start Claude Code.")
+        return
+
+    if "--help" in args or "-h" in args:
+        print(__doc__)
+        print("\nAll other arguments are passed to Claude Code.")
+        return
+
+    run_claude(args)
+
+
+if __name__ == "__main__":
+    main()

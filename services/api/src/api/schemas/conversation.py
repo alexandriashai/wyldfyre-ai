@@ -13,8 +13,9 @@ class ConversationCreate(BaseModel):
     """Create conversation request."""
 
     title: str | None = Field(None, max_length=500)
-    project_id: str | None = None
+    project_id: str = Field(..., description="Project ID is required for all conversations")
     domain_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class ConversationUpdate(BaseModel):
@@ -31,6 +32,12 @@ class PlanUpdate(BaseModel):
 
     plan_content: str
     plan_status: PlanStatus = PlanStatus.DRAFT
+
+
+class TagsUpdate(BaseModel):
+    """Update conversation tags."""
+
+    tags: list[str] = Field(..., max_length=20)
 
 
 class ConversationResponse(BaseModel):
@@ -53,12 +60,37 @@ class ConversationResponse(BaseModel):
     project_id: str | None
     domain_id: str | None
 
+    # Tags
+    tags: list[str] = Field(default_factory=list)
+
     # Timestamps
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+    @classmethod
+    def from_conversation(cls, conversation) -> "ConversationResponse":
+        """Create response from ORM model with tags resolved."""
+        tag_values = [t.tag for t in conversation.tags] if conversation.tags else []
+        return cls(
+            id=conversation.id,
+            title=conversation.title,
+            summary=conversation.summary,
+            status=conversation.status,
+            message_count=conversation.message_count,
+            last_message_at=conversation.last_message_at,
+            plan_content=conversation.plan_content,
+            plan_status=conversation.plan_status,
+            plan_approved_at=conversation.plan_approved_at,
+            user_id=conversation.user_id,
+            project_id=conversation.project_id,
+            domain_id=conversation.domain_id,
+            tags=tag_values,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+        )
 
 
 class ConversationListResponse(BaseModel):

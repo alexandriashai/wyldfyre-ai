@@ -7,8 +7,10 @@ from ai_core import AgentType, DomainStatus, TaskStatus
 from .base import Base, TimestampMixin, UUIDMixin, generate_uuid
 from .api_usage import APIProvider, APIUsage, BudgetAlert, UsageType
 from .conversation import Conversation, ConversationStatus, PlanStatus
+from .conversation_tag import ConversationTag
 from .credential import BrowserSession, StoredCredential
 from .domain import Domain
+from .message import Message
 from .project import Project, ProjectStatus
 from .task import Task
 from .user import User
@@ -31,9 +33,11 @@ __all__ = [
     "ConversationStatus",
     "PlanStatus",
     # Models
+    "ConversationTag",
     "User",
     "Task",
     "Domain",
+    "Message",
     "APIUsage",
     "BudgetAlert",
     "Project",

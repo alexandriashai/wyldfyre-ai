@@ -1,5 +1,5 @@
 // Wyld Fyre AI Service Worker
-const CACHE_NAME = 'wyld-fyre-v4';
+const CACHE_NAME = 'wyld-fyre-v10';
 const OFFLINE_URL = '/offline';
 
 // Detect platform (approximation from user agent in fetch requests)

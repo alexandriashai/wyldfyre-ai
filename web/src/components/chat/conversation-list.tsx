@@ -92,10 +92,10 @@ export function ConversationList({ collapsed }: ConversationListProps) {
   );
 
   const handleCreate = async () => {
-    if (!token) return;
+    if (!token || !selectedProject?.id) return;
     setIsCreating(true);
     try {
-      await createConversation(token, undefined, selectedProject?.id);
+      await createConversation(token, selectedProject.id);
     } finally {
       setIsCreating(false);
     }

@@ -5,7 +5,7 @@ Project model for organizing conversations and tasks.
 import enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Enum, ForeignKey, String, Text
+from sqlalchemy import Boolean, Enum, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin, UUIDMixin
@@ -47,6 +47,21 @@ class Project(Base, UUIDMixin, TimestampMixin):
 
     # Primary URL - the main URL for this project (e.g., https://example.com)
     primary_url: Mapped[str | None] = mapped_column(String(500))
+
+    # Terminal user - system user for scoped terminal access (legacy, use Docker instead)
+    terminal_user: Mapped[str | None] = mapped_column(String(100))
+
+    # Docker settings
+    docker_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    docker_project_type: Mapped[str | None] = mapped_column(String(50))  # node, php, python, custom
+    docker_node_version: Mapped[str | None] = mapped_column(String(20), default="20")
+    docker_php_version: Mapped[str | None] = mapped_column(String(20), default="8.3")
+    docker_python_version: Mapped[str | None] = mapped_column(String(20), default="3.12")
+    docker_memory_limit: Mapped[str | None] = mapped_column(String(20), default="2g")
+    docker_cpu_limit: Mapped[str | None] = mapped_column(String(20), default="2.0")
+    docker_expose_ports: Mapped[str | None] = mapped_column(Text)  # JSON array
+    docker_env_vars: Mapped[str | None] = mapped_column(Text)  # JSON object
+    docker_container_status: Mapped[str | None] = mapped_column(String(50))
 
     # Status
     status: Mapped[ProjectStatus] = mapped_column(

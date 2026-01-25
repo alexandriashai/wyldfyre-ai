@@ -151,6 +151,61 @@ services:
         limits:
           memory: 1G
 
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - ai-backend
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: postgres-exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-ai_infra}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-ai_infrastructure}?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ai-backend
+      - ai-data
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: ai-promtail
+    restart: unless-stopped
+    volumes:
+      - ./infrastructure/monitoring/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /home/wyld-data/logs:/var/log/wyld:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    networks:
+      - ai-backend
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
   # =============================================================================
   # Application Services
   # =============================================================================
@@ -162,6 +217,8 @@ services:
     container_name: ai-api
     restart: unless-stopped
     user: "1015:2000"  # wyld-api:wyld
+    group_add:
+      - "988"  # docker group for container management
     ports:
       - "${API_PORT:-8000}:8000"
     environment:
@@ -179,6 +236,9 @@ services:
       - /etc/nginx/sites-available:/etc/nginx/sites-available:ro
       - /home/wyld-web/static:/home/wyld-web/static
       - /home/wyld-data/templates:/home/wyld-data/templates
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/wyld-api:/home/wyld-api  # Claude Code credentials
+      - /home/wyld-core:/home/wyld-core:ro  # Project container build context and CLI tools
     depends_on:
       postgres:
         condition: service_healthy

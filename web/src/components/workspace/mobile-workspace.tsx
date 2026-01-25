@@ -5,8 +5,9 @@ import { FileTreePanel } from "./panels/file-tree-panel";
 import { EditorPanel } from "./panels/editor-panel";
 import { PreviewPanel } from "./preview/preview-panel";
 import { WorkspaceChatPanel } from "./chat-panel";
+import { TerminalPanel } from "./panels/terminal-panel";
 import { cn } from "@/lib/utils";
-import { Files, Code2, Monitor, MessageSquare } from "lucide-react";
+import { Files, Code2, Monitor, MessageSquare, Terminal } from "lucide-react";
 
 interface MobileWorkspaceProps {
   onFileOpen: (path: string) => void;
@@ -17,6 +18,7 @@ interface MobileWorkspaceProps {
 const tabs = [
   { id: "files" as const, icon: Files, label: "Files" },
   { id: "editor" as const, icon: Code2, label: "Editor" },
+  { id: "terminal" as const, icon: Terminal, label: "Terminal" },
   { id: "preview" as const, icon: Monitor, label: "Preview" },
   { id: "chat" as const, icon: MessageSquare, label: "Chat" },
 ];
@@ -27,12 +29,15 @@ export function MobileWorkspace({ onFileOpen, onRefresh, onSave }: MobileWorkspa
   return (
     <div className="flex flex-col h-full w-full">
       {/* Active panel (full screen) */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden relative">
         {mobileActiveTab === "files" && (
           <FileTreePanel onFileOpen={onFileOpen} onRefresh={onRefresh} />
         )}
         {mobileActiveTab === "editor" && (
           <EditorPanel onSave={onSave} />
+        )}
+        {mobileActiveTab === "terminal" && (
+          <TerminalPanel alwaysShow isMobileView />
         )}
         {mobileActiveTab === "preview" && (
           <PreviewPanel />

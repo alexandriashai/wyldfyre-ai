@@ -293,7 +293,18 @@ class SecurityValidator:
         self._violations.append(violation)
         if len(self._violations) > 1000:
             self._violations = self._violations[-500:]
-        
+
+        # Increment Prometheus counter
+        try:
+            from .metrics import security_violations_total
+            security_violations_total.labels(
+                threat_level=violation.threat_level.name.lower(),
+                rule_name=violation.rule_name,
+                agent=violation.agent_name or "unknown",
+            ).inc()
+        except Exception:
+            pass  # Don't let metrics failures break security flow
+
         log_data = violation.to_dict()
         if violation.threat_level.value >= ThreatLevel.HIGH.value:
             logger.warning("Security violation", **log_data)

@@ -40,8 +40,8 @@ export function WorkspaceChatPanel() {
 
     if (projectConv && projectConv.id !== currentConversation?.id) {
       selectConversation(token, projectConv.id);
-    } else if (!projectConv && !currentConversation) {
-      createConversation(token, "Workspace Chat", activeProjectId);
+    } else if (!projectConv && !currentConversation && activeProjectId) {
+      createConversation(token, activeProjectId, "Workspace Chat");
     }
   }, [token, activeProjectId, conversations]);
 
