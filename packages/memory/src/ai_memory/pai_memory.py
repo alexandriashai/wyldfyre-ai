@@ -61,6 +61,8 @@ class Learning:
     - GLOBAL: Applies to all projects (general patterns, best practices)
     - PROJECT: Specific to a project (conventions, architecture decisions)
     - DOMAIN: Specific to a domain/site (client preferences, site configs)
+
+    Improvement 1: Added utility_score, access_count, last_accessed for feedback loop.
     """
 
     def __init__(
@@ -81,6 +83,10 @@ class Learning:
         scope: LearningScope = LearningScope.GLOBAL,
         project_id: str | None = None,
         domain_id: str | None = None,
+        # Utility tracking fields (Improvement 1)
+        utility_score: float = 0.5,
+        access_count: int = 0,
+        last_accessed: datetime | None = None,
     ):
         self.content = content
         self.phase = phase
@@ -99,6 +105,20 @@ class Learning:
         self.scope = scope
         self.project_id = project_id
         self.domain_id = domain_id
+        # Utility tracking fields (Improvement 1: Outcome Feedback Loop)
+        self.utility_score = utility_score  # 0-1, starts neutral at 0.5
+        self.access_count = access_count
+        self.last_accessed = last_accessed
+
+    def boost(self, amount: float = 0.1) -> None:
+        """Boost utility score after successful use."""
+        self.utility_score = min(1.0, self.utility_score + amount)
+        self.access_count += 1
+        self.last_accessed = datetime.now(timezone.utc)
+
+    def decay(self, amount: float = 0.05) -> None:
+        """Decay utility score after failure or time."""
+        self.utility_score = max(0.0, self.utility_score - amount)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -120,6 +140,10 @@ class Learning:
             "scope": self.scope.value,
             "project_id": self.project_id,
             "domain_id": self.domain_id,
+            # Utility tracking fields (Improvement 1)
+            "utility_score": self.utility_score,
+            "access_count": self.access_count,
+            "last_accessed": self.last_accessed.isoformat() if self.last_accessed else None,
         }
 
     @classmethod
@@ -131,6 +155,14 @@ class Learning:
             scope = LearningScope(scope_str)
         except ValueError:
             scope = LearningScope.GLOBAL
+
+        # Parse last_accessed with backward compatibility
+        last_accessed = None
+        if data.get("last_accessed"):
+            try:
+                last_accessed = datetime.fromisoformat(data["last_accessed"])
+            except (ValueError, TypeError):
+                pass
 
         learning = cls(
             content=data["content"],
@@ -149,6 +181,10 @@ class Learning:
             scope=scope,
             project_id=data.get("project_id"),
             domain_id=data.get("domain_id"),
+            # Utility tracking fields (Improvement 1)
+            utility_score=data.get("utility_score", 0.5),
+            access_count=data.get("access_count", 0),
+            last_accessed=last_accessed,
         )
         if "created_at" in data:
             learning.created_at = datetime.fromisoformat(data["created_at"])
@@ -408,6 +444,10 @@ class PAIMemory:
                 "scope": learning.scope.value,
                 "project_id": learning.project_id,
                 "domain_id": learning.domain_id,
+                # Utility tracking fields (Improvement 1)
+                "utility_score": learning.utility_score,
+                "access_count": learning.access_count,
+                "last_accessed": learning.last_accessed.isoformat() if learning.last_accessed else None,
                 **learning.metadata,
             },
         )
@@ -941,3 +981,431 @@ class PAIMemory:
             cutoff=cutoff.isoformat(),
         )
         return deleted_count
+
+    # =========================================================================
+    # Utility Tracking Methods (Improvement 1: Outcome Feedback Loop)
+    # =========================================================================
+
+    async def boost_learning(self, learning_id: str, amount: float = 0.1) -> bool:
+        """
+        Boost a learning's utility score after successful use.
+
+        Args:
+            learning_id: ID of the learning to boost
+            amount: Amount to boost (default 0.1)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self._qdrant:
+            return False
+
+        try:
+            learning_data = await self._qdrant.get(learning_id)
+            if not learning_data:
+                return False
+
+            current_utility = learning_data.get("utility_score", 0.5)
+            current_access = learning_data.get("access_count", 0)
+
+            new_utility = min(1.0, current_utility + amount)
+            new_access = current_access + 1
+
+            await self._qdrant.update(
+                id=learning_id,
+                metadata={
+                    "utility_score": new_utility,
+                    "access_count": new_access,
+                    "last_accessed": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            logger.debug(f"Boosted learning {learning_id}: utility {current_utility:.2f} -> {new_utility:.2f}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to boost learning {learning_id}: {e}")
+            return False
+
+    async def decay_learning(self, learning_id: str, amount: float = 0.05) -> bool:
+        """
+        Decay a learning's utility score after failure or time.
+
+        Args:
+            learning_id: ID of the learning to decay
+            amount: Amount to decay (default 0.05)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self._qdrant:
+            return False
+
+        try:
+            learning_data = await self._qdrant.get(learning_id)
+            if not learning_data:
+                return False
+
+            current_utility = learning_data.get("utility_score", 0.5)
+            new_utility = max(0.0, current_utility - amount)
+
+            await self._qdrant.update(
+                id=learning_id,
+                metadata={"utility_score": new_utility},
+            )
+            logger.debug(f"Decayed learning {learning_id}: utility {current_utility:.2f} -> {new_utility:.2f}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to decay learning {learning_id}: {e}")
+            return False
+
+    async def get_learnings_by_utility(
+        self,
+        min_utility: float | None = None,
+        max_utility: float | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """
+        Get learnings filtered by utility score range.
+
+        Args:
+            min_utility: Minimum utility score (inclusive)
+            max_utility: Maximum utility score (inclusive)
+            limit: Maximum results to return
+
+        Returns:
+            List of learning dicts matching the utility range
+        """
+        if not self._qdrant:
+            return []
+
+        # Use scroll to get all learnings, then filter
+        results = []
+        offset = None
+
+        while len(results) < limit:
+            documents, offset = await self._qdrant.scroll(limit=100, offset=offset)
+
+            if not documents:
+                break
+
+            for doc in documents:
+                utility = doc.get("utility_score", 0.5)
+
+                if min_utility is not None and utility < min_utility:
+                    continue
+                if max_utility is not None and utility > max_utility:
+                    continue
+
+                results.append(doc)
+                if len(results) >= limit:
+                    break
+
+            if offset is None:
+                break
+
+        return results
+
+    async def get_all_learnings(self, limit: int = 1000) -> list[Learning]:
+        """
+        Get all learnings from WARM tier.
+
+        Args:
+            limit: Maximum learnings to return
+
+        Returns:
+            List of Learning objects
+        """
+        if not self._qdrant:
+            return []
+
+        learnings = []
+        offset = None
+
+        while len(learnings) < limit:
+            documents, offset = await self._qdrant.scroll(limit=100, offset=offset)
+
+            if not documents:
+                break
+
+            for doc in documents:
+                try:
+                    learning = Learning.from_dict({
+                        "content": doc.get("text", ""),
+                        **doc,
+                    })
+                    learnings.append(learning)
+                except Exception:
+                    continue
+
+                if len(learnings) >= limit:
+                    break
+
+            if offset is None:
+                break
+
+        return learnings
+
+    async def delete_learning(self, learning_id: str) -> bool:
+        """
+        Delete a learning from WARM tier.
+
+        Args:
+            learning_id: ID of the learning to delete
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self._qdrant:
+            return False
+
+        try:
+            await self._qdrant.delete(learning_id)
+            logger.info(f"Deleted learning {learning_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to delete learning {learning_id}: {e}")
+            return False
+
+    async def get_learnings_by_category(
+        self,
+        category: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """
+        Get learnings filtered by category.
+
+        Args:
+            category: Category to filter by
+            limit: Maximum results to return
+
+        Returns:
+            List of learning dicts matching the category
+        """
+        if not self._qdrant:
+            return []
+
+        results = await self._qdrant.search(
+            query="",  # Empty query to get all
+            limit=limit,
+            filter={"category": category},
+        )
+        return results
+
+    async def get_learnings_before(
+        self,
+        cutoff: datetime,
+        limit: int = 100,
+    ) -> list[Learning]:
+        """
+        Get learnings not accessed since cutoff date.
+
+        Args:
+            cutoff: Datetime cutoff for last_accessed
+            limit: Maximum results to return
+
+        Returns:
+            List of Learning objects not accessed since cutoff
+        """
+        if not self._qdrant:
+            return []
+
+        stale_learnings = []
+        offset = None
+
+        while len(stale_learnings) < limit:
+            documents, offset = await self._qdrant.scroll(limit=100, offset=offset)
+
+            if not documents:
+                break
+
+            for doc in documents:
+                last_accessed_str = doc.get("last_accessed")
+
+                # If never accessed, check created_at
+                if not last_accessed_str:
+                    created_str = doc.get("created_at")
+                    if created_str:
+                        try:
+                            created_at = datetime.fromisoformat(created_str)
+                            if created_at < cutoff:
+                                learning = Learning.from_dict({
+                                    "content": doc.get("text", ""),
+                                    **doc,
+                                })
+                                stale_learnings.append(learning)
+                        except (ValueError, TypeError):
+                            pass
+                else:
+                    try:
+                        last_accessed = datetime.fromisoformat(last_accessed_str)
+                        if last_accessed < cutoff:
+                            learning = Learning.from_dict({
+                                "content": doc.get("text", ""),
+                                **doc,
+                            })
+                            stale_learnings.append(learning)
+                    except (ValueError, TypeError):
+                        pass
+
+                if len(stale_learnings) >= limit:
+                    break
+
+            if offset is None:
+                break
+
+        return stale_learnings
+
+
+# =============================================================================
+# Knowledge Federation (Improvement 5: Multi-Agent Knowledge Federation)
+# =============================================================================
+
+class KnowledgeFederation:
+    """
+    Federated knowledge sharing with privacy-respecting scopes.
+
+    Enables cross-project pattern propagation while maintaining project isolation.
+    """
+
+    def __init__(self, pai_memory: PAIMemory):
+        self.memory = pai_memory
+
+    async def get_federated_context(
+        self,
+        query: str,
+        current_project_id: str,
+        include_global: bool = True,
+        include_similar_projects: bool = True,
+    ) -> list[tuple[Learning, float]]:
+        """
+        Get knowledge from multiple scopes with relevance weighting.
+
+        Args:
+            query: Search query
+            current_project_id: Current project context
+            include_global: Whether to include global learnings
+            include_similar_projects: Whether to include similar project learnings
+
+        Returns:
+            List of (Learning, weight) tuples sorted by weighted relevance
+        """
+        results: list[tuple[Learning, float]] = []
+
+        # 1. Current project learnings (highest priority)
+        project_learnings = await self.memory.search_learnings(
+            query=query,
+            project_id=current_project_id,
+            limit=10,
+        )
+        for l_dict in project_learnings:
+            learning = Learning.from_dict({"content": l_dict.get("text", ""), **l_dict})
+            results.append((learning, 1.0))  # Full weight
+
+        # 2. Global learnings (medium priority)
+        if include_global:
+            global_learnings = await self.memory.search_learnings(
+                query=query,
+                limit=5,
+            )
+            for l_dict in global_learnings:
+                if l_dict.get("scope") == "global":
+                    learning = Learning.from_dict({"content": l_dict.get("text", ""), **l_dict})
+                    results.append((learning, 0.7))
+
+        # 3. Similar project learnings (lower priority, anonymized)
+        if include_similar_projects:
+            similar_projects = await self._find_similar_projects(current_project_id)
+            for similar_project_id in similar_projects[:3]:
+                cross_learnings = await self.memory.search_learnings(
+                    query=query,
+                    project_id=similar_project_id,
+                    limit=3,
+                )
+                for l_dict in cross_learnings:
+                    learning = Learning.from_dict({"content": l_dict.get("text", ""), **l_dict})
+                    anonymized = self._anonymize_learning(learning)
+                    results.append((anonymized, 0.4))
+
+        # Sort by weighted relevance (weight * utility_score)
+        results.sort(
+            key=lambda x: x[1] * x[0].utility_score,
+            reverse=True,
+        )
+
+        return results[:15]
+
+    async def _find_similar_projects(self, project_id: str) -> list[str]:
+        """
+        Find projects with similar tech stack/patterns.
+
+        This is a placeholder - in production, this would query project metadata
+        to find projects with similar languages, frameworks, etc.
+        """
+        # TODO: Implement project metadata querying
+        # For now, return empty list as we don't have project metadata yet
+        return []
+
+    def _anonymize_learning(self, learning: Learning) -> Learning:
+        """Remove project-specific details from a learning."""
+        # Generalize content by removing specific file paths and project names
+        content = learning.content
+        # Simple anonymization - remove absolute paths
+        import re
+        content = re.sub(r"/home/[^/\s]+/[^\s]+", "<project-path>", content)
+
+        return Learning(
+            content=content,
+            phase=learning.phase,
+            category=learning.category,
+            scope=LearningScope.GLOBAL,  # Mark as federated
+            confidence=learning.confidence * 0.8,  # Reduce confidence for cross-project
+            utility_score=learning.utility_score,
+            access_count=learning.access_count,
+            metadata={
+                k: v for k, v in learning.metadata.items()
+                if k not in ["project_id", "file_paths", "user_id", "plan_id"]
+            },
+        )
+
+    async def promote_to_global(self, learning_id: str) -> Learning | None:
+        """
+        Promote high-utility project learning to global scope.
+
+        Args:
+            learning_id: ID of the learning to promote
+
+        Returns:
+            New global Learning if promoted, None otherwise
+        """
+        learning_data = await self.memory.get_learning(learning_id)
+        if not learning_data:
+            return None
+
+        utility = learning_data.get("utility_score", 0.5)
+        access_count = learning_data.get("access_count", 0)
+
+        # Only promote high-utility, well-used learnings
+        if utility >= 0.8 and access_count >= 5:
+            global_learning = Learning(
+                content=self._generalize_content(learning_data.get("text", "")),
+                phase=PAIPhase(learning_data.get("phase", "learn")),
+                category=learning_data.get("category", "general"),
+                scope=LearningScope.GLOBAL,
+                confidence=learning_data.get("confidence", 0.8),
+                utility_score=utility,
+                access_count=0,  # Reset for global tracking
+                metadata={"promoted_from": learning_id},
+            )
+            await self.memory.store_learning(global_learning)
+            logger.info(f"Promoted learning {learning_id} to global scope")
+            return global_learning
+
+        return None
+
+    def _generalize_content(self, content: str) -> str:
+        """Generalize content for cross-project use."""
+        import re
+        # Remove project-specific paths
+        content = re.sub(r"/home/[^/\s]+/[^\s]+", "<path>", content)
+        # Remove specific IDs
+        content = re.sub(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", "<id>", content)
+        return content

@@ -1640,8 +1640,9 @@ class SupervisorAgent(BaseAgent):
                     },
                 )
 
-            # Execute each step
+            # Execute each step with step-level scoring (Improvement 2)
             cancelled = False
+            step_scores: list[float] = []  # Track scores for course correction
             for i, step in enumerate(steps):
                 # Check for task cancellation before each step
                 if self.is_task_cancelled():
@@ -1699,6 +1700,31 @@ class SupervisorAgent(BaseAgent):
                     step["error"] = str(e)
                     step["completed_at"] = datetime.now(timezone.utc).isoformat()
                     logger.error("Step execution failed", step_id=step_id, error=str(e))
+
+                # ========== Improvement 2: Step-Level Scoring ==========
+                step_score = await self._score_step_execution(
+                    step=step,
+                    result={
+                        "completed": step.get("status") == "completed",
+                        "error": step.get("error"),
+                        "files_modified": [],  # Could extract from step_result
+                    },
+                )
+                step_scores.append(step_score)
+                step["score"] = step_score
+                logger.debug(f"Step {i+1} scored: {step_score:.2f}")
+
+                # Check for course correction on remaining steps
+                remaining_steps = steps[i + 1:]
+                if remaining_steps and step_score < 0.5:
+                    replanned_steps, did_replan = await self._maybe_course_correct(
+                        step_scores, remaining_steps, plan
+                    )
+                    if did_replan:
+                        # Replace remaining steps with replanned versions
+                        steps[i + 1:] = replanned_steps
+                        plan["steps"] = steps
+                        logger.info(f"Course corrected: replaced {len(remaining_steps)} steps with {len(replanned_steps)}")
 
                 # Update plan in Redis
                 await self._redis.set(plan_key, json.dumps(plan))
@@ -1842,6 +1868,19 @@ class SupervisorAgent(BaseAgent):
                         await self._memory.store_learning(error_learning)
 
                     logger.info("Plan feedback stored in memory", plan_id=plan_id, confidence=plan_confidence)
+
+                    # ========== Improvement 1: Outcome Feedback Loop ==========
+                    # Capture execution outcome and update related learnings
+                    await self._capture_execution_outcome(
+                        plan_id=plan_id,
+                        steps=steps,
+                        result={
+                            "success": success_rate >= 0.8,
+                            "summary": plan_title,
+                            "duration_ms": None,  # Could track actual duration
+                        },
+                    )
+
                 except Exception as mem_err:
                     logger.warning("Failed to store plan feedback in memory", error=str(mem_err))
 
@@ -3676,6 +3715,597 @@ Rules:
                     },
                 ]
 
+    # =========================================================================
+    # Improvement 1: Outcome Feedback Loop (Plan-to-Learn Pipeline)
+    # =========================================================================
+
+    async def _capture_execution_outcome(
+        self,
+        plan_id: str,
+        steps: list[dict],
+        result: dict,
+    ) -> None:
+        """
+        Capture execution outcome and update learnings.
+
+        This creates a closed feedback loop: Plan → Execute → Verify → Score → Store Learning
+        """
+        from datetime import datetime, timezone
+
+        outcome = {
+            "plan_id": plan_id,
+            "success": result.get("success", False),
+            "steps_completed": len([s for s in steps if s.get("status") == "completed"]),
+            "steps_total": len(steps),
+            "error_types": [s.get("error_type") for s in steps if s.get("error")],
+            "duration_ms": result.get("duration_ms"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Update confidence on related learnings
+        if outcome["success"]:
+            await self._boost_related_learnings(plan_id, boost=0.1)
+        else:
+            await self._decay_related_learnings(plan_id, decay=0.15)
+
+        # Store as new learning if pattern is novel
+        if await self._is_novel_pattern(outcome):
+            if self._memory:
+                from ai_memory import Learning, LearningScope, PAIPhase
+
+                learning = Learning(
+                    content=f"Plan pattern {'succeeded' if outcome['success'] else 'failed'}: {result.get('summary', '')}",
+                    phase=PAIPhase.LEARN,
+                    category="execution_outcome",
+                    scope=LearningScope.PROJECT,
+                    project_id=self._state.current_project_id,
+                    created_by_agent="supervisor",
+                    confidence=0.8 if outcome["success"] else 0.6,
+                    metadata=outcome,
+                )
+                await self._memory.store_learning(learning)
+                logger.debug(f"Stored execution outcome for plan {plan_id}")
+
+    async def _boost_related_learnings(self, plan_id: str, boost: float = 0.1) -> None:
+        """Boost utility score of learnings related to a successful plan."""
+        if not self._memory:
+            return
+
+        try:
+            # Search for learnings related to this plan
+            related = await self._memory.search_learnings(
+                query=f"plan_id:{plan_id}",
+                limit=10,
+                agent_type="supervisor",
+                permission_level=4,
+            )
+
+            for learning_dict in related:
+                learning_id = learning_dict.get("id")
+                if learning_id:
+                    await self._memory.boost_learning(learning_id, boost)
+
+            logger.debug(f"Boosted {len(related)} learnings for plan {plan_id}")
+        except Exception as e:
+            logger.debug(f"Failed to boost learnings: {e}")
+
+    async def _decay_related_learnings(self, plan_id: str, decay: float = 0.15) -> None:
+        """Decay utility score of learnings related to a failed plan."""
+        if not self._memory:
+            return
+
+        try:
+            # Search for learnings related to this plan
+            related = await self._memory.search_learnings(
+                query=f"plan_id:{plan_id}",
+                limit=10,
+                agent_type="supervisor",
+                permission_level=4,
+            )
+
+            for learning_dict in related:
+                learning_id = learning_dict.get("id")
+                if learning_id:
+                    await self._memory.decay_learning(learning_id, decay)
+
+            logger.debug(f"Decayed {len(related)} learnings for plan {plan_id}")
+        except Exception as e:
+            logger.debug(f"Failed to decay learnings: {e}")
+
+    async def _is_novel_pattern(self, outcome: dict) -> bool:
+        """Check if this execution pattern is novel enough to store."""
+        if not self._memory:
+            return True
+
+        try:
+            # Search for similar outcomes
+            query = f"plan pattern {outcome.get('steps_completed')}/{outcome.get('steps_total')} steps"
+            similar = await self._memory.search_learnings(
+                query=query,
+                category="execution_outcome",
+                limit=3,
+                agent_type="supervisor",
+                permission_level=4,
+            )
+
+            # If no similar patterns, it's novel
+            if not similar:
+                return True
+
+            # Check if this is significantly different
+            for s in similar:
+                s_meta = s.get("metadata", {})
+                if (
+                    s_meta.get("steps_completed") == outcome.get("steps_completed")
+                    and s_meta.get("steps_total") == outcome.get("steps_total")
+                    and s_meta.get("success") == outcome.get("success")
+                ):
+                    return False  # Very similar pattern exists
+
+            return True
+        except Exception:
+            return True  # On error, assume novel
+
+    # =========================================================================
+    # Improvement 2: Process Reward Model (Step-Level Scoring)
+    # =========================================================================
+
+    async def _score_step_execution(
+        self,
+        step: dict,
+        result: dict,
+        expected_duration_ms: int = 5000,
+    ) -> float:
+        """
+        Score individual step execution 0-1.
+
+        Factors:
+        - Completion score
+        - Efficiency score (time vs expected)
+        - Error-free score
+        - Output quality score (optional LLM assessment)
+        """
+        scores = []
+
+        # 1. Completion score (40% weight)
+        completed = 1.0 if result.get("completed", step.get("status") == "completed") else 0.0
+        scores.append(completed * 0.4)
+
+        # 2. Efficiency score (20% weight)
+        actual_ms = result.get("duration_ms", expected_duration_ms)
+        if actual_ms > 0:
+            efficiency = min(1.0, expected_duration_ms / max(actual_ms, 1))
+        else:
+            efficiency = 1.0
+        scores.append(efficiency * 0.2)
+
+        # 3. Error-free score (30% weight)
+        error_free = 0.0 if result.get("error") or step.get("error") else 1.0
+        scores.append(error_free * 0.3)
+
+        # 4. File modification score (10% weight)
+        # Steps that modify files are generally more productive
+        files_modified = len(result.get("files_modified", []))
+        file_score = min(1.0, files_modified / 3) if files_modified else 0.5
+        scores.append(file_score * 0.1)
+
+        return sum(scores)
+
+    async def _maybe_course_correct(
+        self,
+        step_scores: list[float],
+        remaining_steps: list[dict],
+        plan: dict,
+    ) -> tuple[list[dict], bool]:
+        """
+        Check if course correction needed based on step scores.
+
+        Returns:
+            Tuple of (potentially replanned steps, whether replanning occurred)
+        """
+        if len(step_scores) < 3:
+            return remaining_steps, False
+
+        # Calculate recent average score
+        recent_avg = sum(step_scores[-3:]) / 3
+
+        if recent_avg < 0.5:
+            logger.warning(f"Low step scores ({recent_avg:.2f}), considering re-plan")
+
+            # Only replan if there are significant remaining steps
+            if len(remaining_steps) >= 2:
+                try:
+                    replanned = await self._replan_remaining(remaining_steps, step_scores, plan)
+                    if replanned:
+                        logger.info(f"Re-planned {len(remaining_steps)} remaining steps")
+                        return replanned, True
+                except Exception as e:
+                    logger.warning(f"Re-planning failed: {e}")
+
+        return remaining_steps, False
+
+    async def _replan_remaining(
+        self,
+        remaining_steps: list[dict],
+        step_scores: list[float],
+        plan: dict,
+    ) -> list[dict] | None:
+        """
+        Re-plan remaining steps based on execution feedback.
+
+        This generates alternative steps when the current approach isn't working.
+        """
+        if not remaining_steps:
+            return None
+
+        # Gather context about what's failing
+        failing_context = []
+        for i, score in enumerate(step_scores[-3:]):
+            if score < 0.5:
+                failing_context.append(f"Step scored {score:.2f}")
+
+        # Get original goal
+        goal = plan.get("description", plan.get("title", ""))
+
+        # Generate new plan prompt
+        prompt = f"""The current plan is struggling. Recent step scores: {step_scores[-3:]}.
+
+Original goal: {goal}
+
+Remaining steps that need to be re-planned:
+{[s.get('title') for s in remaining_steps]}
+
+Generate simpler, more focused steps to achieve the remaining work. Break complex steps into smaller, more concrete actions.
+
+Return a JSON array of new steps, each with: title, description, agent (code/qa/infra), files (array of paths)."""
+
+        try:
+            response = await self._llm.create_message(
+                max_tokens=2000,
+                tier=ModelTier.BALANCED,
+                messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+            )
+
+            import json
+            text = response.text_content
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                new_steps = json.loads(text[start:end])
+                # Add IDs and order to new steps
+                from uuid import uuid4
+                base_order = plan.get("current_step", 0) + 1
+                for i, step in enumerate(new_steps):
+                    step["id"] = str(uuid4())
+                    step["order"] = base_order + i
+                    step["status"] = "pending"
+                    step["replanned"] = True
+                return new_steps
+        except Exception as e:
+            logger.debug(f"Failed to replan: {e}")
+
+        return None
+
+    # =========================================================================
+    # Improvement 6: Plan Quality Prediction and Alternative Exploration
+    # =========================================================================
+
+    async def _generate_plans_with_exploration(
+        self,
+        goal: str,
+        context: dict,
+        exploration: dict,
+        num_candidates: int = 3,
+    ) -> dict:
+        """
+        Generate and evaluate multiple plan candidates.
+
+        Uses Tree-of-Thoughts at plan level: generate diverse candidates,
+        score them, and select the best approach.
+
+        Returns:
+            Dict with best plan and metadata about exploration
+        """
+        # Generate diverse candidates
+        candidates = await self._generate_candidate_plans(goal, context, exploration, num_candidates)
+
+        if not candidates:
+            # Fallback to single plan
+            return {
+                "plan": await self._generate_plan_from_exploration(goal, exploration),
+                "predicted_quality": 0.5,
+                "alternatives_considered": 0,
+            }
+
+        # Score each candidate
+        scored_candidates = []
+        for plan_steps in candidates:
+            score = await self._predict_plan_quality(plan_steps, context)
+            scored_candidates.append((plan_steps, score))
+
+        # Sort by predicted quality
+        scored_candidates.sort(key=lambda x: x[1], reverse=True)
+
+        best_plan, best_score = scored_candidates[0]
+
+        # If best score is low, try refinement
+        if best_score < 0.6 and len(scored_candidates) > 1:
+            try:
+                refined = await self._refine_plan(best_plan, scored_candidates[1:])
+                refined_score = await self._predict_plan_quality(refined, context)
+                if refined_score > best_score:
+                    best_plan, best_score = refined, refined_score
+            except Exception as e:
+                logger.debug(f"Plan refinement failed: {e}")
+
+        return {
+            "plan": best_plan,
+            "predicted_quality": best_score,
+            "alternatives_considered": len(candidates),
+            "exploration_metadata": {
+                "scores": [s for _, s in scored_candidates],
+                "refinement_applied": best_score > scored_candidates[0][1] if scored_candidates else False,
+            },
+        }
+
+    async def _predict_plan_quality(
+        self,
+        plan_steps: list[dict],
+        context: dict,
+    ) -> float:
+        """
+        Predict plan success probability 0-1.
+
+        Scoring factors:
+        1. Historical success rate for similar goals
+        2. Complexity score (simpler is better)
+        3. Step clarity score
+        4. Context alignment score
+        """
+        scores = []
+
+        # 1. Historical success rate for similar goals (30% weight)
+        if self._memory:
+            try:
+                goal = context.get("goal", "")
+                similar_outcomes = await self._memory.search_learnings(
+                    query=goal,
+                    category="execution_outcome",
+                    limit=10,
+                    agent_type="supervisor",
+                    permission_level=4,
+                )
+                if similar_outcomes:
+                    success_count = sum(
+                        1 for l in similar_outcomes
+                        if l.get("metadata", {}).get("success")
+                    )
+                    success_rate = success_count / len(similar_outcomes)
+                    scores.append(success_rate * 0.3)
+                else:
+                    scores.append(0.5 * 0.3)  # Neutral if no history
+            except Exception:
+                scores.append(0.5 * 0.3)
+        else:
+            scores.append(0.5 * 0.3)
+
+        # 2. Complexity score (25% weight) - simpler is better
+        step_count = len(plan_steps)
+        substep_count = sum(len(s.get("todos", [])) for s in plan_steps)
+        total_complexity = step_count + substep_count * 0.5
+
+        # Ideal complexity is 3-5 steps
+        if 3 <= total_complexity <= 5:
+            complexity_score = 1.0
+        elif total_complexity < 3:
+            complexity_score = 0.7  # Too simple might miss things
+        elif total_complexity <= 8:
+            complexity_score = 0.8
+        else:
+            complexity_score = max(0.3, 1.0 - (total_complexity - 8) * 0.1)
+        scores.append(complexity_score * 0.25)
+
+        # 3. Step clarity score (25% weight)
+        clarity_scores = []
+        for step in plan_steps:
+            step_clarity = 0.0
+            # Has title
+            if step.get("title"):
+                step_clarity += 0.3
+            # Has description
+            if step.get("description") and len(step["description"]) > 20:
+                step_clarity += 0.4
+            # Has specific files
+            if step.get("files"):
+                step_clarity += 0.3
+            clarity_scores.append(step_clarity)
+
+        avg_clarity = sum(clarity_scores) / len(clarity_scores) if clarity_scores else 0.5
+        scores.append(avg_clarity * 0.25)
+
+        # 4. Context alignment score (20% weight)
+        alignment_score = 0.5
+        if context.get("root_path"):
+            # Check if steps reference the correct path
+            path_refs = sum(
+                1 for s in plan_steps
+                if context["root_path"] in str(s.get("files", []))
+                or context["root_path"] in str(s.get("description", ""))
+            )
+            alignment_score = min(1.0, path_refs / max(len(plan_steps), 1))
+        scores.append(alignment_score * 0.2)
+
+        return sum(scores)
+
+    async def _generate_candidate_plans(
+        self,
+        goal: str,
+        context: dict,
+        exploration: dict,
+        num_candidates: int,
+    ) -> list[list[dict]]:
+        """Generate diverse plan candidates using different strategies."""
+        candidates = []
+
+        # Strategy 1: Direct LLM planning (always include)
+        try:
+            direct_plan = await self._generate_plan_from_exploration(
+                goal, exploration, base_path=context.get("root_path", "/home/wyld-core")
+            )
+            if direct_plan:
+                candidates.append(direct_plan)
+        except Exception:
+            pass
+
+        # Strategy 2: Historical pattern matching
+        if self._memory and len(candidates) < num_candidates:
+            try:
+                similar_successes = await self._memory.search_learnings(
+                    query=goal,
+                    category="plan_completion",
+                    limit=5,
+                    agent_type="supervisor",
+                    permission_level=4,
+                )
+                # Filter for successful completions
+                for success in similar_successes:
+                    if success.get("metadata", {}).get("success_rate", 0) > 0.8:
+                        pattern_plan = await self._adapt_historical_pattern(success, goal, context)
+                        if pattern_plan:
+                            candidates.append(pattern_plan)
+                            break
+            except Exception:
+                pass
+
+        # Strategy 3: Decomposition approach (for complex goals)
+        if self._is_complex_goal(goal) and len(candidates) < num_candidates:
+            try:
+                decomposed = await self._generate_decomposed_plan(goal, context, exploration)
+                if decomposed:
+                    candidates.append(decomposed)
+            except Exception:
+                pass
+
+        return candidates
+
+    def _is_complex_goal(self, goal: str) -> bool:
+        """Determine if a goal is complex enough to warrant decomposition."""
+        complexity_indicators = [
+            " and ", " with ", " including ", " also ",
+            "multiple", "several", "all", "complete",
+            "refactor", "migrate", "redesign",
+        ]
+        goal_lower = goal.lower()
+        indicator_count = sum(1 for ind in complexity_indicators if ind in goal_lower)
+        word_count = len(goal.split())
+
+        return indicator_count >= 2 or word_count > 20
+
+    async def _adapt_historical_pattern(
+        self,
+        historical: dict,
+        goal: str,
+        context: dict,
+    ) -> list[dict] | None:
+        """Adapt a historical successful pattern to the current goal."""
+        meta = historical.get("metadata", {})
+        historical_steps = meta.get("step_titles", [])
+
+        if not historical_steps:
+            return None
+
+        # Create adapted steps
+        adapted = []
+        for title in historical_steps:
+            adapted.append({
+                "title": title,
+                "description": f"Adapted from successful pattern. Apply to: {goal[:50]}",
+                "agent": "code",
+                "files": [],
+                "adapted_from": historical.get("id"),
+            })
+
+        return adapted
+
+    async def _generate_decomposed_plan(
+        self,
+        goal: str,
+        context: dict,
+        exploration: dict,
+    ) -> list[dict] | None:
+        """Generate a plan by first decomposing the goal into sub-goals."""
+        prompt = f"""Break down this complex goal into 2-4 independent sub-goals:
+
+Goal: {goal}
+
+Context: Working in {context.get('root_path', '/home/wyld-core')}
+Files found: {[f.get('relative') for f in exploration.get('files', [])[:5]]}
+
+For each sub-goal, provide:
+1. A focused title (what to accomplish)
+2. Brief description
+3. Which files might be involved
+
+Return a JSON array of sub-goals, each with: title, description, files (array)."""
+
+        try:
+            response = await self._llm.create_message(
+                max_tokens=1500,
+                tier=ModelTier.FAST,
+                messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+            )
+
+            import json
+            text = response.text_content
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start:
+                sub_goals = json.loads(text[start:end])
+                # Convert sub-goals to plan steps
+                return [
+                    {
+                        "title": sg.get("title", f"Sub-task {i+1}"),
+                        "description": sg.get("description", ""),
+                        "agent": "code",
+                        "files": sg.get("files", []),
+                        "decomposed": True,
+                    }
+                    for i, sg in enumerate(sub_goals)
+                ]
+        except Exception as e:
+            logger.debug(f"Goal decomposition failed: {e}")
+
+        return None
+
+    async def _refine_plan(
+        self,
+        best_plan: list[dict],
+        alternatives: list[tuple[list[dict], float]],
+    ) -> list[dict]:
+        """Refine the best plan by incorporating insights from alternatives."""
+        # Collect unique elements from alternatives
+        alternative_steps = set()
+        for alt_plan, _ in alternatives:
+            for step in alt_plan:
+                alternative_steps.add(step.get("title", ""))
+
+        # Check if alternatives suggest missing steps
+        best_titles = {s.get("title", "") for s in best_plan}
+        missing_suggestions = alternative_steps - best_titles
+
+        # If alternatives suggest significantly different approaches, consider merging
+        if len(missing_suggestions) >= 2:
+            # Add one verification/validation step based on alternatives
+            best_plan.append({
+                "title": "Verify implementation completeness",
+                "description": f"Review changes against original requirements. Alternative approaches suggested: {list(missing_suggestions)[:2]}",
+                "agent": "qa",
+                "files": [],
+                "refinement_added": True,
+            })
+
+        return best_plan
+
     def _format_plan_for_display(self, plan: dict) -> str:
         """Format a plan dict for display in chat."""
         lines = [
@@ -3988,10 +4618,11 @@ async def main() -> None:
     await redis_client.connect()
 
     # Initialize Qdrant store for WARM tier memory
+    # NOTE: Use "agent_learnings" to match API routes and memory tools
     qdrant_store = None
     try:
         qdrant_store = QdrantStore(
-            collection_name="pai_learnings",
+            collection_name="agent_learnings",
             settings=settings.qdrant,
         )
         await qdrant_store.connect()
