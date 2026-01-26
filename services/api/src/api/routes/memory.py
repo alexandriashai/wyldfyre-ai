@@ -138,6 +138,7 @@ async def search_memory(
                     "category": r.get("metadata", {}).get("category"),
                     "agent": r.get("metadata", {}).get("agent"),
                     "scope": r.get("metadata", {}).get("scope", "global"),
+                    "tags": r.get("metadata", {}).get("tags", []),  # Tags for filtering
                     "created_at": r.get("metadata", {}).get("created_at"),
                     "metadata": r.get("metadata", {}),
                 }
@@ -192,6 +193,7 @@ async def list_learnings(
     scope: LearningScope | None = Query(None, description="Filter by scope (global/project/domain)"),
     project_id: str | None = Query(None, description="Filter to global + this project's learnings"),
     domain_id: str | None = Query(None, description="Filter to global + this domain's learnings"),
+    tag: str | None = Query(None, description="Filter by tag (exact match)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
@@ -212,8 +214,8 @@ async def list_learnings(
         if scope:
             filter_conditions["scope"] = scope.value
 
-        # Over-fetch for scope filtering
-        fetch_limit = limit * 3 if (project_id or domain_id) else limit
+        # Over-fetch for scope/tag filtering
+        fetch_limit = limit * 3 if (project_id or domain_id or tag) else limit
 
         results, next_offset = await qdrant.scroll(
             filter=filter_conditions if filter_conditions else None,
@@ -221,24 +223,32 @@ async def list_learnings(
             offset=None,
         )
 
-        # Apply scope filtering if project/domain context provided
-        if project_id or domain_id:
+        # Apply scope and tag filtering
+        if project_id or domain_id or tag:
             filtered_results = []
             for r in results:
                 metadata = r.get("metadata", r)
                 result_scope = metadata.get("scope", "global")
                 result_project = metadata.get("project_id")
                 result_domain = metadata.get("domain_id")
+                result_tags = metadata.get("tags", [])
 
-                if result_scope == "global":
-                    filtered_results.append(r)
-                elif result_scope == "project":
-                    if project_id and result_project == project_id:
-                        filtered_results.append(r)
-                elif result_scope == "domain":
-                    if domain_id and result_domain == domain_id:
-                        filtered_results.append(r)
-                else:
+                # Scope filtering
+                scope_match = True
+                if project_id or domain_id:
+                    if result_scope == "global":
+                        scope_match = True
+                    elif result_scope == "project":
+                        scope_match = project_id and result_project == project_id
+                    elif result_scope == "domain":
+                        scope_match = domain_id and result_domain == domain_id
+
+                # Tag filtering
+                tag_match = True
+                if tag:
+                    tag_match = tag in result_tags
+
+                if scope_match and tag_match:
                     filtered_results.append(r)
 
                 if len(filtered_results) >= limit:
@@ -259,6 +269,7 @@ async def list_learnings(
                     "scope": r.get("metadata", {}).get("scope", "global"),
                     "project_id": r.get("metadata", {}).get("project_id"),
                     "domain_id": r.get("metadata", {}).get("domain_id"),
+                    "tags": r.get("metadata", {}).get("tags", []),  # Tags for filtering
                     "created_at": r.get("metadata", {}).get("created_at") or r.get("metadata", {}).get("timestamp"),
                     "utility_score": r.get("metadata", {}).get("utility_score", 0),
                 }
@@ -287,6 +298,7 @@ class CreateLearningRequest(BaseModel):
     project_id: str | None = None
     domain_id: str | None = None
     confidence: float | None = None
+    tags: list[str] | None = None  # Tags for filtering and categorization
     metadata: dict[str, Any] | None = None
 
 
@@ -310,6 +322,7 @@ async def create_learning(
             "scope": body.scope.value,
             "outcome": "success",
             "agent": "user",
+            "tags": body.tags or [],  # Tags for filtering
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         if body.project_id:
@@ -335,6 +348,7 @@ async def create_learning(
             "phase": body.phase.value if body.phase else None,
             "category": body.category,
             "scope": body.scope.value,
+            "tags": body.tags or [],
             "created_at": meta["created_at"],
             "message": "Learning stored successfully",
         }
@@ -351,6 +365,7 @@ class UpdateLearningRequest(BaseModel):
     phase: PAIPhase | None = None
     category: str | None = None
     confidence: float | None = None
+    tags: list[str] | None = None  # Tags for filtering and categorization
     metadata: dict[str, Any] | None = None
 
 
@@ -376,6 +391,7 @@ async def get_learning(
             "confidence": result.get("metadata", {}).get("confidence"),
             "agent": result.get("metadata", {}).get("agent_type"),
             "scope": result.get("metadata", {}).get("scope", "global"),
+            "tags": result.get("metadata", {}).get("tags", []),  # Tags for filtering
             "created_at": result.get("metadata", {}).get("created_at"),
             "updated_at": result.get("metadata", {}).get("updated_at"),
             "metadata": result.get("metadata", {}),
@@ -408,6 +424,8 @@ async def update_learning(
             meta_updates["category"] = body.category
         if body.confidence is not None:
             meta_updates["confidence"] = body.confidence
+        if body.tags is not None:
+            meta_updates["tags"] = body.tags
         if body.metadata:
             meta_updates.update(body.metadata)
 
@@ -431,6 +449,7 @@ async def update_learning(
             "phase": result.get("metadata", {}).get("phase"),
             "category": result.get("metadata", {}).get("category"),
             "confidence": result.get("metadata", {}).get("confidence"),
+            "tags": result.get("metadata", {}).get("tags", []),
             "updated_at": result.get("metadata", {}).get("updated_at"),
             "message": "Learning updated successfully",
         }

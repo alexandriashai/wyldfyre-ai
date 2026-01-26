@@ -2,8 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAgentStore, useActionGroups, useCurrentIteration, AgentAction, ActionGroup } from "@/stores/agent-store";
+import { useChatStore } from "@/stores/chat-store";
 import { cn, getAgentColor } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Brain,
   Wrench,
@@ -16,7 +22,12 @@ import {
   Layers,
   Loader2,
   Info,
+  Lightbulb,
+  TrendingUp,
+  TrendingDown,
+  Target,
 } from "lucide-react";
+import { SupervisorThinkingInline } from "./supervisor-thinking";
 
 function formatDuration(ms?: number): string {
   if (!ms) return "";
@@ -81,9 +92,18 @@ function getTimelineDotColor(action: AgentAction): string {
   }
 }
 
-function ActionItem({ action }: { action: AgentAction }) {
+interface ActionItemProps {
+  action: AgentAction;
+  showReasoning?: boolean;
+}
+
+function ActionItem({ action, showReasoning = true }: ActionItemProps) {
   const [expanded, setExpanded] = useState(false);
   const hasOutput = action.output && action.output.length > 0;
+
+  // Extract reasoning from output if it's a thinking action
+  const reasoning = action.type === "thinking" ? action.description : null;
+  const confidence = action.output?.match(/confidence[:\s]+(\d+)/i)?.[1];
 
   return (
     <div className="relative pl-5 py-0.5 group">
@@ -101,7 +121,7 @@ function ActionItem({ action }: { action: AgentAction }) {
         <div className="flex-1 min-w-0">
           <div
             className={cn(
-              "flex items-center gap-1.5",
+              "flex items-center gap-1.5 flex-wrap",
               hasOutput && "cursor-pointer hover:bg-muted/30 rounded -mx-1 px-1"
             )}
             onClick={() => hasOutput && setExpanded(!expanded)}
@@ -121,6 +141,11 @@ function ActionItem({ action }: { action: AgentAction }) {
                 {formatDuration(action.duration)}
               </span>
             )}
+            {confidence && (
+              <Badge variant="outline" className="text-[9px] h-3.5 px-1 font-mono">
+                {confidence}%
+              </Badge>
+            )}
             {hasOutput && (
               <span className="shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
                 {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
@@ -128,6 +153,7 @@ function ActionItem({ action }: { action: AgentAction }) {
             )}
           </div>
 
+          {/* Expanded output */}
           {expanded && action.output && (
             <pre className="mt-1 text-[10px] text-muted-foreground bg-muted/50 rounded p-2 overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap break-all border">
               {action.output.length > 500
@@ -135,9 +161,17 @@ function ActionItem({ action }: { action: AgentAction }) {
                 : action.output}
             </pre>
           )}
+
+          {/* Inline reasoning hint for thinking actions */}
+          {showReasoning && action.type === "thinking" && reasoning && (
+            <div className="flex items-start gap-1 mt-0.5 text-[10px] text-amber-600/80">
+              <Lightbulb className="h-2.5 w-2.5 mt-0.5 shrink-0" />
+              <span className="line-clamp-1">{reasoning}</span>
+            </div>
+          )}
         </div>
 
-        <span className="text-[10px] text-muted-foreground/60 shrink-0 mt-0.5">
+        <span className="text-[10px] text-muted-foreground/60 shrink-0 mt-0.5 hidden sm:block">
           {formatTime(action.timestamp)}
         </span>
       </div>
@@ -221,6 +255,7 @@ function CurrentActionBar({ action }: { action: AgentAction }) {
 
 export function AgentStatus() {
   const { agents, actionLog } = useAgentStore();
+  const { supervisorThoughts, isSupervisorThinking, confidenceUpdates } = useChatStore();
   const actionGroups = useActionGroups();
   const currentIteration = useCurrentIteration();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -229,18 +264,21 @@ export function AgentStatus() {
 
   // Find busy agents
   const busyAgents = agents.filter((agent) => agent.status === "busy");
-  const hasActivity = actionLog.length > 0 || busyAgents.length > 0;
+  const hasActivity = actionLog.length > 0 || busyAgents.length > 0 || supervisorThoughts.length > 0;
 
   // Current running action
   const currentAction = actionLog.length > 0 ? actionLog[actionLog.length - 1] : null;
   const isActive = currentAction?.status === "running";
+
+  // Latest supervisor thought
+  const latestThought = supervisorThoughts.length > 0 ? supervisorThoughts[supervisorThoughts.length - 1] : null;
 
   // Auto-scroll
   useEffect(() => {
     if (autoScroll && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [actionLog, autoScroll]);
+  }, [actionLog, autoScroll, supervisorThoughts]);
 
   const handleScroll = () => {
     if (scrollRef.current) {
@@ -253,14 +291,22 @@ export function AgentStatus() {
 
   return (
     <div className="border-b bg-muted/30 shrink-0">
+      {/* Supervisor thinking inline (when active) */}
+      {isSupervisorThinking && latestThought && (
+        <SupervisorThinkingInline thought={latestThought} isActive={isSupervisorThinking} />
+      )}
+
       {/* Header */}
       <button
         onClick={() => setIsCollapsed(!isCollapsed)}
-        className="w-full flex items-center justify-between px-4 py-1.5 hover:bg-muted/50 transition-colors"
+        className="w-full flex items-center justify-between px-3 sm:px-4 py-1.5 hover:bg-muted/50 transition-colors"
       >
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider hidden sm:inline">
             Agent Activity
+          </span>
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider sm:hidden">
+            Activity
           </span>
           {busyAgents.length > 0 && (
             <Badge variant="secondary" className="text-[9px] h-4 px-1.5">
@@ -268,15 +314,15 @@ export function AgentStatus() {
             </Badge>
           )}
           {currentIteration > 0 && (
-            <Badge variant="outline" className="text-[9px] h-4 px-1.5">
+            <Badge variant="outline" className="text-[9px] h-4 px-1.5 hidden sm:inline-flex">
               iter {currentIteration}
             </Badge>
           )}
         </div>
         {isCollapsed ? (
-          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         ) : (
-          <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
+          <ChevronUp className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         )}
       </button>
 
@@ -288,7 +334,7 @@ export function AgentStatus() {
           <div
             ref={scrollRef}
             onScroll={handleScroll}
-            className="max-h-36 sm:max-h-52 overflow-y-auto px-3 pb-2"
+            className="max-h-28 sm:max-h-40 overflow-y-auto px-3 pb-2"
           >
             {actionLog.length === 0 ? (
               <div className="text-xs text-muted-foreground py-2">
@@ -298,7 +344,7 @@ export function AgentStatus() {
                     <span className={cn("font-medium", getAgentColor(agent.name))}>
                       {formatAgentName(agent.name)}
                     </span>
-                    <span>is working{agent.current_task ? `: ${agent.current_task}` : ""}</span>
+                    <span className="truncate">is working{agent.current_task ? `: ${agent.current_task}` : ""}</span>
                   </div>
                 ))}
               </div>

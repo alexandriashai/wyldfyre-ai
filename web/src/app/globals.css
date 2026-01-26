@@ -355,3 +355,27 @@ pre code {
   top: 0 !important;
   left: 0 !important;
 }
+
+/* Terminal orientation handling */
+@media (max-width: 768px) {
+  /* Ensure terminal container properly fills available space */
+  .xterm {
+    /* Force recalc on orientation change */
+    contain: layout size;
+  }
+
+  /* Portrait mode - maximize vertical space */
+  @media (orientation: portrait) {
+    .xterm-screen,
+    .xterm-viewport {
+      max-height: none !important;
+    }
+  }
+
+  /* Landscape mode - maximize horizontal space */
+  @media (orientation: landscape) {
+    .xterm-screen {
+      max-width: none !important;
+    }
+  }
+}

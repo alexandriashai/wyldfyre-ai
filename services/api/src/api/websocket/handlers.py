@@ -1036,6 +1036,141 @@ class AgentResponseHandler:
                 return title
             return None
 
+    async def _maybe_extract_learnings(
+        self,
+        content: str,
+        conversation_id: str,
+        project_id: str | None = None,
+        agent: str | None = None,
+    ) -> None:
+        """
+        Extract and store learnings from an agent response.
+
+        Uses AI to identify discrete, reusable insights from the response.
+        Only extracts significant learnings (code patterns, user preferences, etc.)
+        """
+        # Skip short or error responses
+        if not content or len(content) < 200:
+            return
+
+        # Skip if content looks like an error or status message
+        error_indicators = ["error", "failed", "cannot", "unable to", "sorry"]
+        content_lower = content.lower()[:200]
+        if any(ind in content_lower for ind in error_indicators):
+            return
+
+        try:
+            from ai_core import LLMClient
+            from ai_memory import LearningScope, QdrantStore
+            from datetime import datetime, timezone
+
+            LEARNINGS_COLLECTION = "agent_learnings"
+
+            # Simple extraction prompt - focused on discrete learnings
+            extraction_prompt = """Extract discrete, reusable insights from this AI assistant response.
+
+Focus ONLY on:
+- Code patterns or conventions discovered
+- User preferences or workflow habits
+- Technical gotchas or lessons learned
+- Architecture decisions or configurations
+
+Skip:
+- Task-specific steps that aren't reusable
+- Obvious/trivial information
+- General explanations without specific insights
+
+Output a JSON array (or empty array [] if nothing worth learning):
+[{"content": "learning text", "category": "pattern|preference|gotcha|architecture", "confidence": 0.5-0.9}]
+
+RESPONSE TO ANALYZE:
+"""
+
+            llm = LLMClient()
+
+            # Use fast model for extraction
+            response = await llm.create_message(
+                model="fast",
+                max_tokens=1024,
+                system="You extract reusable learnings from text. Output only valid JSON array.",
+                messages=[{"role": "user", "content": extraction_prompt + content[:3000]}],
+            )
+
+            # Parse response
+            import json
+            text = response.text_content.strip()
+            # Strip markdown code fences if present
+            if text.startswith("```"):
+                lines = text.split("\n")
+                lines = [l for l in lines[1:] if not l.strip().startswith("```")]
+                text = "\n".join(lines)
+
+            try:
+                learnings = json.loads(text)
+            except json.JSONDecodeError:
+                return  # No valid learnings extracted
+
+            if not learnings or not isinstance(learnings, list):
+                return
+
+            # Store extracted learnings
+            store = QdrantStore(collection_name=LEARNINGS_COLLECTION)
+            await store.connect()
+
+            stored_count = 0
+            for learning in learnings[:5]:  # Max 5 learnings per response
+                learning_content = learning.get("content", "")
+                if not learning_content or len(learning_content) < 20:
+                    continue
+
+                category = learning.get("category", "pattern")
+                confidence = learning.get("confidence", 0.7)
+
+                # Only store if confidence is reasonable
+                if confidence < 0.5:
+                    continue
+
+                # Determine scope
+                scope = "project" if project_id else "global"
+
+                metadata = {
+                    "category": category,
+                    "phase": "learn",
+                    "outcome": "success",
+                    "confidence": confidence,
+                    "agent": agent,
+                    "scope": scope,
+                    "project_id": project_id,
+                    "conversation_id": conversation_id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "auto_extracted": True,
+                }
+
+                await store.upsert(
+                    id=None,
+                    text=learning_content,
+                    metadata=metadata,
+                )
+                stored_count += 1
+
+            await store.disconnect()
+
+            if stored_count > 0:
+                logger.info(
+                    "Auto-extracted learnings from response",
+                    count=stored_count,
+                    conversation_id=conversation_id,
+                    project_id=project_id,
+                )
+
+        except Exception as e:
+            # Don't let learning extraction failures affect the main flow
+            logger.debug(
+                "Learning extraction failed (non-critical)",
+                conversation_id=conversation_id,
+                error=str(e),
+            )
+
     async def _handle_agent_response(self, data: dict[str, Any]) -> None:
         """Process an agent response and route to user."""
         user_id = data.get("user_id")
@@ -1109,6 +1244,24 @@ class AgentResponseHandler:
                         content=content,
                         agent=agent or "supervisor",
                         user_id=user_id,
+                    )
+                )
+
+                # Extract learnings from the response as a background task
+                # Get project_id from conversation (agent response may not include it)
+                project_id = data.get("project_id")
+                if not project_id and conversation_id:
+                    # Look up from conversation in Redis
+                    conv_project_id = await self.redis.hget(f"conversation:{conversation_id}", "project_id")
+                    if conv_project_id:
+                        project_id = conv_project_id
+
+                asyncio.create_task(
+                    self._maybe_extract_learnings(
+                        content=content,
+                        conversation_id=conversation_id,
+                        project_id=project_id,
+                        agent=agent or "supervisor",
                     )
                 )
 

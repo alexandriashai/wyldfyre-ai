@@ -5,7 +5,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useProjectStore } from "@/stores/project-store";
 import { Button } from "@/components/ui/button";
-import { X, Container, Terminal, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { X, Container, Terminal, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Search, Minus, Plus, ChevronsUp, ChevronsDown } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 
 // Common terminal keyboard shortcuts for mobile
@@ -40,6 +40,14 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
   // Detect mobile viewport (or use prop)
   const [detectedMobile, setDetectedMobile] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [fontSize, setFontSize] = useState(() => {
+    // Try to load from localStorage
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('terminal-font-size');
+      if (saved) return parseInt(saved, 10);
+    }
+    return 13; // default
+  });
   const searchAddonRef = useRef<any>(null);
 
   useEffect(() => {
@@ -83,6 +91,11 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
     focusTerminal();
   }, [focusTerminal]);
 
+  const scrollTerminal = useCallback((lines: number) => {
+    if (!xtermRef.current) return;
+    xtermRef.current.scrollLines(lines);
+  }, []);
+
   const toggleSearch = useCallback(() => {
     if (!searchAddonRef.current) return;
     if (showSearch) {
@@ -90,6 +103,27 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
     }
     setShowSearch(!showSearch);
   }, [showSearch]);
+
+  const changeFontSize = useCallback((delta: number) => {
+    setFontSize(prev => {
+      const newSize = Math.min(24, Math.max(8, prev + delta));
+      // Save to localStorage
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('terminal-font-size', String(newSize));
+      }
+      // Update terminal if it exists
+      if (xtermRef.current) {
+        xtermRef.current.options.fontSize = newSize;
+        // Re-fit after font size change
+        setTimeout(() => {
+          try {
+            fitAddonRef.current?.fit();
+          } catch {}
+        }, 10);
+      }
+      return newSize;
+    });
+  }, []);
 
   const initTerminal = useCallback(async () => {
     if (!terminalRef.current || !token || !activeProjectId || !selectedProject) return;
@@ -101,9 +135,14 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
     const { SearchAddon } = await import("@xterm/addon-search");
     const { Unicode11Addon } = await import("@xterm/addon-unicode11");
 
-    // WebGL addon disabled - causes rendering issues on some devices
-    // TODO: Re-enable with proper fallback detection
-    const WebglAddon: any = null;
+    // Try to import WebGL addon
+    let WebglAddon: any = null;
+    try {
+      const webglModule = await import("@xterm/addon-webgl");
+      WebglAddon = webglModule.WebglAddon;
+    } catch (e) {
+      console.log('[Terminal] WebGL addon not available:', e);
+    }
 
     // Clean up existing instance
     if (xtermRef.current) {
@@ -114,7 +153,7 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
     }
 
     const term = new Terminal({
-      fontSize: isMobile ? 14 : 13,
+      fontSize: isMobile ? Math.max(fontSize, 14) : fontSize,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
       theme: {
         background: "#1a1b26",
@@ -166,11 +205,59 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
     // Open terminal in DOM
     term.open(terminalRef.current);
 
-    // WebGL addon disabled - see above
-
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
+
+    // Store WebglAddon class for later use
+    const webglAddonRef = { current: null as any };
+
+    // Function to load WebGL addon after terminal is sized
+    const loadWebGL = () => {
+      if (!WebglAddon || webglAddonRef.current) return;
+
+      try {
+        // Check if WebGL is actually supported
+        const testCanvas = document.createElement('canvas');
+        const gl = testCanvas.getContext('webgl2') || testCanvas.getContext('webgl');
+        if (!gl) {
+          console.log('[Terminal] WebGL not supported by browser');
+          return;
+        }
+
+        const webglAddon = new WebglAddon();
+        webglAddonRef.current = webglAddon;
+
+        // Handle context loss - fall back to canvas renderer
+        webglAddon.onContextLoss(() => {
+          console.log('[Terminal] WebGL context lost, disposing addon');
+          try {
+            webglAddon.dispose();
+            webglAddonRef.current = null;
+          } catch (e) {
+            console.log('[Terminal] Error disposing WebGL addon:', e);
+          }
+        });
+
+        term.loadAddon(webglAddon);
+        console.log('[Terminal] WebGL addon loaded successfully');
+
+        // Re-fit after WebGL loads to ensure proper sizing
+        setTimeout(() => {
+          try {
+            fitAddon.fit();
+          } catch {}
+        }, 50);
+      } catch (e) {
+        console.log('[Terminal] Failed to load WebGL addon:', e);
+        if (webglAddonRef.current) {
+          try {
+            webglAddonRef.current.dispose();
+          } catch {}
+          webglAddonRef.current = null;
+        }
+      }
+    };
 
     // Fit terminal and get dimensions
     const doFit = () => {
@@ -243,6 +330,12 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
 
         // Focus terminal after connection
         setTimeout(() => term.focus(), 200);
+
+        // WebGL disabled - causes rendering artifacts (yellow spreading, glitching)
+        // TODO: Investigate WebGL compatibility issues before re-enabling
+        // setTimeout(() => {
+        //   loadWebGL();
+        // }, isMobile ? 3500 : 1200);
       };
 
       ws.onmessage = (event) => {
@@ -321,6 +414,8 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
       clearTimeout(connectTimeout);
       terminalRef.current?.removeEventListener('contextmenu', contextHandler);
     };
+  // Note: fontSize is NOT included in deps because we update terminal.options.fontSize directly
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, activeProjectId, selectedProject, isMobile, toggleSearch]);
 
   useEffect(() => {
@@ -351,19 +446,82 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
     if (!shouldShow || !fitAddonRef.current) return;
 
     let fitTimeout: NodeJS.Timeout;
-    const debouncedFit = () => {
-      clearTimeout(fitTimeout);
-      fitTimeout = setTimeout(() => {
-        try {
-          fitAddonRef.current?.fit();
-        } catch {
-          // Ignore fit errors during transitions
+
+    // Full resize: fit terminal and send resize to backend
+    const doFullResize = () => {
+      // Use requestAnimationFrame to ensure layout is complete
+      requestAnimationFrame(() => {
+        if (!terminalRef.current || !fitAddonRef.current || !xtermRef.current) return;
+
+        // Force layout recalculation
+        void terminalRef.current.offsetHeight;
+        void terminalRef.current.offsetWidth;
+
+        const rect = terminalRef.current.getBoundingClientRect();
+        console.log(`[Terminal] Container size: ${rect.width}x${rect.height}`);
+
+        // Only fit if container has actual dimensions
+        if (rect.width > 50 && rect.height > 50) {
+          try {
+            // Store previous dimensions
+            const prevRows = xtermRef.current.rows;
+            const prevCols = xtermRef.current.cols;
+
+            // Try FitAddon first
+            fitAddonRef.current.fit();
+
+            let rows = xtermRef.current.rows;
+            let cols = xtermRef.current.cols;
+
+            // If dimensions seem wrong (too small or same as before when container changed significantly)
+            // try manual calculation as fallback
+            const currentFontSize = xtermRef.current.options?.fontSize || 14;
+            const charWidth = currentFontSize * 0.6; // approximate char width ratio
+            const charHeight = currentFontSize * 1.2; // approximate line height
+
+            const expectedCols = Math.floor((rect.width - 16) / charWidth); // subtract padding
+            const expectedRows = Math.floor((rect.height - 8) / charHeight);
+
+            console.log(`[Terminal] Fit result: ${cols}x${rows}, expected: ${expectedCols}x${expectedRows}`);
+
+            // If there's a significant mismatch, force the dimensions
+            if (Math.abs(cols - expectedCols) > 10 || Math.abs(rows - expectedRows) > 5) {
+              console.log(`[Terminal] Dimension mismatch detected, using expected values`);
+              cols = Math.max(20, expectedCols);
+              rows = Math.max(5, expectedRows);
+              // Directly resize the terminal
+              xtermRef.current.resize(cols, rows);
+            }
+
+            // Send resize to backend if WebSocket is open and dimensions changed
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              if (rows !== prevRows || cols !== prevCols) {
+                wsRef.current.send(JSON.stringify({ type: "resize", rows, cols }));
+                wsRef.current.send(JSON.stringify({ type: "tmux-refresh" }));
+                console.log(`[Terminal] Sent resize: ${cols}x${rows}`);
+              }
+            }
+          } catch (e) {
+            console.log('[Terminal] Fit error:', e);
+          }
         }
-      }, 50);
+      });
     };
 
-    const observer = new ResizeObserver(() => {
-      debouncedFit();
+    const debouncedFit = () => {
+      clearTimeout(fitTimeout);
+      fitTimeout = setTimeout(doFullResize, 50);
+    };
+
+    const observer = new ResizeObserver((entries) => {
+      // Check if size actually changed
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 50 && height > 50) {
+          debouncedFit();
+          break;
+        }
+      }
     });
 
     // Observe both the terminal element and its container
@@ -377,9 +535,57 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
     // Also fit on window resize
     window.addEventListener('resize', debouncedFit);
 
+    // Handle orientation change on mobile - needs longer delays
+    const handleOrientationChange = () => {
+      const orientation = window.screen?.orientation?.type || (window.innerWidth > window.innerHeight ? 'landscape' : 'portrait');
+      console.log(`[Terminal] Orientation change detected: ${orientation}, viewport: ${window.innerWidth}x${window.innerHeight}`);
+
+      // Clear any pending fits
+      clearTimeout(fitTimeout);
+
+      // Force the terminal container to recalculate its size
+      if (terminalRef.current) {
+        // Remove and re-add from layout to force reflow
+        const display = terminalRef.current.style.display;
+        terminalRef.current.style.display = 'none';
+        void terminalRef.current.offsetHeight;
+        terminalRef.current.style.display = display;
+      }
+
+      // Multiple delayed fits to catch orientation animation completion
+      // iOS Safari can take up to 500ms for orientation animation
+      const delays = [50, 150, 300, 500, 800, 1200];
+      delays.forEach((delay, i) => {
+        setTimeout(() => {
+          console.log(`[Terminal] Orientation fit ${i + 1} at ${delay}ms`);
+          doFullResize();
+        }, delay);
+      });
+    };
+    window.addEventListener('orientationchange', handleOrientationChange);
+
+    // Also listen for screen orientation API if available
+    if (screen.orientation) {
+      screen.orientation.addEventListener('change', handleOrientationChange);
+    }
+
+    // Handle visibility change (tab switching, app resume)
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        console.log('[Terminal] Visibility restored, refitting');
+        setTimeout(doFullResize, 100);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', debouncedFit);
+      window.removeEventListener('orientationchange', handleOrientationChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (screen.orientation) {
+        screen.orientation.removeEventListener('change', handleOrientationChange);
+      }
       clearTimeout(fitTimeout);
     };
   }, [shouldShow]);
@@ -390,6 +596,7 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
     <div
       ref={containerRef}
       className="flex flex-col bg-[#1a1b26] h-full w-full"
+      style={isMobile ? { minHeight: '100%', maxHeight: '100%' } : undefined}
     >
       {/* Terminal header */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#32344a] shrink-0 h-8">
@@ -404,6 +611,26 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
           </span>
         </div>
         <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-[#a9b1d6] hover:text-white hover:bg-[#32344a]"
+            onClick={() => changeFontSize(-1)}
+            title="Decrease font size"
+          >
+            <Minus className="h-3.5 w-3.5" />
+          </Button>
+          <span className="text-[10px] text-[#787c99] w-5 text-center tabular-nums">{fontSize}</span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-[#a9b1d6] hover:text-white hover:bg-[#32344a]"
+            onClick={() => changeFontSize(1)}
+            title="Increase font size"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+          <div className="w-px h-4 bg-[#32344a] mx-1" />
           <Button
             variant="ghost"
             size="icon"
@@ -511,6 +738,25 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
               </button>
             );
           })}
+
+          {/* Separator */}
+          <div className="w-px h-5 bg-[#32344a] mx-1" />
+
+          {/* Scroll buttons */}
+          <button
+            onClick={() => scrollTerminal(-10)}
+            className="p-1.5 bg-[#32344a] text-[#a9b1d6] rounded hover:bg-[#414868] active:bg-[#565f89]"
+            title="Scroll Up"
+          >
+            <ChevronsUp className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => scrollTerminal(10)}
+            className="p-1.5 bg-[#32344a] text-[#a9b1d6] rounded hover:bg-[#414868] active:bg-[#565f89]"
+            title="Scroll Down"
+          >
+            <ChevronsDown className="h-4 w-4" />
+          </button>
         </div>
       )}
 

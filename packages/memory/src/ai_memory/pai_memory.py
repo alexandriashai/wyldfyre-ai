@@ -74,6 +74,8 @@ class Learning:
         agent_type: str | None = None,
         confidence: float = 0.8,
         metadata: dict[str, Any] | None = None,
+        # Tags for filtering and categorization
+        tags: list[str] | None = None,
         # ACL fields
         created_by_agent: str = "",
         permission_level: int = 1,
@@ -95,6 +97,7 @@ class Learning:
         self.agent_type = agent_type
         self.confidence = confidence
         self.metadata = metadata or {}
+        self.tags = tags or []  # Tags for filtering and categorization
         self.created_at = datetime.now(timezone.utc)
         # ACL fields
         self.created_by_agent = created_by_agent or agent_type or ""
@@ -130,6 +133,7 @@ class Learning:
             "agent_type": self.agent_type,
             "confidence": self.confidence,
             "metadata": self.metadata,
+            "tags": self.tags,  # Tags for filtering
             "created_at": self.created_at.isoformat(),
             # ACL fields
             "created_by_agent": self.created_by_agent,
@@ -172,6 +176,7 @@ class Learning:
             agent_type=data.get("agent_type"),
             confidence=data.get("confidence", 0.8),
             metadata=data.get("metadata", {}),
+            tags=data.get("tags", []),  # Tags for filtering
             # ACL fields
             created_by_agent=data.get("created_by_agent", ""),
             permission_level=data.get("permission_level", 1),
@@ -434,6 +439,7 @@ class PAIMemory:
                 "task_id": learning.task_id,
                 "agent_type": learning.agent_type,
                 "confidence": learning.confidence,
+                "tags": learning.tags,  # Tags for filtering
                 "created_at": learning.created_at.isoformat(),
                 # ACL fields
                 "created_by_agent": learning.created_by_agent,

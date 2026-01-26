@@ -289,8 +289,7 @@ def setup_docker_tmux_env(container_name: str, session_name: str, env_vars: dict
 
     # Set tmux options for better resize behavior and mouse support
     tmux_options = [
-        ("aggressive-resize", "on"),  # Resize session to smallest client
-        ("window-size", "largest"),   # Window size based on largest client
+        ("window-size", "latest"),    # Use size of most recently active client
         ("mouse", "on"),              # Enable mouse scrolling and selection
         ("history-limit", "10000"),   # Increase scrollback buffer
     ]
@@ -299,6 +298,23 @@ def setup_docker_tmux_env(container_name: str, session_name: str, env_vars: dict
             ["docker", "exec", "-u", "wyld", container_name, "tmux", "set-option", "-g", option, value],
             capture_output=True,
         )
+
+
+def fix_container_permissions(container_name: str) -> None:
+    """Fix file permissions in container so wyld user can edit files."""
+    try:
+        # Run chown as root to fix /app ownership
+        subprocess.run(
+            [
+                "docker", "exec", "-u", "root", container_name,
+                "chown", "-R", "wyld:wyld", "/app",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        logger.debug(f"Fixed permissions in container: {container_name}")
+    except Exception as e:
+        logger.warning(f"Failed to fix permissions: {e}")
 
 
 async def handle_docker_terminal(
@@ -319,6 +335,9 @@ async def handle_docker_terminal(
             await websocket.send_text('{"error": "Container not running. Start it from project settings."}')
             await websocket.close(code=4002, reason="Container not running")
             return
+
+    # Fix file permissions so wyld user can edit files
+    fix_container_permissions(container_name)
 
     # Prepare environment variables for the container session
     env_vars = get_docker_env_vars(
@@ -347,7 +366,7 @@ async def handle_docker_terminal(
         os.close(slave_fd)
 
         # Use tmux new-session -A which attaches to existing session or creates new one
-        # This properly sizes to the current PTY dimensions
+        # Detach other clients first, then attach with size hints
         exec_cmd = [
             "docker", "exec",
             "-it",
@@ -356,7 +375,10 @@ async def handle_docker_terminal(
             "-e", f"TMUX_ENV={env_exports}",  # Pass env vars
             container_name,
             "bash", "-c",
-            f'{env_exports} exec tmux new-session -A -s {session_name}',
+            # Detach other clients, set aggressive-resize, then attach
+            f'{env_exports} tmux set-option -g aggressive-resize on 2>/dev/null; '
+            f'tmux detach-client -a -t {session_name} 2>/dev/null; '
+            f'exec tmux new-session -A -s {session_name}',
         ]
         os.execvp("docker", exec_cmd)
         os._exit(1)
@@ -462,7 +484,7 @@ async def handle_tmux_terminal(
 def resize_docker_tmux(container_name: str, session_name: str, rows: int, cols: int) -> None:
     """Resize a tmux session inside a Docker container."""
     try:
-        # First, detach any other clients that might be limiting the size
+        # Detach all other clients first - they may be limiting the size
         subprocess.run(
             [
                 "docker", "exec", "-u", "wyld", container_name,
@@ -472,17 +494,25 @@ def resize_docker_tmux(container_name: str, session_name: str, rows: int, cols: 
             timeout=5,
         )
 
-        # Set window size option to force the size
+        # Force window size using set-window-option
         subprocess.run(
             [
                 "docker", "exec", "-u", "wyld", container_name,
-                "tmux", "set-option", "-t", session_name, "window-size", "manual",
+                "tmux", "set-window-option", "-t", session_name, "force-width", str(cols),
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+        subprocess.run(
+            [
+                "docker", "exec", "-u", "wyld", container_name,
+                "tmux", "set-window-option", "-t", session_name, "force-height", str(rows),
             ],
             capture_output=True,
             timeout=5,
         )
 
-        # Resize the window
+        # Explicitly resize the window
         subprocess.run(
             [
                 "docker", "exec", "-u", "wyld", container_name,
@@ -492,7 +522,7 @@ def resize_docker_tmux(container_name: str, session_name: str, rows: int, cols: 
             timeout=5,
         )
 
-        # Also resize all panes
+        # Resize the pane as well
         subprocess.run(
             [
                 "docker", "exec", "-u", "wyld", container_name,
@@ -502,7 +532,7 @@ def resize_docker_tmux(container_name: str, session_name: str, rows: int, cols: 
             timeout=5,
         )
 
-        # Force refresh all clients
+        # Refresh the client
         subprocess.run(
             [
                 "docker", "exec", "-u", "wyld", container_name,

@@ -14,6 +14,68 @@ interface Message {
   status?: MessageStatus;
 }
 
+// Supervisor thinking types
+export type ThinkingPhase = "evaluating" | "deciding" | "replanning" | "course_correcting";
+
+export interface SupervisorThought {
+  id: string;
+  content: string;
+  phase: ThinkingPhase;
+  timestamp: string;
+  stepId?: string;
+  confidence?: number;
+}
+
+export interface ConfidenceUpdate {
+  stepId: string;
+  oldConfidence: number;
+  newConfidence: number;
+  reason: string;
+  timestamp: string;
+}
+
+// Plan change types
+export type PlanChangeType = "step_added" | "step_removed" | "step_modified" | "step_reordered";
+
+export interface PlanChange {
+  id: string;
+  changeType: PlanChangeType;
+  stepId: string;
+  stepTitle?: string;
+  reason: string;
+  timestamp: string;
+  before?: {
+    title?: string;
+    description?: string;
+    order?: number;
+  };
+  after?: {
+    title?: string;
+    description?: string;
+    order?: number;
+  };
+}
+
+// AI file change preview types
+export interface AIFileChange {
+  id: string;
+  path: string;
+  before: string;
+  after: string;
+  language?: string;
+  summary?: string;
+  stepId?: string;
+}
+
+// Todo progress types
+export interface TodoProgress {
+  stepId: string;
+  todoIndex: number;
+  progress: number; // 0-100
+  statusMessage: string;
+  timestamp: string;
+}
+
 interface Conversation {
   id: string;
   title: string;
@@ -71,6 +133,25 @@ interface ChatState {
   planSteps: PlanStep[];
   currentStepIndex: number;
 
+  // Supervisor thinking state
+  supervisorThoughts: SupervisorThought[];
+  confidenceUpdates: ConfidenceUpdate[];
+  isSupervisorThinking: boolean;
+
+  // Plan changes history
+  planChanges: PlanChange[];
+
+  // AI file change previews
+  pendingFileChanges: AIFileChange[];
+  showFileChangePreview: boolean;
+
+  // Todo progress tracking
+  todoProgress: Record<string, TodoProgress[]>; // stepId -> TodoProgress[]
+
+  // Active agent for chat
+  activeAgent: string | null;
+  availableAgents: string[];
+
   // Conversation organization
   pinnedConversations: Set<string>;
   searchQuery: string;
@@ -112,6 +193,32 @@ interface ChatState {
   rejectPlan: (token: string) => Promise<void>;
   clearPlan: () => void;
 
+  // Supervisor thinking actions
+  addSupervisorThought: (thought: Omit<SupervisorThought, "id">) => void;
+  addConfidenceUpdate: (update: ConfidenceUpdate) => void;
+  setSupervisorThinking: (isThinking: boolean) => void;
+  clearSupervisorThoughts: () => void;
+
+  // Plan changes actions
+  addPlanChange: (change: Omit<PlanChange, "id">) => void;
+  clearPlanChanges: () => void;
+
+  // AI file change actions
+  addFileChangePreview: (change: AIFileChange) => void;
+  removeFileChangePreview: (changeId: string) => void;
+  acceptFileChange: (changeId: string) => void;
+  rejectFileChange: (changeId: string) => void;
+  setShowFileChangePreview: (show: boolean) => void;
+  clearFileChangePreviews: () => void;
+
+  // Todo progress actions
+  updateTodoProgress: (progress: TodoProgress) => void;
+  clearTodoProgress: (stepId?: string) => void;
+
+  // Agent selection actions
+  setActiveAgent: (agent: string | null) => void;
+  setAvailableAgents: (agents: string[]) => void;
+
   // Local state updates (from WebSocket pushes)
   renameConversationLocal: (conversationId: string, title: string) => void;
 
@@ -144,6 +251,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   planStatus: null,
   planSteps: [],
   currentStepIndex: 0,
+  supervisorThoughts: [],
+  confidenceUpdates: [],
+  isSupervisorThinking: false,
+  planChanges: [],
+  pendingFileChanges: [],
+  showFileChangePreview: false,
+  todoProgress: {},
+  activeAgent: null,
+  availableAgents: ["wyld", "code", "data", "infra", "research", "qa"],
   pinnedConversations: new Set<string>(),
   searchQuery: "",
   tagFilter: [],
@@ -489,7 +605,134 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearPlan: () => {
-    set({ currentPlan: null, planStatus: null, planSteps: [], currentStepIndex: 0 });
+    set({
+      currentPlan: null,
+      planStatus: null,
+      planSteps: [],
+      currentStepIndex: 0,
+      supervisorThoughts: [],
+      confidenceUpdates: [],
+      isSupervisorThinking: false,
+      planChanges: [],
+      todoProgress: {},
+    });
+  },
+
+  // Supervisor thinking actions
+  addSupervisorThought: (thought) => {
+    set((state) => ({
+      supervisorThoughts: [
+        ...state.supervisorThoughts,
+        { ...thought, id: crypto.randomUUID() },
+      ].slice(-50), // Keep last 50 thoughts
+      isSupervisorThinking: true,
+    }));
+  },
+
+  addConfidenceUpdate: (update) => {
+    set((state) => ({
+      confidenceUpdates: [...state.confidenceUpdates, update].slice(-30),
+    }));
+  },
+
+  setSupervisorThinking: (isThinking) => {
+    set({ isSupervisorThinking: isThinking });
+  },
+
+  clearSupervisorThoughts: () => {
+    set({ supervisorThoughts: [], confidenceUpdates: [], isSupervisorThinking: false });
+  },
+
+  // Plan changes actions
+  addPlanChange: (change) => {
+    set((state) => ({
+      planChanges: [
+        ...state.planChanges,
+        { ...change, id: crypto.randomUUID() },
+      ].slice(-30), // Keep last 30 changes
+    }));
+  },
+
+  clearPlanChanges: () => {
+    set({ planChanges: [] });
+  },
+
+  // AI file change actions
+  addFileChangePreview: (change) => {
+    set((state) => ({
+      pendingFileChanges: [...state.pendingFileChanges, change],
+      showFileChangePreview: true,
+    }));
+  },
+
+  removeFileChangePreview: (changeId) => {
+    set((state) => ({
+      pendingFileChanges: state.pendingFileChanges.filter((c) => c.id !== changeId),
+      showFileChangePreview: state.pendingFileChanges.length > 1,
+    }));
+  },
+
+  acceptFileChange: (changeId) => {
+    // This would trigger the actual file write via WebSocket
+    set((state) => ({
+      pendingFileChanges: state.pendingFileChanges.filter((c) => c.id !== changeId),
+      showFileChangePreview: state.pendingFileChanges.length > 1,
+    }));
+  },
+
+  rejectFileChange: (changeId) => {
+    set((state) => ({
+      pendingFileChanges: state.pendingFileChanges.filter((c) => c.id !== changeId),
+      showFileChangePreview: state.pendingFileChanges.length > 1,
+    }));
+  },
+
+  setShowFileChangePreview: (show) => {
+    set({ showFileChangePreview: show });
+  },
+
+  clearFileChangePreviews: () => {
+    set({ pendingFileChanges: [], showFileChangePreview: false });
+  },
+
+  // Todo progress actions
+  updateTodoProgress: (progress) => {
+    set((state) => {
+      const stepProgress = state.todoProgress[progress.stepId] || [];
+      const existingIndex = stepProgress.findIndex(
+        (p) => p.todoIndex === progress.todoIndex
+      );
+      const newProgress =
+        existingIndex >= 0
+          ? stepProgress.map((p, i) => (i === existingIndex ? progress : p))
+          : [...stepProgress, progress];
+      return {
+        todoProgress: {
+          ...state.todoProgress,
+          [progress.stepId]: newProgress,
+        },
+      };
+    });
+  },
+
+  clearTodoProgress: (stepId) => {
+    if (stepId) {
+      set((state) => {
+        const { [stepId]: _, ...rest } = state.todoProgress;
+        return { todoProgress: rest };
+      });
+    } else {
+      set({ todoProgress: {} });
+    }
+  },
+
+  // Agent selection actions
+  setActiveAgent: (agent) => {
+    set({ activeAgent: agent });
+  },
+
+  setAvailableAgents: (agents) => {
+    set({ availableAgents: agents });
   },
 
   // Local state updates (from WebSocket pushes)

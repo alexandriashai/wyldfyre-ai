@@ -93,6 +93,12 @@ interface WorkspaceState {
   // Recent files
   recentFiles: string[];
 
+  // Chat-linked file (for file-specific chat context)
+  linkedFile: string | null;
+
+  // Current active file path (shortcut)
+  activeFile: string | null;
+
   // Actions
   setActiveProject: (id: string | null) => void;
   setActiveDomain: (id: string | null) => void;
@@ -124,6 +130,7 @@ interface WorkspaceState {
   addRecentFile: (path: string) => void;
   refreshFileInTree: (path: string, node: FileNode) => void;
   removeFileFromTree: (path: string) => void;
+  setLinkedFile: (path: string | null) => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>()(
@@ -157,6 +164,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       isSearchOpen: false,
       pinnedFiles: [],
       recentFiles: [],
+      linkedFile: null,
+      activeFile: null,
 
       // Actions
       setActiveProject: (id) => set({
@@ -207,7 +216,9 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         return { openFiles: filtered, activeFilePath };
       }),
 
-      setActiveFile: (path) => set({ activeFilePath: path }),
+      setActiveFile: (path) => set({ activeFilePath: path, activeFile: path }),
+
+      setLinkedFile: (path) => set({ linkedFile: path }),
 
       updateFileContent: (path, content) => set((state) => ({
         openFiles: state.openFiles.map((f) =>

@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { Button } from "@/components/ui/button";
-import { X, Circle, PanelLeftOpen, Image as ImageIcon, Terminal, SplitSquareHorizontal, GitBranch } from "lucide-react";
+import { X, Circle, PanelLeftOpen, Image as ImageIcon, Terminal, SplitSquareHorizontal, GitBranch, Blocks, Code2 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { cn } from "@/lib/utils";
 import { Breadcrumbs } from "../editor/breadcrumbs";
@@ -13,6 +13,12 @@ import { GitDiffEditor } from "../editor/diff-editor";
 // Dynamically import Monaco to avoid SSR issues
 const MonacoEditor = dynamic(
   () => import("@monaco-editor/react").then((mod) => mod.default),
+  { ssr: false, loading: () => <div className="flex-1 flex items-center justify-center"><div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div> }
+);
+
+// Dynamically import GrapesJS Visual Editor
+const VisualEditorPanel = dynamic(
+  () => import("../visual-editor/visual-editor-panel").then((mod) => mod.VisualEditorPanel),
   { ssr: false, loading: () => <div className="flex-1 flex items-center justify-center"><div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div> }
 );
 
@@ -44,6 +50,8 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
 
   // Detect mobile viewport
   const [isMobile, setIsMobile] = useState(false);
+  const [visualEditorMode, setVisualEditorMode] = useState(false);
+
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
     checkMobile();
@@ -52,6 +60,14 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
   }, []);
 
   const activeFile = openFiles.find((f) => f.path === activeFilePath);
+  const isVisualEditable = activeFile && /\.(html?|htm|twig)$/i.test(activeFile.path);
+
+  // Reset visual editor mode when switching to non-HTML file
+  useEffect(() => {
+    if (!isVisualEditable && visualEditorMode) {
+      setVisualEditorMode(false);
+    }
+  }, [isVisualEditable, visualEditorMode]);
 
   // Detect theme after mount to avoid SSR hydration mismatch
   const [editorTheme, setEditorTheme] = useState("vs-dark");
@@ -135,6 +151,18 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
         ))}
         {/* Spacer + toolbar buttons */}
         <div className="ml-auto shrink-0 flex items-center gap-0.5 pr-1">
+          {/* Visual Editor toggle for HTML files */}
+          {isVisualEditable && (
+            <Button
+              variant={visualEditorMode ? "secondary" : "ghost"}
+              size="icon"
+              className="h-6 w-6"
+              onClick={() => setVisualEditorMode(!visualEditorMode)}
+              title={visualEditorMode ? "Switch to Code Editor" : "Switch to Visual Editor"}
+            >
+              {visualEditorMode ? <Code2 className="h-3.5 w-3.5" /> : <Blocks className="h-3.5 w-3.5" />}
+            </Button>
+          )}
           {activeFile && gitStatus?.modified?.some((f) => f.path === activeFile.path) && (
             <Button
               variant={diffMode ? "secondary" : "ghost"}
@@ -199,6 +227,8 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
       <div className="flex-1 min-h-0">
         {diffMode && diffFilePath ? (
           <GitDiffEditor />
+        ) : visualEditorMode && isVisualEditable ? (
+          <VisualEditorPanel />
         ) : activeFile?.is_binary ? (
           <div className="flex-1 flex items-center justify-center h-full">
             <div className="text-center space-y-2">

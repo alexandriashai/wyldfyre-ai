@@ -27,7 +27,14 @@ export default function WorkspaceTerminalPage() {
   }
 
   return (
-    <div className="h-[calc(100dvh-3.5rem)] w-full">
+    <div
+      className="h-full w-full md:h-[calc(100dvh-3.5rem)]"
+      style={{
+        // Use dvh on mobile for proper orientation handling
+        height: '100%',
+        minHeight: 0,
+      }}
+    >
       <TerminalPanel alwaysShow />
     </div>
   );

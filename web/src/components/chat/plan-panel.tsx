@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useChatStore, PlanStep } from "@/stores/chat-store";
+import { useChatStore, PlanStep, TodoProgress } from "@/stores/chat-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import ReactMarkdown from "react-markdown";
 import {
   Collapsible,
@@ -27,7 +28,10 @@ import {
   AlertCircle,
   SkipForward,
   RefreshCw,
+  Info,
+  Link2,
 } from "lucide-react";
+import { PlanChangelog } from "./plan-changelog";
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -45,8 +49,71 @@ function getStepDuration(step: PlanStep): number | null {
   return null;
 }
 
+interface TodoItemProps {
+  todo: string;
+  index: number;
+  stepId: string;
+  stepStatus: PlanStep["status"];
+  progress?: TodoProgress;
+}
 
-function StepItem({ step, index, isLast }: { step: PlanStep; index: number; isLast: boolean }) {
+function TodoItem({ todo, index, stepId, stepStatus, progress }: TodoItemProps) {
+  const isCompleted = stepStatus === "completed" || (progress && progress.progress >= 100);
+  const isInProgress = progress && progress.progress > 0 && progress.progress < 100;
+  const hasMessage = progress?.statusMessage;
+
+  return (
+    <li className="flex flex-col gap-0.5">
+      <div className="flex items-start gap-1.5 text-xs">
+        <span className="mt-0.5 shrink-0">
+          {isCompleted ? (
+            <Check className="h-3 w-3 text-green-500" />
+          ) : isInProgress ? (
+            <Loader2 className="h-3 w-3 text-blue-500 animate-spin" />
+          ) : (
+            <Square className="h-3 w-3 text-muted-foreground" />
+          )}
+        </span>
+        <span className={cn(
+          "flex-1",
+          isCompleted && "text-muted-foreground line-through",
+          !isCompleted && "text-foreground/80"
+        )}>
+          {todo}
+        </span>
+        {progress && progress.progress > 0 && progress.progress < 100 && (
+          <span className="text-[10px] text-blue-500 font-mono shrink-0">
+            {progress.progress}%
+          </span>
+        )}
+      </div>
+
+      {/* Progress bar for multi-part todos */}
+      {isInProgress && (
+        <div className="ml-4 flex items-center gap-2">
+          <Progress value={progress?.progress || 0} className="h-1 flex-1" />
+        </div>
+      )}
+
+      {/* Status message */}
+      {hasMessage && (
+        <div className="ml-4 flex items-start gap-1 text-[10px] text-muted-foreground">
+          <Info className="h-2.5 w-2.5 mt-0.5 shrink-0" />
+          <span>{progress.statusMessage}</span>
+        </div>
+      )}
+    </li>
+  );
+}
+
+interface StepItemProps {
+  step: PlanStep;
+  index: number;
+  isLast: boolean;
+  todoProgressMap: Record<number, TodoProgress>;
+}
+
+function StepItem({ step, index, isLast, todoProgressMap }: StepItemProps) {
   const [showOutput, setShowOutput] = useState(false);
   const duration = getStepDuration(step);
   const hasOutput = step.output && step.output.length > 0;
@@ -90,9 +157,9 @@ function StepItem({ step, index, isLast }: { step: PlanStep; index: number; isLa
           step.status === "failed" && "bg-red-500/5 border border-red-500/20"
         )}
       >
-        <div className="relative">
+        <div className="relative shrink-0">
           <Icon className={cn(
-            "h-5 w-5 mt-0.5 flex-shrink-0 transition-all duration-300",
+            "h-5 w-5 mt-0.5 transition-all duration-300",
             colorClass,
             isActive && "animate-spin"
           )} />
@@ -104,7 +171,7 @@ function StepItem({ step, index, isLast }: { step: PlanStep; index: number; isLa
         </div>
 
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
             <span className={cn(
               "font-medium text-sm transition-all duration-300",
               step.status === "completed" && "line-through text-muted-foreground"
@@ -112,12 +179,12 @@ function StepItem({ step, index, isLast }: { step: PlanStep; index: number; isLa
               {step.title}
             </span>
             {step.agent && (
-              <Badge variant="outline" className="text-[10px] h-4 px-1.5">
+              <Badge variant="outline" className="text-[10px] h-4 px-1.5 hidden sm:inline-flex">
                 {step.agent}
               </Badge>
             )}
             {duration !== null && duration > 0 && (
-              <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
+              <span className="text-[10px] text-muted-foreground flex items-center gap-0.5 shrink-0">
                 <Clock className="h-2.5 w-2.5" />
                 {formatDuration(duration)}
               </span>
@@ -125,37 +192,40 @@ function StepItem({ step, index, isLast }: { step: PlanStep; index: number; isLa
           </div>
 
           {step.description && (
-            <div className="text-xs text-muted-foreground mt-0.5 prose prose-xs dark:prose-invert max-w-none [&_p]:m-0 [&_ul]:m-0 [&_ol]:m-0 [&_li]:m-0">
+            <div className="text-xs text-muted-foreground mt-0.5 prose prose-xs dark:prose-invert max-w-none [&_p]:m-0 [&_ul]:m-0 [&_ol]:m-0 [&_li]:m-0 line-clamp-2 sm:line-clamp-none">
               <ReactMarkdown>{step.description}</ReactMarkdown>
             </div>
           )}
 
-          {/* Todos / sub-tasks */}
+          {/* Enhanced Todos with progress */}
           {step.todos && step.todos.length > 0 && (
-            <ul className="mt-1 space-y-0.5">
+            <ul className="mt-1.5 space-y-1">
               {step.todos.map((todo, i) => (
-                <li key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
-                  <span className="mt-0.5 shrink-0">
-                    {step.status === "completed" ? (
-                      <Check className="h-3 w-3 text-green-500" />
-                    ) : (
-                      <Square className="h-3 w-3" />
-                    )}
-                  </span>
-                  <span>{todo}</span>
-                </li>
+                <TodoItem
+                  key={i}
+                  todo={todo}
+                  index={i}
+                  stepId={step.id}
+                  stepStatus={step.status}
+                  progress={todoProgressMap[i]}
+                />
               ))}
             </ul>
           )}
 
-          {/* Files affected */}
+          {/* Files affected - responsive */}
           {step.files && step.files.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-1">
-              {step.files.map((file, i) => (
-                <Badge key={i} variant="secondary" className="text-[9px] h-4 px-1 font-mono">
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {step.files.slice(0, 3).map((file, i) => (
+                <Badge key={i} variant="secondary" className="text-[9px] h-4 px-1 font-mono max-w-[120px] truncate">
                   {file.split("/").pop()}
                 </Badge>
               ))}
+              {step.files.length > 3 && (
+                <Badge variant="secondary" className="text-[9px] h-4 px-1">
+                  +{step.files.length - 3} more
+                </Badge>
+              )}
             </div>
           )}
 
@@ -179,19 +249,17 @@ function StepItem({ step, index, isLast }: { step: PlanStep; index: number; isLa
 
           {/* Error display with retry */}
           {hasError && step.status === "failed" && (
-            <div className="mt-1.5 flex items-start gap-2">
+            <div className="mt-1.5 flex flex-col sm:flex-row sm:items-start gap-2">
               <p className="text-xs text-red-600 dark:text-red-400 flex-1">
                 {step.error}
               </p>
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-5 px-2 text-[10px] text-primary shrink-0"
+                className="h-6 px-2 text-[10px] text-primary shrink-0 self-start"
                 onClick={() => {
-                  // Send retry command via chat
                   const chatStore = useChatStore.getState();
                   if (chatStore.currentConversation) {
-                    // This would be handled by the useChat hook
                     console.log("Retry step:", step.id);
                   }
                 }}
@@ -214,8 +282,6 @@ function ProgressBar({ steps }: { steps: PlanStep[] }) {
   const total = steps.length;
   const percentage = Math.round((completed / total) * 100);
 
-  // Calculate total elapsed time
-  const startedSteps = steps.filter((s) => s.started_at);
   const completedSteps = steps.filter((s) => s.completed_at);
   const totalDuration = completedSteps.reduce((acc, step) => {
     if (step.started_at && step.completed_at) {
@@ -226,13 +292,13 @@ function ProgressBar({ steps }: { steps: PlanStep[] }) {
 
   return (
     <div className="mt-3 pt-3 border-t">
-      <div className="flex items-center justify-between text-xs text-muted-foreground mb-1.5">
-        <span className="flex items-center gap-2">
+      <div className="flex items-center justify-between text-xs text-muted-foreground mb-1.5 flex-wrap gap-1">
+        <span className="flex items-center gap-1 sm:gap-2">
           <span>{completed}/{total} steps</span>
           {failed > 0 && <span className="text-destructive">({failed} failed)</span>}
           {inProgress > 0 && <span className="text-blue-500">(1 running)</span>}
         </span>
-        <span className="flex items-center gap-2">
+        <span className="flex items-center gap-1 sm:gap-2">
           {totalDuration > 0 && (
             <span className="flex items-center gap-0.5">
               <Clock className="h-3 w-3" />
@@ -280,6 +346,8 @@ export function PlanPanel({ className }: PlanPanelProps) {
     rejectPlan,
     clearPlan,
     currentConversation,
+    planChanges,
+    todoProgress,
   } = useChatStore();
 
   const [isOpen, setIsOpen] = useState(true);
@@ -321,19 +389,28 @@ export function PlanPanel({ className }: PlanPanelProps) {
 
   const statusConfig = {
     DRAFT: { label: "Draft", variant: "secondary" as const, icon: Pencil },
-    PENDING: { label: "Pending Approval", variant: "outline" as const, icon: Clock },
+    PENDING: { label: "Pending", variant: "outline" as const, icon: Clock },
     APPROVED: {
-      label: isExecuting ? "Executing" : isPaused ? "Paused" : "Approved",
+      label: isExecuting ? "Running" : isPaused ? "Paused" : "Approved",
       variant: "default" as const,
       icon: isExecuting ? Loader2 : isPaused ? Clock : Check,
     },
     REJECTED: { label: "Rejected", variant: "destructive" as const, icon: X },
-    COMPLETED: { label: "Completed", variant: "default" as const, icon: Check },
+    COMPLETED: { label: "Done", variant: "default" as const, icon: Check },
   };
 
   const status = planStatus && statusConfig[planStatus] ? statusConfig[planStatus] : statusConfig.DRAFT;
   const StatusIcon = status.icon;
   const showActions = planStatus === "PENDING" || planStatus === "DRAFT";
+
+  // Build todo progress map per step
+  const getTodoProgressMap = (stepId: string): Record<number, TodoProgress> => {
+    const progress = todoProgress[stepId] || [];
+    return progress.reduce((acc, p) => {
+      acc[p.todoIndex] = p;
+      return acc;
+    }, {} as Record<number, TodoProgress>);
+  };
 
   return (
     <Collapsible
@@ -341,24 +418,24 @@ export function PlanPanel({ className }: PlanPanelProps) {
       onOpenChange={setIsOpen}
       className={cn("border-b bg-muted/30", className)}
     >
-      <div className="flex items-center justify-between px-4 py-2">
+      <div className="flex items-center justify-between px-3 sm:px-4 py-2">
         <CollapsibleTrigger asChild>
-          <div className="flex items-center gap-2 flex-1 cursor-pointer hover:opacity-80 transition-opacity">
-            <FileText className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium">Plan</span>
-            <Badge variant={status.variant} className="h-5 text-xs">
-              <StatusIcon className={cn("h-3 w-3 mr-1", isExecuting && "animate-spin")} />
-              {status.label}
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-1 cursor-pointer hover:opacity-80 transition-opacity min-w-0">
+            <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+            <span className="text-sm font-medium hidden sm:inline">Plan</span>
+            <Badge variant={status.variant} className="h-5 text-[10px] sm:text-xs shrink-0">
+              <StatusIcon className={cn("h-3 w-3 mr-0.5 sm:mr-1", isExecuting && "animate-spin")} />
+              <span className="hidden xs:inline">{status.label}</span>
             </Badge>
             {planSteps.length > 0 && (
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-[10px] text-muted-foreground shrink-0">
                 {planSteps.filter((s) => s.status === "completed").length}/{planSteps.length}
               </span>
             )}
             {isOpen ? (
-              <ChevronUp className="h-4 w-4 text-muted-foreground ml-auto" />
+              <ChevronUp className="h-4 w-4 text-muted-foreground ml-auto shrink-0" />
             ) : (
-              <ChevronDown className="h-4 w-4 text-muted-foreground ml-auto" />
+              <ChevronDown className="h-4 w-4 text-muted-foreground ml-auto shrink-0" />
             )}
           </div>
         </CollapsibleTrigger>
@@ -366,15 +443,15 @@ export function PlanPanel({ className }: PlanPanelProps) {
           variant="ghost"
           size="icon"
           onClick={(e) => { e.stopPropagation(); clearPlan(); }}
-          className="h-7 w-7 ml-2 shrink-0 text-muted-foreground hover:text-foreground hover:bg-destructive/10"
+          className="h-7 w-7 ml-1 sm:ml-2 shrink-0 text-muted-foreground hover:text-foreground hover:bg-destructive/10"
           title="Dismiss plan"
         >
           <X className="h-4 w-4" />
         </Button>
       </div>
       <CollapsibleContent>
-        <div className="px-4 pb-3">
-          <div className="max-h-[60vh] sm:max-h-80 overflow-y-auto overscroll-contain touch-pan-y">
+        <div className="px-3 sm:px-4 pb-3">
+          <div className="max-h-[50vh] sm:max-h-80 overflow-y-auto overscroll-contain touch-pan-y">
             {planSteps.length > 0 ? (
               <div className="py-2 space-y-0.5">
                 {planSteps.map((step, index) => (
@@ -383,6 +460,7 @@ export function PlanPanel({ className }: PlanPanelProps) {
                     step={step}
                     index={index}
                     isLast={index === planSteps.length - 1}
+                    todoProgressMap={getTodoProgressMap(step.id)}
                   />
                 ))}
                 <ProgressBar steps={planSteps} />
@@ -394,6 +472,11 @@ export function PlanPanel({ className }: PlanPanelProps) {
             )}
           </div>
 
+          {/* Plan Changelog */}
+          {planChanges.length > 0 && (
+            <PlanChangelog changes={planChanges} maxVisible={3} />
+          )}
+
           {showActions && (
             <div className="flex items-center gap-2 mt-3 pt-3 border-t">
               <Button
@@ -401,20 +484,22 @@ export function PlanPanel({ className }: PlanPanelProps) {
                 size="sm"
                 onClick={handleApprove}
                 disabled={isApproving || isRejecting}
-                className="flex-1"
+                className="flex-1 h-9"
               >
-                <Check className="h-4 w-4 mr-2" />
-                {isApproving ? "Approving..." : "Approve Plan"}
+                <Check className="h-4 w-4 mr-1 sm:mr-2" />
+                <span className="hidden sm:inline">{isApproving ? "Approving..." : "Approve Plan"}</span>
+                <span className="sm:hidden">{isApproving ? "..." : "Approve"}</span>
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleReject}
                 disabled={isApproving || isRejecting}
-                className="flex-1"
+                className="flex-1 h-9"
               >
-                <X className="h-4 w-4 mr-2" />
-                {isRejecting ? "Rejecting..." : "Reject"}
+                <X className="h-4 w-4 mr-1 sm:mr-2" />
+                <span className="hidden sm:inline">{isRejecting ? "Rejecting..." : "Reject"}</span>
+                <span className="sm:hidden">{isRejecting ? "..." : "Reject"}</span>
               </Button>
             </div>
           )}

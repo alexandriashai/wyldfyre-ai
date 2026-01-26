@@ -9,6 +9,54 @@ import { Save, Upload, Download, RotateCcw, Blocks } from "lucide-react";
 import { cn } from "@/lib/utils";
 import "grapesjs/dist/css/grapes.min.css";
 
+// Twig syntax preservation helpers
+const TWIG_BLOCK_MARKER = 'data-twig-block';
+const TWIG_VAR_MARKER = 'data-twig-var';
+const TWIG_COMMENT_MARKER = 'data-twig-comment';
+
+function wrapTwigSyntax(html: string): string {
+  // Wrap {% ... %} blocks (statements)
+  html = html.replace(
+    /(\{%[\s\S]*?%\})/g,
+    `<span ${TWIG_BLOCK_MARKER}="true" contenteditable="false" style="background:#fef3c7;color:#92400e;padding:2px 4px;border-radius:3px;font-family:monospace;font-size:12px;">$1</span>`
+  );
+
+  // Wrap {{ ... }} (variables/expressions)
+  html = html.replace(
+    /(\{\{[\s\S]*?\}\})/g,
+    `<span ${TWIG_VAR_MARKER}="true" contenteditable="false" style="background:#dbeafe;color:#1e40af;padding:2px 4px;border-radius:3px;font-family:monospace;font-size:12px;">$1</span>`
+  );
+
+  // Wrap {# ... #} (comments)
+  html = html.replace(
+    /(\{#[\s\S]*?#\})/g,
+    `<span ${TWIG_COMMENT_MARKER}="true" contenteditable="false" style="background:#e5e7eb;color:#6b7280;padding:2px 4px;border-radius:3px;font-family:monospace;font-size:12px;">$1</span>`
+  );
+
+  return html;
+}
+
+function unwrapTwigSyntax(html: string): string {
+  // Remove wrapper spans but keep the Twig content
+  html = html.replace(
+    new RegExp(`<span\\s+${TWIG_BLOCK_MARKER}="true"[^>]*>([\\s\\S]*?)<\\/span>`, 'g'),
+    '$1'
+  );
+  html = html.replace(
+    new RegExp(`<span\\s+${TWIG_VAR_MARKER}="true"[^>]*>([\\s\\S]*?)<\\/span>`, 'g'),
+    '$1'
+  );
+  html = html.replace(
+    new RegExp(`<span\\s+${TWIG_COMMENT_MARKER}="true"[^>]*>([\\s\\S]*?)<\\/span>`, 'g'),
+    '$1'
+  );
+  return html;
+}
+
+function isTwigFile(path: string): boolean {
+  return /\.twig$/i.test(path);
+}
+
 interface GrapesJSEditor {
   getHtml: () => string;
   getCss: () => string;
@@ -43,6 +91,9 @@ export function VisualEditorPanel() {
   const [isDirty, setIsDirty] = useState(false);
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
+  const [originalHead, setOriginalHead] = useState<string | null>(null);
+  const [originalDoctype, setOriginalDoctype] = useState<string>("<!DOCTYPE html>");
+  const [originalHtmlAttrs, setOriginalHtmlAttrs] = useState<string>('lang="en"');
 
   const { token } = useAuthStore();
   const { activeProjectId, activeFilePath } = useWorkspaceStore();
@@ -143,8 +194,9 @@ export function VisualEditorPanel() {
   useEffect(() => {
     if (!gjsRef.current || !token || !activeProjectId || !activeFilePath) return;
 
-    const isHtmlFile = /\.(html?|htm)$/i.test(activeFilePath);
-    if (!isHtmlFile) return;
+    // Support HTML and Twig files
+    const isEditableFile = /\.(html?|htm|twig)$/i.test(activeFilePath);
+    if (!isEditableFile) return;
 
     loadFileIntoEditor(activeFilePath);
   }, [activeFilePath, token, activeProjectId]);
@@ -165,8 +217,33 @@ export function VisualEditorPanel() {
       const parser = new DOMParser();
       const doc = parser.parseFromString(result.content, "text/html");
 
-      const bodyContent = doc.body.innerHTML || result.content;
-      const styleElements = doc.querySelectorAll("style");
+      // Preserve original head content for saving
+      const headContent = doc.head.innerHTML;
+      setOriginalHead(headContent);
+
+      // Preserve html attributes (like lang, data-bs-theme, etc.)
+      const htmlEl = doc.documentElement;
+      const htmlAttrs = Array.from(htmlEl.attributes)
+        .map(attr => `${attr.name}="${attr.value}"`)
+        .join(' ');
+      setOriginalHtmlAttrs(htmlAttrs || 'lang="en"');
+
+      // Preserve doctype
+      const doctypeMatch = result.content.match(/^<!DOCTYPE[^>]*>/i);
+      if (doctypeMatch) {
+        setOriginalDoctype(doctypeMatch[0]);
+      }
+
+      let bodyContent = doc.body.innerHTML || result.content;
+
+      // For Twig files, wrap Twig syntax in special elements
+      const isTwig = isTwigFile(path);
+      if (isTwig) {
+        bodyContent = wrapTwigSyntax(bodyContent);
+      }
+
+      // Extract inline styles from head for GrapeJS style manager
+      const styleElements = doc.head.querySelectorAll("style");
       let css = "";
       styleElements.forEach((el) => {
         css += el.textContent || "";
@@ -190,11 +267,40 @@ export function VisualEditorPanel() {
     if (!gjsRef.current || !token || !activeProjectId) return;
 
     const filePath = activeFile || activeFilePath || "index.html";
-    const html = gjsRef.current.getHtml();
+    let bodyHtml = gjsRef.current.getHtml();
     const css = gjsRef.current.getCss();
 
-    // Build full HTML document
-    const fullHtml = buildHtmlDocument(html, css);
+    // For Twig files, unwrap the Twig syntax before saving
+    if (isTwigFile(filePath)) {
+      bodyHtml = unwrapTwigSyntax(bodyHtml);
+    }
+
+    let fullHtml: string;
+
+    if (originalHead) {
+      // Preserve original document structure, just update body and inline styles
+      // Remove old inline styles from head and add new ones
+      let headContent = originalHead;
+      // Remove existing <style> tags that we'll replace
+      headContent = headContent.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+      // Add GrapeJS styles at the end of head
+      if (css) {
+        headContent += `\n  <style>\n${css}\n  </style>`;
+      }
+
+      fullHtml = `${originalDoctype}
+<html ${originalHtmlAttrs}>
+<head>
+${headContent}
+</head>
+<body>
+${bodyHtml}
+</body>
+</html>`;
+    } else {
+      // No original content, build new document
+      fullHtml = buildHtmlDocument(bodyHtml, css);
+    }
 
     try {
       setStatusMessage("Saving...");
@@ -206,7 +312,7 @@ export function VisualEditorPanel() {
       console.error("Save failed:", err);
       setStatusMessage("Save failed");
     }
-  }, [token, activeProjectId, activeFile, activeFilePath]);
+  }, [token, activeProjectId, activeFile, activeFilePath, originalHead, originalDoctype, originalHtmlAttrs]);
 
   const handleExportHtml = useCallback(() => {
     if (!gjsRef.current) return;
@@ -240,19 +346,17 @@ export function VisualEditorPanel() {
     await loadFileIntoEditor(activeFilePath);
   }, [activeFilePath, loadFileIntoEditor]);
 
-  if (!isLoaded && !editorRef.current) {
-    return (
-      <div className="flex items-center justify-center h-full text-muted-foreground">
-        <div className="text-center space-y-2">
-          <Blocks className="h-8 w-8 mx-auto opacity-50" />
-          <p className="text-sm">Loading Visual Editor...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full relative">
+      {/* Loading overlay */}
+      {!isLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
+          <div className="text-center space-y-2">
+            <Blocks className="h-8 w-8 mx-auto opacity-50 animate-pulse" />
+            <p className="text-sm text-muted-foreground">Loading Visual Editor...</p>
+          </div>
+        </div>
+      )}
       {/* Toolbar */}
       <div className="flex items-center gap-1 px-2 py-1 border-b bg-muted/30 shrink-0">
         <Button

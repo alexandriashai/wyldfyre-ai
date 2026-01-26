@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux \
     python3 \
     python3-pip \
+    gosu \
     # For native modules
     libpng-dev \
     libjpeg-dev \
@@ -46,17 +47,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create wyld user
-RUN useradd -m -s /bin/bash -u 1000 wyld || true
+# Create wyld user (handle existing UID 1000 from node image)
+RUN userdel -r node 2>/dev/null || true && \
+    groupadd -g 1000 wyld 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 -g 1000 wyld 2>/dev/null || true
 
 # Create directories
-RUN mkdir -p /app /home/wyld/.local/bin /home/wyld/.claude /home/wyld/.npm && \
+RUN mkdir -p /app /home/wyld/.local/bin /home/wyld/.claude /home/wyld/.claude-local /home/wyld/.npm && \
     chown -R wyld:wyld /app /home/wyld
 
-# Install global npm packages
+# Install global npm packages (yarn already in node image)
 RUN npm install -g \
     pnpm \
-    yarn \
     typescript \
     ts-node \
     eslint \
@@ -69,20 +71,21 @@ COPY packages/cli/pai-memory /home/wyld/.local/bin/pai-memory
 COPY packages/cli/wyld-claude /home/wyld/.local/bin/wyld-claude
 RUN chmod +x /home/wyld/.local/bin/*
 
+# Copy entrypoint script
+COPY infrastructure/docker/templates/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 # Environment
 ENV PATH="/home/wyld/.local/bin:/app/node_modules/.bin:${PATH}"
 ENV NODE_ENV=development
 ENV NPM_CONFIG_PREFIX=/home/wyld/.npm-global
 
 WORKDIR /app
-USER wyld
 
-# Install dependencies if package.json exists (for pre-built images)
-# In practice, dependencies are installed at runtime via volume mount
-COPY --chown=wyld:wyld package*.json ./
-RUN if [ -f package.json ]; then npm install; fi
+# Don't set USER - entrypoint handles privilege drop after fixing permissions
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD node -e "console.log('healthy')" || exit 1
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["tail", "-f", "/dev/null"]
