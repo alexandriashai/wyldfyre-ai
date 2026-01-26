@@ -158,10 +158,10 @@ class LearningConsolidator:
                         if k not in primary.metadata
                     })
 
-                    # Delete the secondary learning
+                    # Delete the secondary learning using public API
                     try:
-                        # Get the ID from Qdrant
-                        similar = await self.memory._qdrant.search(
+                        # Use search_learnings to find the learning ID
+                        similar = await self.memory.search_learnings(
                             query=secondary.content,
                             limit=1,
                         )
@@ -173,9 +173,9 @@ class LearningConsolidator:
                     except Exception as e:
                         logger.debug(f"Failed to delete merged learning: {e}")
 
-                # Update the primary learning
+                # Update the primary learning using public API
                 try:
-                    similar = await self.memory._qdrant.search(
+                    similar = await self.memory.search_learnings(
                         query=primary.content,
                         limit=1,
                     )
@@ -214,9 +214,9 @@ class LearningConsolidator:
             for cluster in clusters:
                 representative = cluster[0]
 
-                # Check similarity using search
+                # Check similarity using public search_learnings API
                 try:
-                    similar = await self.memory._qdrant.search(
+                    similar = await self.memory.search_learnings(
                         query=learning.content,
                         limit=5,
                     )
@@ -475,9 +475,9 @@ class LearningConsolidator:
 
         decayed = 0
         for learning in stale:
-            # Find the learning ID
+            # Find the learning ID using public API
             try:
-                similar = await self.memory._qdrant.search(
+                similar = await self.memory.search_learnings(
                     query=learning.content,
                     limit=1,
                 )

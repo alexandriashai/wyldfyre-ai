@@ -1088,14 +1088,23 @@ class PAIMemory:
                 break
 
             for doc in documents:
-                utility = doc.get("utility_score", 0.5)
+                # Access utility_score from metadata (scroll returns {id, text, metadata: {...}})
+                metadata = doc.get("metadata", {})
+                utility = metadata.get("utility_score", 0.5)
 
                 if min_utility is not None and utility < min_utility:
                     continue
                 if max_utility is not None and utility > max_utility:
                     continue
 
-                results.append(doc)
+                # Flatten the doc for easier access downstream
+                flattened = {
+                    "id": doc.get("id"),
+                    "text": doc.get("text", ""),
+                    "content": doc.get("text", ""),  # Alias for compatibility
+                    **metadata,
+                }
+                results.append(flattened)
                 if len(results) >= limit:
                     break
 
@@ -1128,10 +1137,14 @@ class PAIMemory:
 
             for doc in documents:
                 try:
-                    learning = Learning.from_dict({
+                    # scroll returns {id, text, metadata: {...}} - flatten for Learning.from_dict
+                    metadata = doc.get("metadata", {})
+                    learning_dict = {
                         "content": doc.get("text", ""),
-                        **doc,
-                    })
+                        "id": doc.get("id"),
+                        **metadata,
+                    }
+                    learning = Learning.from_dict(learning_dict)
                     learnings.append(learning)
                 except Exception:
                     continue
@@ -1183,12 +1196,35 @@ class PAIMemory:
         if not self._qdrant:
             return []
 
-        results = await self._qdrant.search(
-            query="",  # Empty query to get all
-            limit=limit,
-            filter={"category": category},
-        )
-        return results
+        # Use scroll with filter instead of search (empty query doesn't work well)
+        results = []
+        offset = None
+
+        while len(results) < limit:
+            documents, offset = await self._qdrant.scroll(
+                limit=min(100, limit - len(results)),
+                offset=offset,
+                filter={"category": category},
+            )
+
+            if not documents:
+                break
+
+            for doc in documents:
+                # Flatten the doc structure
+                metadata = doc.get("metadata", {})
+                flattened = {
+                    "id": doc.get("id"),
+                    "text": doc.get("text", ""),
+                    "content": doc.get("text", ""),
+                    **metadata,
+                }
+                results.append(flattened)
+
+            if offset is None:
+                break
+
+        return results[:limit]
 
     async def get_learnings_before(
         self,
@@ -1218,19 +1254,23 @@ class PAIMemory:
                 break
 
             for doc in documents:
-                last_accessed_str = doc.get("last_accessed")
+                # Access metadata fields correctly (scroll returns {id, text, metadata: {...}})
+                metadata = doc.get("metadata", {})
+                last_accessed_str = metadata.get("last_accessed")
 
                 # If never accessed, check created_at
                 if not last_accessed_str:
-                    created_str = doc.get("created_at")
+                    created_str = metadata.get("created_at")
                     if created_str:
                         try:
                             created_at = datetime.fromisoformat(created_str)
                             if created_at < cutoff:
-                                learning = Learning.from_dict({
+                                learning_dict = {
                                     "content": doc.get("text", ""),
-                                    **doc,
-                                })
+                                    "id": doc.get("id"),
+                                    **metadata,
+                                }
+                                learning = Learning.from_dict(learning_dict)
                                 stale_learnings.append(learning)
                         except (ValueError, TypeError):
                             pass
@@ -1238,10 +1278,12 @@ class PAIMemory:
                     try:
                         last_accessed = datetime.fromisoformat(last_accessed_str)
                         if last_accessed < cutoff:
-                            learning = Learning.from_dict({
+                            learning_dict = {
                                 "content": doc.get("text", ""),
-                                **doc,
-                            })
+                                "id": doc.get("id"),
+                                **metadata,
+                            }
+                            learning = Learning.from_dict(learning_dict)
                             stale_learnings.append(learning)
                     except (ValueError, TypeError):
                         pass
@@ -1290,6 +1332,17 @@ class KnowledgeFederation:
         """
         results: list[tuple[Learning, float]] = []
 
+        # Helper to convert search result to Learning
+        def _to_learning(l_dict: dict[str, Any]) -> Learning:
+            # search_learnings returns {id, score, text, metadata: {...}}
+            # Flatten for Learning.from_dict
+            metadata = l_dict.get("metadata", {})
+            return Learning.from_dict({
+                "content": l_dict.get("text", ""),
+                "id": l_dict.get("id"),
+                **metadata,
+            })
+
         # 1. Current project learnings (highest priority)
         project_learnings = await self.memory.search_learnings(
             query=query,
@@ -1297,8 +1350,11 @@ class KnowledgeFederation:
             limit=10,
         )
         for l_dict in project_learnings:
-            learning = Learning.from_dict({"content": l_dict.get("text", ""), **l_dict})
-            results.append((learning, 1.0))  # Full weight
+            try:
+                learning = _to_learning(l_dict)
+                results.append((learning, 1.0))  # Full weight
+            except Exception:
+                continue
 
         # 2. Global learnings (medium priority)
         if include_global:
@@ -1307,9 +1363,13 @@ class KnowledgeFederation:
                 limit=5,
             )
             for l_dict in global_learnings:
-                if l_dict.get("scope") == "global":
-                    learning = Learning.from_dict({"content": l_dict.get("text", ""), **l_dict})
-                    results.append((learning, 0.7))
+                metadata = l_dict.get("metadata", {})
+                if metadata.get("scope") == "global":
+                    try:
+                        learning = _to_learning(l_dict)
+                        results.append((learning, 0.7))
+                    except Exception:
+                        continue
 
         # 3. Similar project learnings (lower priority, anonymized)
         if include_similar_projects:
@@ -1321,9 +1381,12 @@ class KnowledgeFederation:
                     limit=3,
                 )
                 for l_dict in cross_learnings:
-                    learning = Learning.from_dict({"content": l_dict.get("text", ""), **l_dict})
-                    anonymized = self._anonymize_learning(learning)
-                    results.append((anonymized, 0.4))
+                    try:
+                        learning = _to_learning(l_dict)
+                        anonymized = self._anonymize_learning(learning)
+                        results.append((anonymized, 0.4))
+                    except Exception:
+                        continue
 
         # Sort by weighted relevance (weight * utility_score)
         results.sort(
@@ -1380,17 +1443,19 @@ class KnowledgeFederation:
         if not learning_data:
             return None
 
-        utility = learning_data.get("utility_score", 0.5)
-        access_count = learning_data.get("access_count", 0)
+        # get_learning returns {id, text, metadata: {...}} - access fields from metadata
+        metadata = learning_data.get("metadata", {})
+        utility = metadata.get("utility_score", 0.5)
+        access_count = metadata.get("access_count", 0)
 
         # Only promote high-utility, well-used learnings
         if utility >= 0.8 and access_count >= 5:
             global_learning = Learning(
                 content=self._generalize_content(learning_data.get("text", "")),
-                phase=PAIPhase(learning_data.get("phase", "learn")),
-                category=learning_data.get("category", "general"),
+                phase=PAIPhase(metadata.get("phase", "learn")),
+                category=metadata.get("category", "general"),
                 scope=LearningScope.GLOBAL,
-                confidence=learning_data.get("confidence", 0.8),
+                confidence=metadata.get("confidence", 0.8),
                 utility_score=utility,
                 access_count=0,  # Reset for global tracking
                 metadata={"promoted_from": learning_id},

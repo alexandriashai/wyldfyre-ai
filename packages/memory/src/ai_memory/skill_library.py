@@ -118,21 +118,42 @@ class SkillLibrary:
     Searchable skill library with hierarchical composition.
 
     Stores skills in Qdrant for semantic search and retrieval.
+
+    Usage:
+        # Option 1: Pass a pre-configured QdrantStore for skill_library collection
+        qdrant_store = QdrantStore(collection_name="skill_library")
+        await qdrant_store.connect()
+        skill_lib = SkillLibrary(qdrant_store)
+
+        # Option 2: Pass None and call initialize() to create internal store
+        skill_lib = SkillLibrary(None)
+        await skill_lib.initialize()
     """
 
-    def __init__(self, qdrant_client: Any, collection: str = "skill_library"):
-        self._qdrant = qdrant_client
-        self._collection = collection
+    def __init__(self, qdrant_store: Any | None = None):
+        """
+        Initialize skill library.
+
+        Args:
+            qdrant_store: Pre-configured QdrantStore for skill_library collection,
+                         or None to create one during initialize()
+        """
+        self._qdrant = qdrant_store
+        self._owns_qdrant = qdrant_store is None  # Track if we need to create our own
         self._cache: dict[str, Skill] = {}  # In-memory cache for frequent access
 
     async def initialize(self) -> None:
-        """Initialize the skill library collection."""
-        if self._qdrant:
+        """Initialize the skill library, creating QdrantStore if needed."""
+        if self._qdrant is None and self._owns_qdrant:
             try:
-                await self._qdrant.ensure_collection(self._collection)
-                logger.info("Skill library initialized")
+                from .qdrant import QdrantStore
+                self._qdrant = QdrantStore(collection_name="skill_library")
+                await self._qdrant.connect()
+                logger.info("Skill library initialized with new QdrantStore")
             except Exception as e:
-                logger.warning(f"Failed to initialize skill library: {e}")
+                logger.warning(f"Failed to initialize skill library QdrantStore: {e}")
+        elif self._qdrant:
+            logger.info("Skill library initialized with provided QdrantStore")
 
     async def find_applicable_skills(
         self,
@@ -157,10 +178,9 @@ class SkillLibrary:
             return []
 
         try:
-            # Semantic search on goal
+            # Semantic search on goal (QdrantStore uses collection from constructor)
             candidates = await self._qdrant.search(
                 query=goal,
-                collection=self._collection,
                 limit=20,
             )
 
@@ -168,7 +188,13 @@ class SkillLibrary:
             applicable = []
             for result in candidates:
                 try:
-                    skill = Skill.from_dict(result)
+                    # Search returns {id, score, text, metadata} - extract skill data from metadata
+                    metadata = result.get("metadata", {})
+                    skill_dict = {
+                        "id": result.get("id"),
+                        **metadata,
+                    }
+                    skill = Skill.from_dict(skill_dict)
 
                     # Check preconditions
                     if not self._preconditions_met(skill, context):
@@ -436,10 +462,10 @@ class SkillLibrary:
             return None
 
         try:
+            # QdrantStore uses collection from constructor, not as parameter
             doc_id = await self._qdrant.upsert(
                 id=skill.id,
                 text=f"{skill.name} - {skill.description}",
-                collection=self._collection,
                 metadata=skill.to_dict(),
             )
             self._cache[skill.id] = skill
@@ -470,9 +496,12 @@ class SkillLibrary:
 
         if not skill and self._qdrant:
             try:
-                data = await self._qdrant.get(skill_id, collection=self._collection)
+                # QdrantStore.get() returns {id, text, metadata}
+                data = await self._qdrant.get(skill_id)
                 if data:
-                    skill = Skill.from_dict(data)
+                    metadata = data.get("metadata", {})
+                    skill_dict = {"id": data.get("id"), **metadata}
+                    skill = Skill.from_dict(skill_dict)
             except Exception:
                 pass
 
@@ -495,9 +524,12 @@ class SkillLibrary:
             return None
 
         try:
-            data = await self._qdrant.get(skill_id, collection=self._collection)
+            # QdrantStore.get() returns {id, text, metadata}
+            data = await self._qdrant.get(skill_id)
             if data:
-                skill = Skill.from_dict(data)
+                metadata = data.get("metadata", {})
+                skill_dict = {"id": data.get("id"), **metadata}
+                skill = Skill.from_dict(skill_dict)
                 self._cache[skill_id] = skill
                 return skill
         except Exception as e:
