@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { Button } from "@/components/ui/button";
-import { X, Circle, PanelLeftOpen, Image as ImageIcon, Terminal, SplitSquareHorizontal, GitBranch, Blocks, Code2 } from "lucide-react";
+import { X, Circle, PanelLeftOpen, Image as ImageIcon, Terminal, SplitSquareHorizontal, GitBranch, Blocks, Code2, MessageSquare } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { cn } from "@/lib/utils";
 import { Breadcrumbs } from "../editor/breadcrumbs";
@@ -37,6 +37,8 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
     setFileTreeCollapsed,
     isTerminalOpen,
     setTerminalOpen,
+    isFileChatExpanded,
+    setFileChatExpanded,
     splitEditor,
     splitFilePath,
     setSplitEditor,
@@ -217,6 +219,18 @@ export function EditorPanel({ onSave }: EditorPanelProps) {
           >
             <Terminal className="h-3.5 w-3.5" />
           </Button>
+          {/* File Chat toggle - desktop only */}
+          {!isMobile && (
+            <Button
+              variant={isFileChatExpanded ? "secondary" : "ghost"}
+              size="icon"
+              className="h-6 w-6"
+              onClick={() => setFileChatExpanded(!isFileChatExpanded)}
+              title="Toggle File Assistant"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+            </Button>
+          )}
         </div>
       </div>
 

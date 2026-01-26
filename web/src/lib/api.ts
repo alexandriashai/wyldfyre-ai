@@ -798,6 +798,9 @@ export const memoryApi = {
     domain_id?: string;
     conversation_id?: string;
     verify?: boolean;
+    mode?: "conversation" | "codebase" | "question";
+    question?: string;
+    file_patterns?: string[];
   }) {
     const response = await fetch(`${API_BASE_URL}/api/memory/synthesize`, {
       method: 'POST',
@@ -813,9 +816,19 @@ export const memoryApi = {
         verified: boolean;
         scope: string;
         evidence?: string;
+        evidence_detail?: {
+          verdict: "VERIFIED" | "PARTIALLY_VERIFIED" | "UNVERIFIED" | "CONTRADICTED";
+          supporting_evidence: string[];
+          contradicting_evidence: string[];
+          files_searched: number;
+          summary?: string;
+        };
         reason?: string;
         related_existing?: { id: string; content: string; similarity: number } | null;
       }>;
+      answer?: string;
+      mode: string;
+      files_analyzed?: string[];
     }>(response);
   },
 };

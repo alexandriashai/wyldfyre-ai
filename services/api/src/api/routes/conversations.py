@@ -12,6 +12,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ai_core import get_logger
 from database.models import Conversation, ConversationStatus, ConversationTag, PlanStatus
@@ -163,7 +164,14 @@ async def create_conversation(
             )
             db.add(tag)
         await db.flush()
-        await db.refresh(conversation)
+
+    # Re-query with eager loading to avoid lazy loading issues
+    result = await db.execute(
+        select(Conversation)
+        .options(selectinload(Conversation.tags))
+        .where(Conversation.id == conversation.id)
+    )
+    conversation = result.scalar_one()
 
     # Also store in Redis for fast access
     conv_key = f"conversation:{conversation.id}"

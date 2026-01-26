@@ -7,6 +7,9 @@ import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useChat } from "@/hooks/useChat";
 import { MessageList } from "@/components/chat/message-list";
 import { MessageInput } from "@/components/chat/message-input";
+import { UsageBadge } from "@/components/chat/usage-meter";
+import { AgentBadge } from "@/components/chat/agent-selector";
+import { MessageSquare } from "lucide-react";
 
 export function WorkspaceChatPanel() {
   const { token } = useAuthStore();
@@ -47,8 +50,20 @@ export function WorkspaceChatPanel() {
 
   return (
     <div className="flex flex-col h-full">
+      {/* Compact header with agent & usage info */}
+      <div className="flex items-center justify-between px-2 py-1.5 border-b bg-muted/30 shrink-0">
+        <div className="flex items-center gap-1.5">
+          <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-xs font-medium text-muted-foreground">Chat</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <AgentBadge />
+          <UsageBadge />
+        </div>
+      </div>
+
       {/* Messages */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         <MessageList />
       </div>
 

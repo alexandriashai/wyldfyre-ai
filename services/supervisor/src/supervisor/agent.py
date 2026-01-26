@@ -500,6 +500,82 @@ class SupervisorAgent(BaseAgent):
         self.register_tool(self._create_deny_elevation_tool())
         self.register_tool(self._create_restart_agent_tool())
 
+    async def _record_and_emit_usage(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int = 0,
+        cost: float | None = None,
+    ) -> None:
+        """
+        Record API usage to database AND emit WebSocket event for real-time display.
+
+        This ensures the frontend usage meter updates in real-time.
+        """
+        from ai_core import get_cost_tracker
+        from ai_core.pricing import calculate_cost
+
+        # Calculate cost if not provided
+        if cost is None:
+            usage_cost = calculate_cost(
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cached_tokens=cached_tokens,
+            )
+            cost = float(usage_cost.total_cost)
+
+        # Record to database (async, non-blocking)
+        asyncio.create_task(
+            get_cost_tracker().record_usage(
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cached_tokens=cached_tokens,
+                agent_type=self.agent_type,
+                agent_name="wyld",
+                user_id=self._state.current_user_id,
+                project_id=self._state.current_project_id,
+            )
+        )
+
+        # Emit WebSocket event for real-time frontend update
+        logger.debug(
+            "Usage event emission check",
+            user_id=self._state.current_user_id,
+            conversation_id=self._state.current_conversation_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost=cost,
+        )
+        if self._state.current_user_id:
+            await self._pubsub.publish(
+                "agent:responses",
+                {
+                    "type": "usage_update",
+                    "user_id": self._state.current_user_id,
+                    "conversation_id": self._state.current_conversation_id,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cached_tokens": cached_tokens,
+                    "cost": cost,
+                    "model": model,
+                },
+            )
+            logger.info(
+                "Usage update event emitted",
+                user_id=self._state.current_user_id,
+                input_tokens=input_tokens,
+                cost=cost,
+            )
+        else:
+            logger.warning(
+                "Cannot emit usage event - no user_id in state",
+                input_tokens=input_tokens,
+                cost=cost,
+            )
+
     async def _recall_relevant_memories(
         self,
         task_description: str,
@@ -3331,19 +3407,12 @@ Only output the JSON object, no other text."""
                 messages=[{"role": "user", "content": strategy_prompt}],
             )
 
-            # Record API usage for cost tracking
-            from ai_core import get_cost_tracker
-            asyncio.create_task(
-                get_cost_tracker().record_usage(
-                    model=response.model or self.config.model,
-                    input_tokens=response.input_tokens,
-                    output_tokens=response.output_tokens,
-                    cached_tokens=response.cached_tokens,
-                    agent_type=self.agent_type,
-                    agent_name="wyld",
-                    user_id=self._state.current_user_id,
-                    project_id=self._state.current_project_id,
-                )
+            # Record API usage and emit WebSocket event for real-time display
+            await self._record_and_emit_usage(
+                model=response.model or self.config.model,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                cached_tokens=response.cached_tokens,
             )
 
             text = response.text_content or "{}"
@@ -3429,19 +3498,12 @@ Only output the JSON object, no other text."""
                 messages=[{"role": "user", "content": follow_up_prompt}],
             )
 
-            # Record API usage
-            from ai_core import get_cost_tracker
-            asyncio.create_task(
-                get_cost_tracker().record_usage(
-                    model=follow_up_response.model or self.config.model,
-                    input_tokens=follow_up_response.input_tokens,
-                    output_tokens=follow_up_response.output_tokens,
-                    cached_tokens=follow_up_response.cached_tokens,
-                    agent_type=self.agent_type,
-                    agent_name="wyld",
-                    user_id=self._state.current_user_id,
-                    project_id=self._state.current_project_id,
-                )
+            # Record API usage and emit WebSocket event
+            await self._record_and_emit_usage(
+                model=follow_up_response.model or self.config.model,
+                input_tokens=follow_up_response.input_tokens,
+                output_tokens=follow_up_response.output_tokens,
+                cached_tokens=follow_up_response.cached_tokens,
             )
 
             fu_text = follow_up_response.text_content or "{}"
@@ -3594,19 +3656,12 @@ Rules:
                 messages=[{"role": "user", "content": prompt}],
             )
 
-            # Record API usage for cost tracking
-            from ai_core import get_cost_tracker
-            asyncio.create_task(
-                get_cost_tracker().record_usage(
-                    model=response.model or self.config.model,
-                    input_tokens=response.input_tokens,
-                    output_tokens=response.output_tokens,
-                    cached_tokens=response.cached_tokens,
-                    agent_type=self.agent_type,
-                    agent_name="wyld",
-                    user_id=self._state.current_user_id,
-                    project_id=self._state.current_project_id,
-                )
+            # Record API usage and emit WebSocket event for real-time display
+            await self._record_and_emit_usage(
+                model=response.model or self.config.model,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                cached_tokens=response.cached_tokens,
             )
 
             text = response.text_content or "[]"

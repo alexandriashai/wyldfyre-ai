@@ -30,7 +30,7 @@ class ModelTier(str, Enum):
 # Model names for each provider at each tier
 TIER_MODELS: dict[LLMProviderType, dict[ModelTier, str]] = {
     LLMProviderType.ANTHROPIC: {
-        ModelTier.FAST: "claude-haiku-4-20250514",
+        ModelTier.FAST: "claude-3-5-haiku-20241022",
         ModelTier.BALANCED: "claude-sonnet-4-20250514",
         ModelTier.POWERFUL: "claude-opus-4-5-20251101",
     },

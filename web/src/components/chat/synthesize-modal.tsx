@@ -16,6 +16,14 @@ import { Badge } from "@/components/ui/badge";
 import { Loader2, CheckCircle, AlertTriangle, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+interface EvidenceDetail {
+  verdict: "VERIFIED" | "PARTIALLY_VERIFIED" | "UNVERIFIED" | "CONTRADICTED";
+  supporting_evidence: string[];
+  contradicting_evidence: string[];
+  files_searched: number;
+  summary?: string;
+}
+
 interface Proposal {
   action: "create" | "update" | "delete";
   content: string | null;
@@ -24,9 +32,12 @@ interface Proposal {
   verified: boolean;
   scope: string;
   evidence?: string;
+  evidence_detail?: EvidenceDetail;
   reason?: string;
   related_existing?: { id: string; content: string; similarity: number } | null;
 }
+
+type SynthesizeMode = "conversation" | "codebase" | "question";
 
 interface SynthesizeModalProps {
   content: string;
@@ -34,6 +45,12 @@ interface SynthesizeModalProps {
   projectId?: string;
   domainId?: string;
   onClose: () => void;
+  // Optional initial mode - defaults to "conversation"
+  initialMode?: SynthesizeMode;
+  // For question mode: the question to ask
+  question?: string;
+  // For codebase mode: specific file patterns to analyze
+  filePatterns?: string[];
 }
 
 type LoadingPhase = "extracting" | "verifying" | "classifying" | "done" | "error";
@@ -60,6 +77,22 @@ function ActionBadge({ action }: { action: string }) {
     delete: { label: "Obsolete", className: "bg-red-500/15 text-red-600 border-red-500/30" },
   };
   const { label, className } = config[action as keyof typeof config] || config.create;
+
+  return (
+    <span className={cn("inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium", className)}>
+      {label}
+    </span>
+  );
+}
+
+function VerdictBadge({ verdict }: { verdict: string }) {
+  const config: Record<string, { label: string; className: string }> = {
+    VERIFIED: { label: "Verified", className: "bg-green-500/15 text-green-600 border-green-500/30" },
+    PARTIALLY_VERIFIED: { label: "Partial", className: "bg-yellow-500/15 text-yellow-600 border-yellow-500/30" },
+    UNVERIFIED: { label: "Unverified", className: "bg-gray-500/15 text-gray-600 border-gray-500/30" },
+    CONTRADICTED: { label: "Contradicted", className: "bg-red-500/15 text-red-600 border-red-500/30" },
+  };
+  const { label, className } = config[verdict] || config.UNVERIFIED;
 
   return (
     <span className={cn("inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium", className)}>
@@ -147,8 +180,47 @@ function ProposalCard({
             </p>
           )}
 
-          {/* Evidence */}
-          {proposal.evidence && (
+          {/* Evidence Detail */}
+          {proposal.evidence_detail && (
+            <div className="space-y-1 text-[11px]">
+              <div className="flex items-center gap-2">
+                <VerdictBadge verdict={proposal.evidence_detail.verdict} />
+                <span className="text-muted-foreground">
+                  {proposal.evidence_detail.files_searched} files searched
+                </span>
+              </div>
+              {proposal.evidence_detail.summary && (
+                <p className="text-muted-foreground">{proposal.evidence_detail.summary}</p>
+              )}
+              {proposal.evidence_detail.supporting_evidence.length > 0 && (
+                <details className="text-green-600">
+                  <summary className="cursor-pointer">
+                    {proposal.evidence_detail.supporting_evidence.length} supporting evidence
+                  </summary>
+                  <ul className="mt-1 ml-3 list-disc text-[10px]">
+                    {proposal.evidence_detail.supporting_evidence.slice(0, 3).map((ev, i) => (
+                      <li key={i}>{ev}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {proposal.evidence_detail.contradicting_evidence.length > 0 && (
+                <details className="text-red-600">
+                  <summary className="cursor-pointer">
+                    {proposal.evidence_detail.contradicting_evidence.length} contradicting evidence
+                  </summary>
+                  <ul className="mt-1 ml-3 list-disc text-[10px]">
+                    {proposal.evidence_detail.contradicting_evidence.slice(0, 3).map((ev, i) => (
+                      <li key={i}>{ev}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+
+          {/* Legacy evidence (if no evidence_detail) */}
+          {!proposal.evidence_detail && proposal.evidence && (
             <p className="text-[11px] text-muted-foreground">
               Evidence: {proposal.evidence}
             </p>
@@ -174,8 +246,18 @@ function ProposalCard({
   );
 }
 
-export function SynthesizeModal({ content, conversationId, projectId, domainId, onClose }: SynthesizeModalProps) {
+export function SynthesizeModal({
+  content,
+  conversationId,
+  projectId,
+  domainId,
+  onClose,
+  initialMode = "conversation",
+  question,
+  filePatterns,
+}: SynthesizeModalProps) {
   const { token } = useAuthStore();
+  const [mode, setMode] = useState<SynthesizeMode>(initialMode);
   const [phase, setPhase] = useState<LoadingPhase>("extracting");
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [selected, setSelected] = useState<boolean[]>([]);
@@ -183,52 +265,56 @@ export function SynthesizeModal({ content, conversationId, projectId, domainId, 
   const [editedScopes, setEditedScopes] = useState<string[]>([]);
   const [isApplying, setIsApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [filesAnalyzed, setFilesAnalyzed] = useState<string[]>([]);
+  const [questionInput, setQuestionInput] = useState(question || "");
 
-  // Fetch proposals on mount
-  useEffect(() => {
+  // Fetch proposals
+  const fetchProposals = async () => {
     if (!token) return;
 
-    let cancelled = false;
+    setPhase("extracting");
+    setError(null);
+    setAnswer(null);
 
-    async function fetchProposals() {
-      setPhase("extracting");
+    try {
+      // Simulate phase progression (backend does all steps)
+      const phaseTimer = setTimeout(() => setPhase("verifying"), 2000);
+      const phaseTimer2 = setTimeout(() => setPhase("classifying"), 4000);
 
-      try {
-        // Simulate phase progression (backend does all steps)
-        const phaseTimer = setTimeout(() => {
-          if (!cancelled) setPhase("verifying");
-        }, 2000);
-        const phaseTimer2 = setTimeout(() => {
-          if (!cancelled) setPhase("classifying");
-        }, 4000);
+      const result = await memoryApi.synthesize(token!, {
+        content: mode === "question" ? questionInput : content,
+        project_id: projectId,
+        domain_id: domainId,
+        conversation_id: conversationId,
+        verify: true,
+        mode,
+        question: mode === "question" ? questionInput : undefined,
+        file_patterns: filePatterns,
+      });
 
-        const result = await memoryApi.synthesize(token!, {
-          content,
-          project_id: projectId,
-          domain_id: domainId,
-          conversation_id: conversationId,
-          verify: true,
-        });
+      clearTimeout(phaseTimer);
+      clearTimeout(phaseTimer2);
 
-        clearTimeout(phaseTimer);
-        clearTimeout(phaseTimer2);
-
-        if (cancelled) return;
-
-        setProposals(result.proposals);
-        setSelected(result.proposals.map(() => true));
-        setEditedContents(result.proposals.map((p) => p.content || ""));
-        setEditedScopes(result.proposals.map((p) => p.scope || "project"));
-        setPhase("done");
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to synthesize learnings");
-        setPhase("error");
-      }
+      setProposals(result.proposals || []);
+      setSelected((result.proposals || []).map(() => true));
+      setEditedContents((result.proposals || []).map((p: Proposal) => p.content || ""));
+      setEditedScopes((result.proposals || []).map((p: Proposal) => p.scope || "project"));
+      setAnswer(result.answer || null);
+      setFilesAnalyzed(result.files_analyzed || []);
+      setPhase("done");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to synthesize learnings");
+      setPhase("error");
     }
+  };
 
-    fetchProposals();
-    return () => { cancelled = true; };
+  // Fetch on mount for conversation mode, or when user triggers codebase/question mode
+  useEffect(() => {
+    if (mode === "conversation") {
+      fetchProposals();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, content, projectId, domainId, conversationId]);
 
   const handleToggle = (index: number) => {
@@ -285,12 +371,18 @@ export function SynthesizeModal({ content, conversationId, projectId, domainId, 
 
   const selectedCount = selected.filter(Boolean).length;
 
-  const phaseText = {
-    extracting: "Extracting learnings...",
+  const phaseText: Record<LoadingPhase, string> = {
+    extracting: mode === "codebase" ? "Analyzing codebase..." : mode === "question" ? "Searching codebase..." : "Extracting learnings...",
     verifying: "Verifying against codebase...",
     classifying: "Classifying proposals...",
     done: "",
     error: "",
+  };
+
+  const modeDescriptions: Record<SynthesizeMode, string> = {
+    conversation: "Extract learnings from this message",
+    codebase: "Analyze project files to understand how the application works",
+    question: "Ask a question about the codebase and store the answer as knowledge",
   };
 
   return (
@@ -299,9 +391,81 @@ export function SynthesizeModal({ content, conversationId, projectId, domainId, 
         <DialogHeader>
           <DialogTitle>Synthesize Learnings</DialogTitle>
           <DialogDescription>
-            Extract and manage knowledge from this message
+            {modeDescriptions[mode]}
           </DialogDescription>
         </DialogHeader>
+
+        {/* Mode Selector */}
+        <div className="flex gap-2 pb-2 border-b">
+          {(["conversation", "codebase", "question"] as SynthesizeMode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => {
+                setMode(m);
+                if (phase === "done" || phase === "error") {
+                  setPhase("extracting");
+                  setProposals([]);
+                  setAnswer(null);
+                }
+              }}
+              className={cn(
+                "px-3 py-1.5 text-sm rounded-md transition-colors",
+                mode === m
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted hover:bg-muted/80 text-muted-foreground"
+              )}
+            >
+              {m === "conversation" ? "From Message" : m === "codebase" ? "Analyze Codebase" : "Ask Question"}
+            </button>
+          ))}
+        </div>
+
+        {/* Question Input (for question mode) */}
+        {mode === "question" && phase !== "done" && (
+          <div className="space-y-2 py-2">
+            <label className="text-sm font-medium">What would you like to know about the codebase?</label>
+            <textarea
+              value={questionInput}
+              onChange={(e) => setQuestionInput(e.target.value)}
+              placeholder="e.g., How does the review system work? What is the authentication flow?"
+              className="w-full text-sm bg-background border border-border rounded-md px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+              rows={3}
+            />
+            <Button
+              onClick={fetchProposals}
+              disabled={!questionInput.trim() || (phase !== "extracting" && phase !== "error")}
+              className="w-full"
+            >
+              {phase === "extracting" || phase === "verifying" || phase === "classifying" ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Analyzing...
+                </>
+              ) : (
+                "Analyze Codebase"
+              )}
+            </Button>
+          </div>
+        )}
+
+        {/* Codebase mode trigger */}
+        {mode === "codebase" && phase !== "done" && phase !== "error" && proposals.length === 0 && (
+          <div className="flex flex-col items-center py-4 gap-3">
+            <p className="text-sm text-muted-foreground text-center">
+              This will analyze source files in your project to extract knowledge about how the application works.
+            </p>
+            <Button onClick={fetchProposals}>
+              {phase === "extracting" || phase === "verifying" || phase === "classifying" ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  {phaseText[phase]}
+                </>
+              ) : (
+                "Start Analysis"
+              )}
+            </Button>
+          </div>
+        )}
 
         <div className="flex-1 min-h-0 overflow-y-auto space-y-3 py-2">
           {/* Loading state */}
@@ -320,11 +484,41 @@ export function SynthesizeModal({ content, conversationId, projectId, domainId, 
             </div>
           )}
 
-          {/* No results */}
-          {phase === "done" && proposals.length === 0 && (
+          {/* No results (only show if no answer either) */}
+          {phase === "done" && proposals.length === 0 && !answer && (
             <div className="flex flex-col items-center justify-center py-8 gap-3">
               <CheckCircle className="h-8 w-8 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">No learnings extracted from this message</p>
+              <p className="text-sm text-muted-foreground">
+                {mode === "conversation"
+                  ? "No learnings extracted from this message"
+                  : mode === "codebase"
+                  ? "No learnings found in the analyzed files"
+                  : "Could not find an answer in the codebase"}
+              </p>
+            </div>
+          )}
+
+          {/* Answer display (for question mode) */}
+          {phase === "done" && answer && (
+            <div className="bg-primary/5 border border-primary/20 rounded-lg p-4 space-y-2">
+              <h4 className="font-medium text-sm flex items-center gap-2">
+                <CheckCircle className="h-4 w-4 text-primary" />
+                Answer
+              </h4>
+              <p className="text-sm whitespace-pre-wrap">{answer}</p>
+              {filesAnalyzed.length > 0 && (
+                <details className="text-xs text-muted-foreground">
+                  <summary className="cursor-pointer">
+                    Based on {filesAnalyzed.length} files analyzed
+                  </summary>
+                  <ul className="mt-1 ml-3 list-disc">
+                    {filesAnalyzed.slice(0, 10).map((file, i) => (
+                      <li key={i} className="font-mono">{file}</li>
+                    ))}
+                    {filesAnalyzed.length > 10 && <li>...and {filesAnalyzed.length - 10} more</li>}
+                  </ul>
+                </details>
+              )}
             </div>
           )}
 
@@ -333,7 +527,7 @@ export function SynthesizeModal({ content, conversationId, projectId, domainId, 
             <>
               <div className="flex items-center justify-between px-1">
                 <p className="text-xs text-muted-foreground">
-                  {proposals.length} proposal{proposals.length !== 1 ? "s" : ""} found
+                  {proposals.length} learning{proposals.length !== 1 ? "s" : ""} to store
                 </p>
                 <Button
                   variant="ghost"

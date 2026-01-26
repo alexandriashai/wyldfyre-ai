@@ -1082,6 +1082,22 @@ class BaseAgent(ABC):
                 )
             )
 
+            # Emit WebSocket event for real-time usage display
+            if self._state.current_user_id and self._pubsub:
+                await self._pubsub.publish(
+                    "agent:responses",
+                    {
+                        "type": "usage_update",
+                        "user_id": self._state.current_user_id,
+                        "conversation_id": self._state.current_conversation_id,
+                        "input_tokens": response.input_tokens,
+                        "output_tokens": response.output_tokens,
+                        "cached_tokens": response.cached_tokens,
+                        "cost": float(usage_cost.total_cost),
+                        "model": response.model or self.config.model,
+                    },
+                )
+
             # Publish API response action
             total_tokens = response.input_tokens + response.output_tokens
             await self.publish_action(

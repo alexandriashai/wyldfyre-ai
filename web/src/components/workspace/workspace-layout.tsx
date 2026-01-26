@@ -15,7 +15,7 @@ import { FileChatPanel } from "./panels/file-chat-panel";
 import { MobileWorkspace } from "./mobile-workspace";
 import { FindInFiles } from "./editor/find-in-files";
 import { cn } from "@/lib/utils";
-import { MessageSquare, ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function WorkspaceLayout() {
@@ -30,6 +30,8 @@ export function WorkspaceLayout() {
     setPanelSizes,
     isFileTreeCollapsed,
     isTerminalOpen,
+    isFileChatExpanded,
+    setFileChatExpanded,
     showHiddenFiles,
     openFile,
     setActiveFile,
@@ -206,32 +208,11 @@ export function WorkspaceLayout() {
           {!isFileTreeCollapsed && (
             <>
               <Panel
-                defaultSize={panelSizes[0] || 18}
-                minSize={12}
-                maxSize={35}
+                defaultSize={panelSizes[0] || 15}
+                minSize={10}
+                maxSize={30}
               >
-                <PanelGroup direction="vertical">
-                  {/* File Tree */}
-                  <Panel defaultSize={60} minSize={30}>
-                    <FileTreePanel onFileOpen={handleFileOpen} onRefresh={fetchFileTree} />
-                  </Panel>
-
-                  {/* File Assistant */}
-                  <PanelResizeHandle className="h-1 bg-border hover:bg-primary/50 transition-colors cursor-row-resize" />
-                  <Panel defaultSize={40} minSize={15}>
-                    <div className="flex flex-col h-full bg-card">
-                      <div className="flex items-center justify-between px-2 py-1 border-b shrink-0">
-                        <div className="flex items-center gap-1.5">
-                          <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
-                          <span className="text-xs font-medium">File Assistant</span>
-                        </div>
-                      </div>
-                      <div className="flex-1 min-h-0">
-                        <FileChatPanel />
-                      </div>
-                    </div>
-                  </Panel>
-                </PanelGroup>
+                <FileTreePanel onFileOpen={handleFileOpen} onRefresh={fetchFileTree} />
               </Panel>
               <PanelResizeHandle className="w-1 bg-border hover:bg-primary/50 transition-colors" />
             </>
@@ -239,9 +220,22 @@ export function WorkspaceLayout() {
 
           <Panel defaultSize={isFileTreeCollapsed ? 70 : (panelSizes[1] || 55)} minSize={30}>
             <PanelGroup direction="vertical">
-              <Panel defaultSize={isTerminalOpen ? 70 : 100} minSize={30}>
+              {/* Code Editor */}
+              <Panel defaultSize={isFileChatExpanded ? (isTerminalOpen ? 50 : 60) : (isTerminalOpen ? 70 : 100)} minSize={20}>
                 <EditorPanel onSave={handleSaveCurrentFile} />
               </Panel>
+
+              {/* File Chat - below editor (collapsible) */}
+              {isFileChatExpanded && (
+                <>
+                  <PanelResizeHandle className="h-1 bg-border hover:bg-primary/50 transition-colors cursor-row-resize" />
+                  <Panel defaultSize={isTerminalOpen ? 20 : 40} minSize={10}>
+                    <FileChatPanel />
+                  </Panel>
+                </>
+              )}
+
+              {/* Terminal */}
               {isTerminalOpen && (
                 <>
                   <PanelResizeHandle className="h-1 bg-border hover:bg-primary/50 transition-colors cursor-row-resize" />

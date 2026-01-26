@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useAuthStore } from "@/stores/auth-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useProjectStore } from "@/stores/project-store";
@@ -11,8 +11,11 @@ import { AgentStatus } from "@/components/chat/agent-status";
 import { TaskControls } from "@/components/chat/task-controls";
 import { PlanPanel } from "@/components/chat/plan-panel";
 import { ConversationSidebar } from "@/components/chat/conversation-sidebar";
+import { UsageMeter } from "@/components/chat/usage-meter";
+import { AgentSelector } from "@/components/chat/agent-selector";
+import { AIDiffEditor, AIChangesNotification } from "@/components/workspace/editor/ai-diff-editor";
 import { Button } from "@/components/ui/button";
-import { Loader2, PanelLeft } from "lucide-react";
+import { Loader2, PanelLeft, Sparkles } from "lucide-react";
 
 export default function WorkspaceChatsPage() {
   const { token } = useAuthStore();
@@ -23,10 +26,47 @@ export default function WorkspaceChatsPage() {
     createConversation,
     conversations,
     currentPlan,
+    pendingFileChanges,
+    acceptFileChange,
+    rejectFileChange,
+    clearFileChangePreviews,
   } = useChatStore();
   const { selectedProject } = useProjectStore();
-  const { isChatSidebarCollapsed, setChatSidebarCollapsed } = useWorkspaceStore();
+  const { isChatSidebarCollapsed, setChatSidebarCollapsed, openFile, setActiveFile } = useWorkspaceStore();
   const [isInitializing, setIsInitializing] = useState(true);
+  const [showDiffPanel, setShowDiffPanel] = useState(false);
+
+  // AI Diff handlers
+  const handleAcceptChange = useCallback((changeId: string) => {
+    acceptFileChange(changeId);
+  }, [acceptFileChange]);
+
+  const handleRejectChange = useCallback((changeId: string) => {
+    rejectFileChange(changeId);
+  }, [rejectFileChange]);
+
+  const handleAcceptAll = useCallback(() => {
+    pendingFileChanges.forEach((change) => acceptFileChange(change.id));
+  }, [pendingFileChanges, acceptFileChange]);
+
+  const handleRejectAll = useCallback(() => {
+    clearFileChangePreviews();
+    setShowDiffPanel(false);
+  }, [clearFileChangePreviews]);
+
+  const handleOpenInEditor = useCallback((path: string) => {
+    const change = pendingFileChanges.find((c) => c.path === path);
+    if (change) {
+      openFile({
+        path: change.path,
+        content: change.after,
+        originalContent: change.before,
+        language: change.language || null,
+        isDirty: true,
+      });
+      setActiveFile(change.path);
+    }
+  }, [pendingFileChanges, openFile, setActiveFile]);
 
   useEffect(() => {
     const initializeChat = async () => {
@@ -93,28 +133,69 @@ export default function WorkspaceChatsPage() {
 
       {/* Right: Full chat experience */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
-        {/* Mobile sidebar toggle button - only visible on mobile when sidebar is collapsed */}
+        {/* Mobile header with sidebar toggle, agent selector, and usage */}
         {isChatSidebarCollapsed && (
           <div className="md:hidden flex items-center gap-2 px-2 py-1.5 border-b shrink-0">
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8"
+              className="h-8 w-8 shrink-0"
               onClick={handleToggleSidebar}
               title="Show conversations"
             >
               <PanelLeft className="h-4 w-4" />
             </Button>
-            <span className="text-sm font-medium truncate">
+            <span className="text-sm font-medium truncate flex-1 min-w-0">
+              {currentConversation?.title || "Chat"}
+            </span>
+            <AgentSelector variant="compact" />
+            <UsageMeter variant="compact" />
+          </div>
+        )}
+
+        {/* Desktop header bar with agent selector and usage */}
+        <div className="hidden md:flex items-center justify-between px-3 py-1.5 border-b bg-muted/30 shrink-0">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-purple-500" />
+            <span className="text-sm font-medium">
               {currentConversation?.title || "Chat"}
             </span>
           </div>
+          <div className="flex items-center gap-2">
+            <AgentSelector variant="compact" />
+            <UsageMeter variant="compact" />
+          </div>
+        </div>
+
+        {/* AI Changes notification banner */}
+        {pendingFileChanges.length > 0 && !showDiffPanel && (
+          <AIChangesNotification
+            count={pendingFileChanges.length}
+            onClick={() => setShowDiffPanel(true)}
+          />
         )}
         <AgentStatus />
         <TaskControls />
         {currentPlan && <PlanPanel />}
-        <MessageList />
-        <MessageInput />
+
+        {/* Main content area - either chat or diff panel */}
+        {showDiffPanel && pendingFileChanges.length > 0 ? (
+          <AIDiffEditor
+            changes={pendingFileChanges}
+            onAccept={handleAcceptChange}
+            onReject={handleRejectChange}
+            onAcceptAll={handleAcceptAll}
+            onRejectAll={handleRejectAll}
+            onOpenInEditor={handleOpenInEditor}
+            onClose={() => setShowDiffPanel(false)}
+            className="flex-1 min-h-0"
+          />
+        ) : (
+          <>
+            <MessageList />
+            <MessageInput />
+          </>
+        )}
       </div>
     </div>
   );

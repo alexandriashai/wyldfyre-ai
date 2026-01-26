@@ -7,8 +7,10 @@ import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useChat } from "@/hooks/useChat";
 import { MessageList } from "@/components/chat/message-list";
 import { AgentStatus } from "@/components/chat/agent-status";
+import { UsageBadge } from "@/components/chat/usage-meter";
+import { AgentBadge } from "@/components/chat/agent-selector";
 import { Button } from "@/components/ui/button";
-import { Send, FileCode } from "lucide-react";
+import { Send, FileCode, MessageSquare, ChevronDown, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 function getLanguageFromPath(path: string): string {
@@ -45,13 +47,21 @@ export function FileChatPanel() {
     createConversation,
     conversations,
     selectConversation,
+    fetchConversations,
     messages,
     isSending,
   } = useChatStore();
-  const { activeFilePath, openFiles, activeProjectId } = useWorkspaceStore();
+  const { activeFilePath, openFiles, activeProjectId, setFileChatExpanded } = useWorkspaceStore();
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { sendMessage } = useChat();
+
+  // Ensure we have conversations loaded
+  useEffect(() => {
+    if (token && conversations.length === 0) {
+      fetchConversations(token);
+    }
+  }, [token]);
 
   // Find or create a file-assistant conversation for this project
   useEffect(() => {
@@ -66,10 +76,10 @@ export function FileChatPanel() {
 
     if (fileAssistantConv && fileAssistantConv.id !== currentConversation?.id) {
       selectConversation(token, fileAssistantConv.id);
-    } else if (!fileAssistantConv && activeProjectId) {
+    } else if (!fileAssistantConv && !currentConversation && activeProjectId) {
       createConversation(token, activeProjectId, "File Assistant");
     }
-  }, [token, activeProjectId]);
+  }, [token, activeProjectId, conversations]);
 
   const activeFile = openFiles.find((f) => f.path === activeFilePath);
   const fileName = activeFilePath?.split("/").pop() || "No file";
@@ -97,7 +107,33 @@ export function FileChatPanel() {
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full border-t bg-card">
+      {/* Header with title, badges, and collapse */}
+      <div className="flex items-center justify-between px-2 py-1 border-b bg-muted/30 shrink-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <MessageSquare className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <span className="text-xs font-medium truncate">File Assistant</span>
+          {activeFilePath && (
+            <span className="text-[10px] text-muted-foreground truncate hidden sm:inline">
+              • {fileName}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <AgentBadge />
+          <UsageBadge />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5"
+            onClick={() => setFileChatExpanded(false)}
+            title="Collapse chat"
+          >
+            <ChevronDown className="h-3 w-3" />
+          </Button>
+        </div>
+      </div>
+
       {/* File context indicator */}
       {activeFilePath && (
         <div className="flex items-center gap-1.5 px-2 py-1 bg-muted/50 border-b shrink-0">
@@ -113,7 +149,7 @@ export function FileChatPanel() {
       <AgentStatus />
 
       {/* Messages */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         <MessageList />
       </div>
 

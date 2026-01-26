@@ -1439,3 +1439,25 @@ RESPONSE TO ANALYZE:
                 conversation_id=data.get("conversation_id"),
                 title=data.get("title"),
             )
+
+        elif response_type == "usage_update":
+            # Real-time API usage update for frontend meter
+            await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "usage_update",
+                    "conversation_id": data.get("conversation_id"),
+                    "input_tokens": data.get("input_tokens", 0),
+                    "output_tokens": data.get("output_tokens", 0),
+                    "cached_tokens": data.get("cached_tokens", 0),
+                    "cost": data.get("cost", 0),
+                    "model": data.get("model"),
+                },
+            )
+            logger.debug(
+                "Usage update sent to user",
+                user_id=user_id,
+                input_tokens=data.get("input_tokens"),
+                output_tokens=data.get("output_tokens"),
+                cost=data.get("cost"),
+            )
