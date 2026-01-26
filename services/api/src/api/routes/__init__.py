@@ -21,6 +21,7 @@ from .workspace import router as workspace_router
 from .containers import router as containers_router
 from .github import router as github_router
 from .plans import router as plans_router
+from .telos import router as telos_router
 
 __all__ = [
     "agents_router",
@@ -42,4 +43,5 @@ __all__ = [
     "containers_router",
     "github_router",
     "plans_router",
+    "telos_router",
 ]

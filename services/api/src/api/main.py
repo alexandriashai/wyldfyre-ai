@@ -35,6 +35,7 @@ from .routes import (
     projects_router,
     settings_router,
     tasks_router,
+    telos_router,
     usage_router,
     workspace_router,
 )
@@ -161,6 +162,7 @@ def create_app() -> FastAPI:
     app.include_router(containers_router, prefix="/api")  # Docker container management
     app.include_router(github_router, prefix="/api")  # GitHub integration
     app.include_router(plans_router, prefix="/api")  # Plan CRUD management
+    app.include_router(telos_router, prefix="/api")  # TELOS mission/beliefs/wizard
     app.include_router(chat_router)  # WebSocket at root level
     app.include_router(terminal_router)  # Terminal WebSocket
 

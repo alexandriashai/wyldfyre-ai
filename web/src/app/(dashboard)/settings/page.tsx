@@ -45,8 +45,10 @@ import {
   Check,
   Cpu,
   Plug,
+  Target,
 } from "lucide-react";
 import { GitHubGlobalSettingsCard } from "@/components/settings/github-global-settings";
+import { TelosSettings } from "@/components/settings/telos-settings";
 import { cn } from "@/lib/utils";
 
 interface NotificationSettings {
@@ -420,6 +422,12 @@ export default function SettingsPage() {
             <TabsTrigger value="integrations" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
               <Plug className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
               <span className="hidden sm:inline">Integrations</span>
+            </TabsTrigger>
+          )}
+          {user?.is_admin && (
+            <TabsTrigger value="telos" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+              <Target className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              <span className="hidden sm:inline">TELOS</span>
             </TabsTrigger>
           )}
         </TabsList>
@@ -1183,6 +1191,13 @@ export default function SettingsPage() {
         {user?.is_admin && (
           <TabsContent value="integrations" className="space-y-6">
             <GitHubGlobalSettingsCard />
+          </TabsContent>
+        )}
+
+        {/* TELOS Tab (Admin-only) */}
+        {user?.is_admin && (
+          <TabsContent value="telos" className="space-y-6">
+            <TelosSettings />
           </TabsContent>
         )}
       </Tabs>
