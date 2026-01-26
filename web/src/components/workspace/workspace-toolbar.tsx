@@ -27,6 +27,7 @@ import {
   Circle,
   RotateCcw,
 } from "lucide-react";
+import { BranchSwitcher } from "./branch-switcher";
 
 export function WorkspaceToolbar() {
   const { token } = useAuthStore();
@@ -121,24 +122,27 @@ export function WorkspaceToolbar() {
         </SelectContent>
       </Select>
 
-      {/* Git Status Badge */}
-      {gitStatus && (
+      {/* Branch Switcher */}
+      {activeProjectId && (
+        <BranchSwitcher
+          projectId={activeProjectId}
+          onBranchChange={fetchGitStatus}
+        />
+      )}
+
+      {/* File Changes Badge */}
+      {gitStatus && modifiedCount > 0 && (
         <Popover open={showGitPopover} onOpenChange={setShowGitPopover}>
           <PopoverTrigger asChild>
             <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs px-2">
-              <GitBranch className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">{gitStatus.branch || "main"}</span>
-              {modifiedCount > 0 && (
-                <span className="ml-1 rounded-full bg-amber-500/20 text-amber-600 px-1.5 text-[10px] font-medium">
-                  {modifiedCount}
-                </span>
-              )}
+              <span className="rounded-full bg-amber-500/20 text-amber-600 px-1.5 text-[10px] font-medium">
+                {modifiedCount} changed
+              </span>
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-64 p-3" align="start">
             <div className="space-y-2">
-              <p className="text-xs font-medium">Git Status</p>
-              <p className="text-xs text-muted-foreground">Branch: {gitStatus.branch}</p>
+              <p className="text-xs font-medium">Uncommitted Changes</p>
               {gitStatus.modified.length > 0 && (
                 <div>
                   <p className="text-xs text-amber-600 font-medium">Modified ({gitStatus.modified.length})</p>

@@ -6,14 +6,16 @@ import { useChat } from "@/hooks/useChat";
 import { useVoice } from "@/hooks/useVoice";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Send, Paperclip, Mic, Square, Loader2, Hash, WifiOff } from "lucide-react";
+import { Send, Paperclip, Mic, Square, Loader2, Hash, WifiOff, HelpCircle } from "lucide-react";
 import { CommandSuggestions, getFilteredCommands, Command } from "./command-suggestions";
+import { CommandReferenceModal } from "./command-reference-modal";
 
 export function MessageInput() {
   const [message, setMessage] = useState("");
   const [showCommands, setShowCommands] = useState(false);
   const [commandFilter, setCommandFilter] = useState("");
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const [showHelpModal, setShowHelpModal] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { isSending, currentConversation } = useChatStore();
@@ -77,7 +79,20 @@ export function MessageInput() {
     e.preventDefault();
     if (!message.trim() || isSending || !currentConversation) return;
 
-    sendMessage(message.trim());
+    const trimmedMessage = message.trim();
+
+    // Intercept /help command to show modal instead
+    if (trimmedMessage === "/help" || trimmedMessage === "/?" || trimmedMessage === "/h") {
+      setShowHelpModal(true);
+      setMessage("");
+      setShowCommands(false);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
+      return;
+    }
+
+    sendMessage(trimmedMessage);
     setMessage("");
     setShowCommands(false);
 
@@ -168,6 +183,17 @@ export function MessageInput() {
           <Paperclip className="h-5 w-5" />
         </Button>
 
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="shrink-0"
+          onClick={() => setShowHelpModal(true)}
+          title="Command Reference"
+        >
+          <HelpCircle className="h-5 w-5" />
+        </Button>
+
         <div className="relative flex-1">
           {/* Command suggestions dropdown */}
           {showCommands && (
@@ -193,6 +219,7 @@ export function MessageInput() {
             }
             disabled={isDisabled}
             rows={1}
+            maxLength={20000}
             className={cn(
               "w-full resize-none rounded-lg border bg-background px-3 py-2 text-base",
               "focus:outline-none focus:ring-2 focus:ring-ring",
@@ -254,6 +281,9 @@ export function MessageInput() {
           </span>
         </div>
       )}
+
+      {/* Command Reference Modal */}
+      <CommandReferenceModal open={showHelpModal} onOpenChange={setShowHelpModal} />
     </div>
   );
 }

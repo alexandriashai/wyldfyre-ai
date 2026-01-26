@@ -91,6 +91,9 @@ RUN pip install -e packages/core -e packages/messaging -e packages/memory -e dat
 # Set ownership and ensure files are readable
 RUN chmod -R a+r /app && chown -R appuser:appuser /app
 
+# Configure git to trust all directories (needed for git ops on project dirs with different owners)
+RUN git config --system --add safe.directory '*'
+
 # Switch to non-root user
 USER appuser
 

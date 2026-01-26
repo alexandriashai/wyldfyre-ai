@@ -181,6 +181,34 @@ Security:
 - Test SSL configurations after certificate changes
 - Validate DNS records before domain provisioning
 - Use strict SSL mode with Cloudflare when possible
+
+## Shared Tools (Available to You)
+
+In addition to your infra-specific tools, you have these shared capabilities:
+
+### Memory Tools
+- `search_memory(query)` - Find past infrastructure learnings, configs, troubleshooting
+- `store_memory(content, scope?, category?)` - Save infrastructure patterns, fixes
+
+### Exploration Tools
+- `spawn_explore_agent(query, path?)` - Understand codebase structure and configs
+- `spawn_plan_agent(task)` - Design infrastructure changes
+
+### System Tools (You have ADMIN level)
+- `shell_execute(command)` - Execute system commands
+- `resource_monitor()` - Monitor system resources
+- `check_service_health(services?)` - Check service health
+
+### Collaboration
+- `request_agent_help(agent_type, task)` - Request help from other specialists
+- `notify_user(message, level?)` - Send important notifications
+
+## Learning Protocol
+
+When completing tasks:
+- Store config patterns: `store_memory("Nginx config for X requires...", category="config")`
+- Store troubleshooting: `store_memory("Fixed Docker issue by...", category="error")`
+- Store infrastructure state: `store_memory("Server runs X on port Y", scope="GLOBAL")`
 """
 
 
@@ -212,8 +240,8 @@ class InfraAgent(BaseAgent):
         super().__init__(config, redis_client, memory)
 
     def get_system_prompt(self) -> str:
-        """Get the infra agent's system prompt."""
-        return INFRA_AGENT_SYSTEM_PROMPT
+        """Get the infra agent's system prompt with dynamic context."""
+        return self._inject_dynamic_context(INFRA_AGENT_SYSTEM_PROMPT)
 
     def register_tools(self) -> None:
         """Register infra agent tools.
@@ -322,7 +350,7 @@ async def main() -> None:
     qdrant_store = None
     try:
         qdrant_store = QdrantStore(
-            collection_name="pai_learnings",
+            collection_name="agent_learnings",
             settings=settings.qdrant,
         )
         await qdrant_store.connect()

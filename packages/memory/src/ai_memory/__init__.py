@@ -37,6 +37,19 @@ from .skill_library import (
     SkillLevel,
     SkillLibrary,
 )
+from .telos import (
+    Challenge,
+    Goal,
+    GoalPriority,
+    GoalStatus,
+    Idea,
+    Strategy,
+    TelosContext,
+    TelosFileType,
+    TelosManager,
+    get_telos_manager,
+    init_telos,
+)
 
 __version__ = "0.1.0"
 
@@ -65,4 +78,16 @@ __all__ = [
     "PhaseContext",
     "format_learnings_for_context",
     "format_phase_context_for_injection",
+    # TELOS Goal System (Phase 1)
+    "TelosManager",
+    "TelosContext",
+    "TelosFileType",
+    "Goal",
+    "GoalStatus",
+    "GoalPriority",
+    "Strategy",
+    "Challenge",
+    "Idea",
+    "get_telos_manager",
+    "init_telos",
 ]

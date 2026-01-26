@@ -197,6 +197,32 @@ Security Checklist:
 - Input validation present
 - Error messages don't leak info
 - Authentication on all endpoints
+
+## Shared Tools (Available to You)
+
+In addition to your QA-specific tools, you have these shared capabilities:
+
+### Memory Tools
+- `search_memory(query)` - Find past test patterns, known issues, security findings
+- `store_memory(content, scope?, category?)` - Save test discoveries, bug patterns
+
+### Exploration Tools
+- `spawn_explore_agent(query, path?)` - Understand codebase for better test coverage
+- `spawn_plan_agent(task)` - Plan comprehensive test strategies
+
+### Collaboration
+- `request_agent_help(agent_type, task)` - Request CODE for fixes, INFRA for env issues
+- `notify_user(message, level?)` - Alert on critical security findings
+
+### System
+- `shell_execute(command)` - Run test commands, install test dependencies
+
+## Learning Protocol
+
+When completing tasks:
+- Store test patterns: `store_memory("Test pattern for X: ...", category="pattern")`
+- Store bug patterns: `store_memory("Common bug in X: ...", category="error")`
+- Store security findings: `store_memory("Security issue: ...", category="best_practice")`
 """
 
 
@@ -260,8 +286,8 @@ class QAAgent(BaseAgent):
             logger.warning("Error cleaning up task browser resources on error", error=str(e))
 
     def get_system_prompt(self) -> str:
-        """Get the QA agent's system prompt."""
-        return QA_AGENT_SYSTEM_PROMPT
+        """Get the QA agent's system prompt with dynamic context."""
+        return self._inject_dynamic_context(QA_AGENT_SYSTEM_PROMPT)
 
     def register_tools(self) -> None:
         """Register QA agent tools.

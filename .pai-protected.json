@@ -1,0 +1,112 @@
+{
+  "version": "1.0",
+  "description": "PAI Security Policies - Declarative security rules for AI agent operations",
+  "system": {
+    "blocked_patterns": [
+      "rm\\s+(-[rf]+\\s+)*/$",
+      "rm\\s+(-[rf]+\\s+)*/\\s*$",
+      ":\\(\\)\\s*{\\s*:\\s*\\|\\s*:&\\s*}\\s*;",
+      "dd\\s+if=/dev/zero\\s+of=/dev/sd",
+      "chmod\\s+(-R\\s+)?777\\s+/",
+      "mkfs\\.[a-z]+\\s+/dev/sd",
+      ">\\s*/dev/sd[a-z]",
+      "cat\\s+/dev/urandom\\s*>\\s*/dev/sd",
+      "\\bsudo\\s+rm\\s+-rf\\s+/",
+      "mv\\s+/\\s+/dev/null"
+    ],
+    "require_confirmation": [
+      "git\\s+push\\s+--force\\s+origin\\s+(main|master)$",
+      "git\\s+reset\\s+--hard\\s+origin",
+      "docker\\s+system\\s+prune",
+      "docker\\s+volume\\s+prune",
+      "DROP\\s+(DATABASE|TABLE)",
+      "DELETE\\s+FROM\\s+\\w+\\s*;?\\s*$",
+      "TRUNCATE\\s+TABLE"
+    ],
+    "warn_patterns": [
+      "curl\\s+.*\\|\\s*sh",
+      "curl\\s+.*\\|\\s*bash",
+      "wget\\s+.*\\|\\s*sh",
+      "wget\\s+.*\\|\\s*bash",
+      "eval\\s+\\$\\(",
+      "base64\\s+-d\\s*\\|",
+      "nc\\s+-[el]",
+      "ncat\\s+-[el]",
+      "python\\s+-c.*socket",
+      "perl\\s+-e.*socket",
+      "exec\\s+\\d+<>/dev/tcp"
+    ]
+  },
+  "user": {
+    "allowed_directories": [
+      "/home/wyld-core",
+      "/home/wyld-web",
+      "/home/wyld-data",
+      "/home/wyld-data/workspaces",
+      "/home/wyld-data/uploads",
+      "/tmp",
+      "/var/log",
+      "/var/run"
+    ],
+    "blocked_commands": [],
+    "allowed_commands": [
+      "git push",
+      "git pull",
+      "git checkout",
+      "git merge",
+      "git rebase",
+      "docker-compose up",
+      "docker-compose down",
+      "docker-compose restart",
+      "npm install",
+      "npm run",
+      "pip install",
+      "pytest",
+      "make"
+    ]
+  },
+  "rules": [
+    {
+      "pattern": "iptables\\s+-F",
+      "tier": "dangerous",
+      "action": "warn",
+      "message": "Flushing firewall rules could expose the system",
+      "category": "network"
+    },
+    {
+      "pattern": "ssh-keygen.*-f\\s+/etc/ssh",
+      "tier": "dangerous",
+      "action": "block",
+      "message": "Attempting to modify system SSH keys",
+      "category": "security"
+    },
+    {
+      "pattern": "passwd\\s+(root|admin)",
+      "tier": "catastrophic",
+      "action": "block",
+      "message": "Attempting to change root/admin password",
+      "category": "security"
+    },
+    {
+      "pattern": "visudo|sudoers",
+      "tier": "dangerous",
+      "action": "block",
+      "message": "Modifying sudo configuration",
+      "category": "security"
+    },
+    {
+      "pattern": "docker\\s+run.*--privileged",
+      "tier": "suspicious",
+      "action": "warn",
+      "message": "Running privileged Docker container",
+      "category": "docker"
+    },
+    {
+      "pattern": "npm\\s+publish",
+      "tier": "suspicious",
+      "action": "warn",
+      "message": "Publishing npm package",
+      "category": "package"
+    }
+  ]
+}

@@ -63,6 +63,10 @@ class Project(Base, UUIDMixin, TimestampMixin):
     docker_env_vars: Mapped[str | None] = mapped_column(Text)  # JSON object
     docker_container_status: Mapped[str | None] = mapped_column(String(50))
 
+    # GitHub integration
+    github_pat_encrypted: Mapped[str | None] = mapped_column(Text)
+    github_repo_url: Mapped[str | None] = mapped_column(String(500))
+
     # Status
     status: Mapped[ProjectStatus] = mapped_column(
         Enum(ProjectStatus),

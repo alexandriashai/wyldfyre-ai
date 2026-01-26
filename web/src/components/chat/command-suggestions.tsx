@@ -12,7 +12,16 @@ import {
   Wrench,
   Bot,
   Activity,
+  ListTodo,
+  GitBranch,
+  GitCommit,
 } from "lucide-react";
+
+export interface CommandSubcommand {
+  command: string;
+  description: string;
+  usage?: string;
+}
 
 export interface Command {
   name: string;
@@ -20,6 +29,7 @@ export interface Command {
   usage: string;
   aliases: string[];
   icon: React.ElementType;
+  subcommands?: CommandSubcommand[];
 }
 
 const COMMANDS: Command[] = [
@@ -39,10 +49,25 @@ const COMMANDS: Command[] = [
   },
   {
     name: "plan",
-    description: "Enter planning mode for structured task breakdown",
-    usage: "/plan [task description]",
+    description: "Plan management - create, browse, edit, and manage plans",
+    usage: "/plan [subcommand] [args]",
     aliases: ["p"],
     icon: FileText,
+    subcommands: [
+      { command: "/plan list", description: "List plans by status", usage: "/plan list [active|paused|completed|failed|stuck|all]" },
+      { command: "/plan view", description: "View plan details with progress", usage: "/plan view <plan_id>" },
+      { command: "/plan edit", description: "Edit a plan", usage: "/plan edit <plan_id>" },
+      { command: "/plan delete", description: "Delete a plan", usage: "/plan delete <plan_id>" },
+      { command: "/plan clone", description: "Clone plan as template", usage: "/plan clone <plan_id> [new_title]" },
+      { command: "/plan follow-up", description: "Resume stuck/paused plan", usage: "/plan follow-up <plan_id> [context]" },
+      { command: "/plan modify", description: "AI-assisted modification", usage: "/plan modify <plan_id> <request>" },
+      { command: "/plan history", description: "View modification history", usage: "/plan history <plan_id>" },
+      { command: "/plan approve", description: "Approve current plan", usage: "/plan approve" },
+      { command: "/plan reject", description: "Reject/cancel current plan", usage: "/plan reject" },
+      { command: "/plan status", description: "Show current plan status", usage: "/plan status" },
+      { command: "/plan pause", description: "Pause execution", usage: "/plan pause" },
+      { command: "/plan resume", description: "Resume execution", usage: "/plan resume" },
+    ],
   },
   {
     name: "memory",
@@ -78,6 +103,48 @@ const COMMANDS: Command[] = [
     usage: "/status",
     aliases: ["s"],
     icon: Activity,
+  },
+  {
+    name: "gh",
+    description: "GitHub operations - PRs, issues, repos, and more",
+    usage: "/gh [subcommand] [args]",
+    aliases: ["github"],
+    icon: GitBranch,
+    subcommands: [
+      { command: "/gh pr list", description: "List pull requests", usage: "/gh pr list [state]" },
+      { command: "/gh pr create", description: "Create a pull request", usage: "/gh pr create [title]" },
+      { command: "/gh pr view", description: "View pull request details", usage: "/gh pr view <number>" },
+      { command: "/gh pr checkout", description: "Checkout a pull request branch", usage: "/gh pr checkout <number>" },
+      { command: "/gh pr merge", description: "Merge a pull request", usage: "/gh pr merge <number>" },
+      { command: "/gh issue list", description: "List issues", usage: "/gh issue list [state]" },
+      { command: "/gh issue create", description: "Create an issue", usage: "/gh issue create [title]" },
+      { command: "/gh issue view", description: "View issue details", usage: "/gh issue view <number>" },
+      { command: "/gh repo view", description: "View repository info", usage: "/gh repo view [repo]" },
+      { command: "/gh repo clone", description: "Clone a repository", usage: "/gh repo clone <repo>" },
+      { command: "/gh status", description: "Show GitHub CLI auth status", usage: "/gh status" },
+      { command: "/gh browse", description: "Open repo in browser", usage: "/gh browse [path]" },
+    ],
+  },
+  {
+    name: "git",
+    description: "Git operations - push, pull, commit, branch, and more",
+    usage: "/git [subcommand] [args]",
+    aliases: [],
+    icon: GitCommit,
+    subcommands: [
+      { command: "/git status", description: "Show working tree status", usage: "/git status" },
+      { command: "/git push", description: "Push commits to remote", usage: "/git push [remote] [branch]" },
+      { command: "/git pull", description: "Pull changes from remote", usage: "/git pull [remote] [branch]" },
+      { command: "/git add", description: "Stage files for commit", usage: "/git add <files|.>" },
+      { command: "/git commit", description: "Commit staged changes", usage: "/git commit -m \"message\"" },
+      { command: "/git branch", description: "List or create branches", usage: "/git branch [name]" },
+      { command: "/git checkout", description: "Switch branches or restore files", usage: "/git checkout <branch|file>" },
+      { command: "/git merge", description: "Merge a branch", usage: "/git merge <branch>" },
+      { command: "/git log", description: "Show commit history", usage: "/git log [--oneline] [-n N]" },
+      { command: "/git diff", description: "Show changes", usage: "/git diff [file]" },
+      { command: "/git stash", description: "Stash changes", usage: "/git stash [pop|list|drop]" },
+      { command: "/git reset", description: "Reset HEAD or unstage files", usage: "/git reset [--hard] [ref]" },
+    ],
   },
 ];
 

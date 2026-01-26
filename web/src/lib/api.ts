@@ -613,6 +613,41 @@ export const conversationsApi = {
     }>(response);
   },
 
+  async getActivePlan(token: string, id: string) {
+    const response = await fetch(`${API_BASE_URL}/api/conversations/${id}/active-plan`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{
+      conversation_id: string;
+      has_active_plan: boolean;
+      plan: {
+        id: string;
+        title: string;
+        description?: string;
+        status: string;
+        steps: Array<{
+          id: string;
+          order: number;
+          title: string;
+          description: string;
+          status: string;
+          agent?: string;
+          todos?: string[];
+          output?: string;
+          error?: string;
+          started_at?: string;
+          completed_at?: string;
+        }>;
+        current_step: number;
+        progress: number;
+        created_at: string;
+        approved_at?: string;
+        metadata?: Record<string, unknown>;
+      } | null;
+    }>(response);
+  },
+
   async updatePlan(token: string, id: string, data: { plan_content: string; plan_status?: string }) {
     const response = await fetch(`${API_BASE_URL}/api/conversations/${id}/plan`, {
       method: 'PUT',
@@ -1646,5 +1681,550 @@ export const integrationsApi = {
       headers: getHeaders(token),
     });
     return handleResponse<IntegrationsStatus>(response);
+  },
+};
+
+// GitHub Types
+export interface GitHubGlobalSettings {
+  enabled: boolean;
+  pat_configured: boolean;
+  pat_source: 'env' | 'admin' | null;
+  pat_last_updated: string | null;
+}
+
+export interface GitHubTestResult {
+  success: boolean;
+  username: string | null;
+  scopes: string[] | null;
+  error: string | null;
+}
+
+export interface GitHubProjectSettings {
+  has_override: boolean;
+  repo_url: string | null;
+  repo_name: string | null;
+  repo_linked: boolean;
+}
+
+export interface GitHubRepo {
+  id: number;
+  name: string;
+  full_name: string;
+  html_url: string;
+  clone_url: string;
+  private: boolean;
+  description: string | null;
+  default_branch?: string | null;
+}
+
+export interface GitHubPullRequest {
+  number: number;
+  title: string;
+  body: string | null;
+  state: string;
+  head: string;
+  base: string;
+  html_url: string;
+  created_at: string;
+  user: string;
+  mergeable: boolean | null;
+  draft: boolean;
+  merged?: boolean;
+  merge_commit_sha?: string | null;
+  comments?: number;
+  review_comments?: number;
+  commits?: number;
+  additions?: number;
+  deletions?: number;
+  changed_files?: number;
+}
+
+export interface GitHubIssue {
+  number: number;
+  title: string;
+  body: string | null;
+  state: string;
+  html_url: string;
+  created_at: string;
+  user: string;
+  labels: string[];
+  comments: number;
+}
+
+export interface Branch {
+  name: string;
+  commit: string;
+  is_current: boolean;
+  is_remote: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+}
+
+export interface BranchListResponse {
+  current: string;
+  branches: Branch[];
+}
+
+export interface BranchResponse {
+  name: string;
+  commit: string;
+  is_current: boolean;
+}
+
+export interface MergeResponse {
+  success: boolean;
+  merged_commit: string | null;
+  conflicts: string[] | null;
+  message: string | null;
+}
+
+export interface ConflictCheckResponse {
+  has_conflicts: boolean;
+  conflicting_files: string[];
+  merge_in_progress: boolean;
+  rebase_in_progress: boolean;
+}
+
+// GitHub API
+export const githubApi = {
+  // Global settings (admin only)
+  async getGlobalSettings(token: string) {
+    const response = await fetch(`${API_BASE_URL}/api/github/settings`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<GitHubGlobalSettings>(response);
+  },
+
+  async updateGlobalSettings(token: string, data: { enabled?: boolean; pat?: string; clear_pat?: boolean }) {
+    const response = await fetch(`${API_BASE_URL}/api/github/settings`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<GitHubGlobalSettings>(response);
+  },
+
+  async testGlobalPat(token: string) {
+    const response = await fetch(`${API_BASE_URL}/api/github/settings/test`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<GitHubTestResult>(response);
+  },
+
+  async testPat(token: string, pat: string) {
+    const response = await fetch(`${API_BASE_URL}/api/github/test`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ pat }),
+    });
+    return handleResponse<GitHubTestResult>(response);
+  },
+
+  // Repository management
+  async listRepos(token: string, page: number = 1, perPage: number = 30) {
+    const searchParams = new URLSearchParams({ page: page.toString(), per_page: perPage.toString() });
+    const response = await fetch(`${API_BASE_URL}/api/github/repos?${searchParams}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<GitHubRepo[]>(response);
+  },
+
+  async createRepo(token: string, data: { name: string; description?: string; private?: boolean }) {
+    const response = await fetch(`${API_BASE_URL}/api/github/repos`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<GitHubRepo>(response);
+  },
+
+  // Project settings
+  async getProjectSettings(token: string, projectId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/settings`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<GitHubProjectSettings>(response);
+  },
+
+  async updateProjectSettings(token: string, projectId: string, data: { pat?: string; repo_url?: string; clear_pat?: boolean }) {
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/settings`, {
+      method: 'PUT',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<GitHubProjectSettings>(response);
+  },
+
+  async clearProjectSettings(token: string, projectId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/settings`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async linkRepo(token: string, projectId: string, data: { repo_url: string; init_git?: boolean }) {
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/repo/link`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async initRepo(token: string, projectId: string, data: { name: string; description?: string; private?: boolean }) {
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/repo/init`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<GitHubRepo>(response);
+  },
+
+  // Pull Requests
+  async listPullRequests(token: string, projectId: string, state: string = 'open') {
+    const searchParams = new URLSearchParams({ state });
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/pulls?${searchParams}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<GitHubPullRequest[]>(response);
+  },
+
+  async createPullRequest(token: string, projectId: string, data: { title: string; body?: string; head?: string; base?: string; draft?: boolean }) {
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/pulls`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<GitHubPullRequest>(response);
+  },
+
+  async getPullRequest(token: string, projectId: string, number: number) {
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/pulls/${number}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<GitHubPullRequest>(response);
+  },
+
+  async mergePullRequest(token: string, projectId: string, number: number, data: { merge_method?: 'merge' | 'squash' | 'rebase'; commit_message?: string }) {
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/pulls/${number}/merge`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{ success: boolean; sha: string | null; message: string }>(response);
+  },
+
+  // Issues
+  async listIssues(token: string, projectId: string, state: string = 'open', labels?: string) {
+    const searchParams = new URLSearchParams({ state });
+    if (labels) searchParams.set('labels', labels);
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/issues?${searchParams}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<GitHubIssue[]>(response);
+  },
+
+  async createIssue(token: string, projectId: string, data: { title: string; body?: string; labels?: string[] }) {
+    const response = await fetch(`${API_BASE_URL}/api/github/projects/${projectId}/issues`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<GitHubIssue>(response);
+  },
+};
+
+// Add branch management methods to workspaceApi
+export const branchApi = {
+  async getBranches(token: string, projectId: string, includeRemote: boolean = true) {
+    const searchParams = new URLSearchParams({ include_remote: includeRemote.toString() });
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/branches?${searchParams}`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<BranchListResponse>(response);
+  },
+
+  async createBranch(token: string, projectId: string, data: { name: string; start_point?: string; checkout?: boolean }) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/branches`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<BranchResponse>(response);
+  },
+
+  async checkoutBranch(token: string, projectId: string, data: { branch: string; create?: boolean }) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/branches/checkout`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<BranchResponse>(response);
+  },
+
+  async deleteBranch(token: string, projectId: string, branchName: string, force: boolean = false) {
+    const searchParams = new URLSearchParams({ force: force.toString() });
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/branches/${encodeURIComponent(branchName)}?${searchParams}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async renameBranch(token: string, projectId: string, data: { old_name: string; new_name: string }) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/branches/rename`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async mergeBranch(token: string, projectId: string, data: { source: string; no_ff?: boolean; squash?: boolean; message?: string }) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/merge`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<MergeResponse>(response);
+  },
+
+  async rebaseBranch(token: string, projectId: string, onto: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/rebase`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ onto }),
+    });
+    return handleResponse<MergeResponse>(response);
+  },
+
+  async abortMerge(token: string, projectId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/abort`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async checkConflicts(token: string, projectId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/conflicts`, {
+      headers: getHeaders(token),
+    });
+    return handleResponse<ConflictCheckResponse>(response);
+  },
+
+  async gitFetch(token: string, projectId: string, prune: boolean = false) {
+    const searchParams = new URLSearchParams({ prune: prune.toString() });
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/fetch?${searchParams}`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async gitPull(token: string, projectId: string, branch?: string, rebase: boolean = false) {
+    const searchParams = new URLSearchParams({ rebase: rebase.toString() });
+    if (branch) searchParams.set('branch', branch);
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/pull?${searchParams}`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+};
+
+// Plan CRUD Types
+export interface TodoItem {
+  text: string;
+  completed: boolean;
+}
+
+export interface StepProgress {
+  index: number;
+  id: string;
+  title: string;
+  description: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'skipped' | 'failed';
+  agent?: string;
+  todos: TodoItem[];
+  notes: string[];
+  completed_todos: number;
+  total_todos: number;
+  output?: string;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
+  estimated_duration?: string;
+}
+
+export interface PlanListItem {
+  id: string;
+  title: string;
+  description?: string;
+  status: string;
+  created_at: string;
+  updated_at?: string;
+  total_steps: number;
+  completed_steps: number;
+  is_running: boolean;
+  is_stuck: boolean;
+  conversation_id?: string;
+  project_id?: string;
+}
+
+export interface PlanDetail {
+  id: string;
+  title: string;
+  description?: string;
+  status: string;
+  steps: StepProgress[];
+  current_step_index: number;
+  total_steps: number;
+  completed_steps: number;
+  is_running: boolean;
+  is_complete: boolean;
+  is_stuck: boolean;
+  overall_progress: number;
+  created_at: string;
+  updated_at?: string;
+  approved_at?: string;
+  completed_at?: string;
+  conversation_id?: string;
+  user_id?: string;
+  exploration_notes: string[];
+  files_explored: string[];
+  metadata: Record<string, unknown>;
+}
+
+export interface PlanHistoryEntry {
+  timestamp: string;
+  action: string;
+  changes: Record<string, unknown>;
+  actor?: string;
+  details?: string;
+}
+
+export interface PlanOperationResponse {
+  success: boolean;
+  plan_id: string;
+  message: string;
+  plan?: PlanDetail;
+}
+
+// Plans API
+export const plansApi = {
+  async listPlans(token: string, options?: { status?: string; project_id?: string; limit?: number; offset?: number }) {
+    const searchParams = new URLSearchParams();
+    if (options?.status) searchParams.set('status', options.status);
+    if (options?.project_id) searchParams.set('project_id', options.project_id);
+    if (options?.limit) searchParams.set('limit', options.limit.toString());
+    if (options?.offset) searchParams.set('offset', options.offset.toString());
+
+    const url = `${API_BASE_URL}/api/plans${searchParams.toString() ? `?${searchParams}` : ''}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{
+      plans: PlanListItem[];
+      total: number;
+      offset: number;
+      limit: number;
+      filter_status?: string;
+    }>(response);
+  },
+
+  async getPlan(token: string, planId: string, includeHistory: boolean = false) {
+    const searchParams = new URLSearchParams();
+    if (includeHistory) searchParams.set('include_history', 'true');
+
+    const url = `${API_BASE_URL}/api/plans/${planId}${searchParams.toString() ? `?${searchParams}` : ''}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<PlanDetail>(response);
+  },
+
+  async updatePlan(token: string, planId: string, data: {
+    title?: string;
+    description?: string;
+    steps?: Array<Record<string, unknown>>;
+    status?: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    const response = await fetch(`${API_BASE_URL}/api/plans/${planId}`, {
+      method: 'PATCH',
+      headers: getHeaders(token),
+      body: JSON.stringify(data),
+    });
+    return handleResponse<PlanOperationResponse>(response);
+  },
+
+  async deletePlan(token: string, planId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/plans/${planId}`, {
+      method: 'DELETE',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ message: string }>(response);
+  },
+
+  async getPlanHistory(token: string, planId: string, limit: number = 50) {
+    const searchParams = new URLSearchParams({ limit: limit.toString() });
+    const response = await fetch(`${API_BASE_URL}/api/plans/${planId}/history?${searchParams}`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{
+      plan_id: string;
+      entries: PlanHistoryEntry[];
+      total_entries: number;
+    }>(response);
+  },
+
+  async clonePlan(token: string, planId: string, newTitle?: string, resetStatus: boolean = true) {
+    const response = await fetch(`${API_BASE_URL}/api/plans/${planId}/clone`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ new_title: newTitle, reset_status: resetStatus }),
+    });
+    return handleResponse<PlanOperationResponse>(response);
+  },
+
+  async followUpPlan(token: string, planId: string, context?: string, action: string = 'analyze_and_resume') {
+    const response = await fetch(`${API_BASE_URL}/api/plans/${planId}/follow-up`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ context, action }),
+    });
+    return handleResponse<PlanOperationResponse>(response);
+  },
+
+  async modifyPlan(token: string, planId: string, request: string, constraints?: string[]) {
+    const response = await fetch(`${API_BASE_URL}/api/plans/${planId}/modify`, {
+      method: 'POST',
+      headers: getHeaders(token),
+      body: JSON.stringify({ request, constraints }),
+    });
+    return handleResponse<PlanOperationResponse>(response);
+  },
+
+  async pausePlan(token: string, planId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/plans/${planId}/pause`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<PlanOperationResponse>(response);
+  },
+
+  async resumePlan(token: string, planId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/plans/${planId}/resume`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<PlanOperationResponse>(response);
   },
 };

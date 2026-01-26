@@ -92,12 +92,14 @@ class Plan:
     metadata: dict[str, Any] = field(default_factory=dict)
     exploration_notes: list[str] = field(default_factory=list)
     files_explored: list[str] = field(default_factory=list)
+    project_id: Optional[str] = None  # Scope plan to a project
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "conversation_id": self.conversation_id,
             "user_id": self.user_id,
+            "project_id": self.project_id,
             "title": self.title,
             "description": self.description,
             "status": self.status.value,
@@ -138,6 +140,7 @@ class PlanManager:
         user_id: str,
         title: str,
         description: str,
+        project_id: str,
     ) -> Plan:
         """Create a new plan (starts in EXPLORING phase)."""
         plan = Plan(
@@ -147,6 +150,7 @@ class PlanManager:
             title=title,
             description=description,
             status=PlanStatus.EXPLORING,
+            project_id=project_id,
         )
 
         self._active_plans[plan.id] = plan
@@ -431,6 +435,7 @@ class PlanManager:
                 metadata=plan_data.get("metadata", {}),
                 exploration_notes=plan_data.get("exploration_notes", []),
                 files_explored=plan_data.get("files_explored", []),
+                project_id=plan_data.get("project_id"),
             )
 
             if plan_data.get("approved_at"):

@@ -45,6 +45,8 @@ class HookEvent(str, Enum):
     AGENT_ERROR = "agent_error"
     MESSAGE_RECEIVED = "message_received"
     MESSAGE_SENT = "message_sent"
+    # New hook for user prompt processing (Phase 2 Enhancement)
+    USER_PROMPT_SUBMIT = "user_prompt_submit"
 
 
 @dataclass

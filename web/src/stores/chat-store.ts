@@ -298,6 +298,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const conversation = await conversationsApi.get(token, id);
+
+      // Check if plan is in terminal state
+      const isTerminalPlanState = conversation.plan_status &&
+        ["completed", "rejected"].includes(conversation.plan_status.toLowerCase());
+
       set({
         currentConversation: {
           id: conversation.id,
@@ -313,17 +318,45 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
         messages: conversation.messages,
         // Don't restore plan panel for terminal states (completed/rejected)
-        currentPlan: conversation.plan_status &&
-          ["completed", "rejected"].includes(conversation.plan_status.toLowerCase())
-          ? null
-          : conversation.plan_content,
-        planStatus: conversation.plan_status &&
-          ["completed", "rejected"].includes(conversation.plan_status.toLowerCase())
+        currentPlan: isTerminalPlanState ? null : conversation.plan_content,
+        planStatus: isTerminalPlanState
           ? null
           : conversation.plan_status
             ? (conversation.plan_status.toUpperCase() as PlanStatus)
             : null,
+        // Reset steps initially - will be populated by active plan fetch below
+        planSteps: [],
+        currentStepIndex: 0,
       });
+
+      // Fetch active plan with steps if there's a non-terminal plan
+      if (!isTerminalPlanState && conversation.plan_content) {
+        try {
+          const activePlan = await conversationsApi.getActivePlan(token, id);
+          if (activePlan.has_active_plan && activePlan.plan) {
+            const steps: PlanStep[] = activePlan.plan.steps.map((s) => ({
+              id: s.id,
+              order: s.order,
+              title: s.title,
+              description: s.description,
+              status: s.status as PlanStep["status"],
+              agent: s.agent,
+              todos: s.todos,
+              output: s.output,
+              error: s.error,
+              started_at: s.started_at,
+              completed_at: s.completed_at,
+            }));
+            set({
+              planSteps: steps,
+              currentStepIndex: activePlan.plan.current_step,
+            });
+          }
+        } catch (planErr) {
+          // Non-critical - plan steps just won't be restored
+          console.warn("Failed to fetch active plan steps:", planErr);
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load conversation";
       set({ error: message });
@@ -547,11 +580,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // Plan actions
   updatePlan: (content: string, status?: PlanStatus) => {
+    const currentStatus = status || "DRAFT";
+    const state = get();
+
+    // Only clear steps when starting a fresh draft plan (not when updating existing)
+    // Preserve steps if we're just updating content/status of an executing plan
+    const shouldClearSteps = currentStatus === "DRAFT" && state.planSteps.length === 0;
+
     set({
       currentPlan: content,
-      planStatus: status || "DRAFT",
-      planSteps: [],
-      currentStepIndex: 0,
+      planStatus: currentStatus,
+      // Preserve existing steps unless starting a new draft
+      planSteps: shouldClearSteps ? [] : state.planSteps,
+      currentStepIndex: shouldClearSteps ? 0 : state.currentStepIndex,
     });
   },
 

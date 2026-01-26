@@ -476,6 +476,66 @@ async def get_conversation_plan(
     }
 
 
+@router.get("/{conversation_id}/active-plan")
+async def get_active_plan(
+    conversation_id: str,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+    redis: RedisClient = Depends(get_redis),
+) -> dict[str, Any]:
+    """
+    Get the active plan with full steps for a conversation.
+
+    Returns plan details from Redis including step progress.
+    """
+    # Verify conversation ownership
+    result = await db.execute(
+        select(Conversation).where(
+            Conversation.id == conversation_id,
+            Conversation.user_id == current_user.sub,
+        )
+    )
+    conversation = result.scalar_one_or_none()
+
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation {conversation_id} not found",
+        )
+
+    # Get active plan from Redis
+    from ..plan_mode import PlanManager
+
+    plan_manager = PlanManager(redis)
+    plan = await plan_manager.get_active_plan(conversation_id)
+
+    if not plan:
+        return {
+            "conversation_id": conversation_id,
+            "has_active_plan": False,
+            "plan": None,
+        }
+
+    plan_dict = plan.to_dict()
+
+    return {
+        "conversation_id": conversation_id,
+        "has_active_plan": True,
+        "plan": {
+            "id": plan_dict.get("id"),
+            "title": plan_dict.get("title"),
+            "description": plan_dict.get("description"),
+            "status": plan_dict.get("status"),
+            "steps": plan_dict.get("steps", []),
+            "current_step": plan_dict.get("current_step", 0),
+            "progress": plan_dict.get("progress", 0),
+            "created_at": plan_dict.get("created_at"),
+            "approved_at": plan_dict.get("approved_at"),
+            "metadata": plan_dict.get("metadata", {}),
+        },
+    }
+
+
 @router.put("/{conversation_id}/plan")
 async def update_conversation_plan(
     conversation_id: str,

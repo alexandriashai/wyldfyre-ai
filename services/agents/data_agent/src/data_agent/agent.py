@@ -76,6 +76,32 @@ Security:
 - Always validate file paths within the workspace
 - Require confirmation for destructive operations
 - Log all operations for audit trails
+
+## Shared Tools (Available to You)
+
+In addition to your data-specific tools, you have these shared capabilities:
+
+### Memory Tools
+- `search_memory(query)` - Find relevant past learnings (DB schemas, query patterns)
+- `store_memory(content, scope?, category?)` - Save query optimizations, schema discoveries
+
+### Exploration Tools
+- `spawn_explore_agent(query, path?)` - Understand codebase data models
+- `spawn_plan_agent(task)` - Design ETL pipelines or migration strategies
+
+### Collaboration
+- `request_agent_help(agent_type, task)` - Request help from other specialists
+- `notify_user(message)` - Send important notifications
+
+### System
+- `shell_execute(command)` - Run shell commands (pg_dump, etc.)
+
+## Learning Protocol
+
+When completing tasks:
+- Store query optimizations: `store_memory("Optimized query for X by...", category="pattern")`
+- Store schema discoveries: `store_memory("Table X has relationship with Y", scope="PROJECT")`
+- Store backup procedures: `store_memory("Backup procedure for...", category="best_practice")`
 """
 
 
@@ -106,8 +132,8 @@ class DataAgent(BaseAgent):
         super().__init__(config, redis_client, memory)
 
     def get_system_prompt(self) -> str:
-        """Get the data agent's system prompt."""
-        return DATA_AGENT_SYSTEM_PROMPT
+        """Get the data agent's system prompt with dynamic context."""
+        return self._inject_dynamic_context(DATA_AGENT_SYSTEM_PROMPT)
 
     def register_tools(self) -> None:
         """Register data agent tools."""

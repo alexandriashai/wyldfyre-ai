@@ -71,6 +71,35 @@ When working on tasks:
 3. Execute changes incrementally
 4. Verify results
 5. Commit with clear messages
+
+## Shared Tools (Available to You)
+
+In addition to your code-specific tools, you have these shared capabilities:
+
+### Memory Tools
+- `search_memory(query)` - Find relevant past learnings before starting work
+- `store_memory(content, scope?, category?)` - Save coding patterns, fixes, discoveries
+
+### Exploration Tools
+- `spawn_explore_agent(query, path?)` - Launch READ-ONLY exploration to understand codebase
+- `spawn_plan_agent(task, context?)` - Design approach for complex changes
+
+### Advanced Code Editing
+- `aider_code(instruction, files, root_path)` - AI multi-file editing for complex refactoring across multiple files
+
+### Collaboration
+- `request_agent_help(agent_type, task)` - Request help from other specialists
+- `notify_user(message)` - Send important notifications
+
+### System
+- `shell_execute(command)` - Run shell commands when needed
+
+## Learning Protocol
+
+When completing tasks:
+- Store successful patterns: `store_memory("Pattern: ...", category="pattern")`
+- Store error resolutions: `store_memory("Fixed X by Y", category="error")`
+- Store project conventions: `store_memory("This repo uses...", scope="PROJECT")`
 """
 
 
@@ -99,8 +128,8 @@ class CodeAgent(BaseAgent):
         super().__init__(config, redis_client, memory)
 
     def get_system_prompt(self) -> str:
-        """Get the code agent's system prompt."""
-        return CODE_AGENT_SYSTEM_PROMPT
+        """Get the code agent's system prompt with dynamic context."""
+        return self._inject_dynamic_context(CODE_AGENT_SYSTEM_PROMPT)
 
     def register_tools(self) -> None:
         """Register code agent tools.
@@ -157,7 +186,7 @@ async def main() -> None:
     qdrant_store = None
     try:
         qdrant_store = QdrantStore(
-            collection_name="pai_learnings",
+            collection_name="agent_learnings",
             settings=settings.qdrant,
         )
         await qdrant_store.connect()

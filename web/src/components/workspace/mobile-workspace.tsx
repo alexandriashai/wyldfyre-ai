@@ -6,8 +6,10 @@ import { EditorPanel } from "./panels/editor-panel";
 import { PreviewPanel } from "./preview/preview-panel";
 import { WorkspaceChatPanel } from "./chat-panel";
 import { TerminalPanel } from "./panels/terminal-panel";
+import { GitPanel } from "./panels/git-panel";
 import { cn } from "@/lib/utils";
-import { Files, Code2, Monitor, MessageSquare, Terminal } from "lucide-react";
+import { Files, Code2, Monitor, MessageSquare, Terminal, GitBranch } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
 interface MobileWorkspaceProps {
   onFileOpen: (path: string) => void;
@@ -18,13 +20,18 @@ interface MobileWorkspaceProps {
 const tabs = [
   { id: "files" as const, icon: Files, label: "Files" },
   { id: "editor" as const, icon: Code2, label: "Editor" },
-  { id: "terminal" as const, icon: Terminal, label: "Terminal" },
-  { id: "preview" as const, icon: Monitor, label: "Preview" },
+  { id: "git" as const, icon: GitBranch, label: "Git" },
+  { id: "terminal" as const, icon: Terminal, label: "Term" },
   { id: "chat" as const, icon: MessageSquare, label: "Chat" },
 ];
 
 export function MobileWorkspace({ onFileOpen, onRefresh, onSave }: MobileWorkspaceProps) {
-  const { mobileActiveTab, setMobileActiveTab, openFiles } = useWorkspaceStore();
+  const { mobileActiveTab, setMobileActiveTab, openFiles, gitStatus, activeProjectId } = useWorkspaceStore();
+
+  // Calculate git change count for indicator
+  const gitChangeCount = (gitStatus?.staged?.length || 0) +
+    (gitStatus?.modified?.length || 0) +
+    (gitStatus?.untracked?.length || 0);
 
   return (
     <div className="flex flex-col h-full w-full">
@@ -36,11 +43,17 @@ export function MobileWorkspace({ onFileOpen, onRefresh, onSave }: MobileWorkspa
         {mobileActiveTab === "editor" && (
           <EditorPanel onSave={onSave} />
         )}
+        {mobileActiveTab === "git" && (
+          activeProjectId ? (
+            <GitPanel />
+          ) : (
+            <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+              Select a project to manage git
+            </div>
+          )
+        )}
         {mobileActiveTab === "terminal" && (
           <TerminalPanel alwaysShow isMobileView />
-        )}
-        {mobileActiveTab === "preview" && (
-          <PreviewPanel />
         )}
         {mobileActiveTab === "chat" && (
           <WorkspaceChatPanel />
@@ -52,7 +65,8 @@ export function MobileWorkspace({ onFileOpen, onRefresh, onSave }: MobileWorkspa
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = mobileActiveTab === tab.id;
-          const hasIndicator = tab.id === "editor" && openFiles.some((f) => f.isDirty);
+          const hasEditorIndicator = tab.id === "editor" && openFiles.some((f) => f.isDirty);
+          const hasGitIndicator = tab.id === "git" && gitChangeCount > 0;
 
           return (
             <button
@@ -63,9 +77,16 @@ export function MobileWorkspace({ onFileOpen, onRefresh, onSave }: MobileWorkspa
                 isActive ? "text-primary" : "text-muted-foreground"
               )}
             >
-              <Icon className="h-5 w-5" />
+              <div className="relative">
+                <Icon className="h-5 w-5" />
+                {hasGitIndicator && (
+                  <span className="absolute -top-1 -right-2 min-w-[14px] h-[14px] rounded-full bg-primary text-[9px] text-primary-foreground flex items-center justify-center px-0.5">
+                    {gitChangeCount > 99 ? "99+" : gitChangeCount}
+                  </span>
+                )}
+              </div>
               <span className="text-[10px]">{tab.label}</span>
-              {hasIndicator && (
+              {hasEditorIndicator && (
                 <span className="absolute top-1.5 right-1/3 h-1.5 w-1.5 rounded-full bg-amber-500" />
               )}
             </button>

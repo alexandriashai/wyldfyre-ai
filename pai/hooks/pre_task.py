@@ -254,3 +254,73 @@ def format_observe_context(context: dict[str, Any]) -> str:
         sections.append(f"[Tool Patterns]\n{patterns_text}")
 
     return "\n\n".join(sections) if sections else ""
+
+
+def format_task_context_for_prompt(
+    context: dict[str, Any],
+    pai_phase: str | None = None,
+    include_telos: bool = True,
+) -> dict[str, Any]:
+    """
+    Format task context for injection into agent system prompts.
+
+    This function prepares context data that can be injected into the
+    agent's _session_context for dynamic prompt enhancement.
+
+    Args:
+        context: Context dict from pre_task_hook
+        pai_phase: Current PAI phase (OBSERVE, THINK, PLAN, BUILD, EXECUTE, VERIFY)
+        include_telos: Whether to include TELOS goal context
+
+    Returns:
+        Dict with formatted context ready for _session_context injection:
+        - warm_learnings: Pre-warmed relevant learnings
+        - phase_context: Phase-specific guidance
+        - telos_context: Current goals/objectives
+    """
+    result = {}
+
+    # Format warm learnings for system prompt injection
+    learnings = context.get("relevant_learnings", [])
+    issues = context.get("known_issues", [])
+    patterns = context.get("tool_patterns", [])
+
+    warm_learnings = []
+    for learning in learnings[:5]:
+        warm_learnings.append({
+            "content": learning.get("content", learning.get("text", str(learning)))[:200],
+            "category": learning.get("category", "general"),
+            "id": learning.get("id"),
+        })
+    for issue in issues[:3]:
+        warm_learnings.append({
+            "content": f"[ISSUE] {issue.get('content', issue.get('text', str(issue)))[:180]}",
+            "category": "known_issue",
+            "id": issue.get("id"),
+        })
+
+    result["warm_learnings"] = warm_learnings
+
+    # Format phase-specific context
+    if pai_phase:
+        phase_guidance = {
+            "OBSERVE": "Focus on gathering information. Use search_memory and exploration tools before acting.",
+            "THINK": "Analyze the problem. Consider past learnings and potential approaches.",
+            "PLAN": "Design your approach. Use spawn_plan_agent for complex tasks.",
+            "BUILD": "Implement incrementally. Use aider_code for multi-file changes.",
+            "EXECUTE": "Execute tools carefully. Check results after each action.",
+            "VERIFY": "Validate results. Store successful patterns as learnings.",
+        }
+        result["phase_context"] = phase_guidance.get(pai_phase.upper(), "")
+
+    # Add tool pattern recommendations
+    if patterns:
+        pattern_text = "Recommended patterns:\n" + "\n".join(
+            f"- {p.get('content', str(p))[:100]}" for p in patterns[:2]
+        )
+        if result.get("phase_context"):
+            result["phase_context"] += f"\n\n{pattern_text}"
+        else:
+            result["phase_context"] = pattern_text
+
+    return result

@@ -21,7 +21,8 @@ from ai_core import get_logger
 from database.models import Domain, Project
 
 from ..database import get_db_session
-from ..dependencies import CurrentUserDep
+from ..dependencies import CurrentUserDep, GitHubServiceDep
+from ..services.github_service import GitHubService
 from ..schemas.workspace import (
     DeployHistoryEntry,
     DeployHistoryResponse,
@@ -49,6 +50,19 @@ from ..schemas.workspace import (
     HealthCheckResponse,
     RollbackRequest,
     RollbackResponse,
+)
+from ..schemas.github import (
+    Branch,
+    BranchListResponse,
+    BranchResponse,
+    CheckoutRequest,
+    ConflictCheckResponse,
+    CreateBranchRequest,
+    DeleteBranchRequest,
+    MergeRequest,
+    MergeResponse,
+    RebaseRequest,
+    RenameBranchRequest,
 )
 
 logger = get_logger(__name__)
@@ -821,13 +835,48 @@ async def git_commit(
 async def git_push(
     project_id: str,
     current_user: CurrentUserDep,
+    github_service: GitHubServiceDep,
     db: AsyncSession = Depends(get_db_session),
+    branch: str | None = Query(None),
+    set_upstream: bool = Query(False),
 ) -> dict[str, str]:
-    """Push commits to remote."""
+    """Push commits to remote with PAT authentication."""
     project = await get_project_with_root(project_id, current_user, db)
 
     try:
-        await run_git_command(project.root_path, "push")
+        # Get current remote URL
+        remote_result = await run_git_command(
+            project.root_path, "remote", "get-url", "origin", check=False
+        )
+        remote_url = remote_result.stdout.strip() if remote_result.returncode == 0 else None
+
+        # Get PAT and create authenticated URL if available
+        pat = await github_service.get_effective_pat(project)
+        auth_url = None
+
+        if remote_url and pat:
+            auth_url = github_service.get_authenticated_url(remote_url, pat)
+            await run_git_command(
+                project.root_path, "remote", "set-url", "origin", auth_url
+            )
+
+        try:
+            # Build push command
+            push_args = ["push"]
+            if set_upstream:
+                push_args.append("-u")
+            push_args.append("origin")
+            if branch:
+                push_args.append(branch)
+
+            await run_git_command(project.root_path, *push_args)
+        finally:
+            # Restore original URL (PAT never persisted)
+            if auth_url and remote_url:
+                await run_git_command(
+                    project.root_path, "remote", "set-url", "origin", remote_url
+                )
+
     except subprocess.CalledProcessError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -979,6 +1028,494 @@ async def git_file_content(
         ref=ref,
         path=path,
     )
+
+
+# --- Branch Management Endpoints ---
+
+
+@router.get("/git/branches", response_model=BranchListResponse)
+async def list_branches(
+    project_id: str,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+    include_remote: bool = Query(True),
+) -> BranchListResponse:
+    """List all branches (local and optionally remote)."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    # Get current branch
+    try:
+        current_result = await run_git_command(
+            project.root_path, "rev-parse", "--abbrev-ref", "HEAD"
+        )
+        current = current_result.stdout.strip()
+    except subprocess.CalledProcessError:
+        current = "main"
+
+    branches: list[Branch] = []
+
+    # Get local branches with tracking info
+    args = ["branch", "-v", "--format=%(refname:short)|%(objectname:short)|%(upstream:short)|%(upstream:track)"]
+    if include_remote:
+        args.insert(1, "-a")
+
+    try:
+        result = await run_git_command(project.root_path, *args)
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+
+            parts = line.split("|")
+            name = parts[0].strip()
+            commit = parts[1] if len(parts) > 1 else ""
+            upstream = parts[2] if len(parts) > 2 else None
+            track = parts[3] if len(parts) > 3 else ""
+
+            is_remote = name.startswith("remotes/") or name.startswith("origin/")
+
+            # Parse ahead/behind
+            ahead = 0
+            behind = 0
+            if track:
+                ahead_match = re.search(r"ahead (\d+)", track)
+                behind_match = re.search(r"behind (\d+)", track)
+                if ahead_match:
+                    ahead = int(ahead_match.group(1))
+                if behind_match:
+                    behind = int(behind_match.group(1))
+
+            # Clean up remote branch names
+            if name.startswith("remotes/"):
+                name = name[8:]  # Remove "remotes/" prefix
+
+            branches.append(Branch(
+                name=name,
+                commit=commit,
+                is_current=name == current,
+                is_remote=is_remote,
+                upstream=upstream if upstream else None,
+                ahead=ahead,
+                behind=behind,
+            ))
+    except subprocess.CalledProcessError:
+        pass
+
+    return BranchListResponse(current=current, branches=branches)
+
+
+@router.post("/git/branches", response_model=BranchResponse)
+async def create_branch(
+    project_id: str,
+    request: CreateBranchRequest,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> BranchResponse:
+    """Create a new branch."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    try:
+        # Create branch
+        args = ["checkout", "-b", request.name]
+        if request.start_point:
+            args.append(request.start_point)
+
+        if request.checkout:
+            await run_git_command(project.root_path, *args)
+        else:
+            # Create without checkout
+            branch_args = ["branch", request.name]
+            if request.start_point:
+                branch_args.append(request.start_point)
+            await run_git_command(project.root_path, *branch_args)
+
+        # Get commit hash
+        commit_result = await run_git_command(
+            project.root_path, "rev-parse", "--short", request.name
+        )
+        commit = commit_result.stdout.strip()
+
+        logger.info(
+            "Branch created",
+            project_id=project_id,
+            branch=request.name,
+        )
+
+        return BranchResponse(
+            name=request.name,
+            commit=commit,
+            is_current=request.checkout,
+        )
+
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to create branch: {e.stderr}",
+        )
+
+
+@router.post("/git/branches/checkout", response_model=BranchResponse)
+async def checkout_branch(
+    project_id: str,
+    request: CheckoutRequest,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> BranchResponse:
+    """Switch to a branch."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    try:
+        if request.create:
+            await run_git_command(
+                project.root_path, "checkout", "-b", request.branch
+            )
+        else:
+            await run_git_command(
+                project.root_path, "checkout", request.branch
+            )
+
+        # Get commit hash
+        commit_result = await run_git_command(
+            project.root_path, "rev-parse", "--short", "HEAD"
+        )
+        commit = commit_result.stdout.strip()
+
+        return BranchResponse(
+            name=request.branch,
+            commit=commit,
+            is_current=True,
+        )
+
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to checkout branch: {e.stderr}",
+        )
+
+
+@router.delete("/git/branches/{branch_name}")
+async def delete_branch(
+    project_id: str,
+    branch_name: str,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+    force: bool = Query(False),
+) -> dict[str, str]:
+    """Delete a branch."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    try:
+        flag = "-D" if force else "-d"
+        await run_git_command(project.root_path, "branch", flag, branch_name)
+
+        logger.info(
+            "Branch deleted",
+            project_id=project_id,
+            branch=branch_name,
+        )
+
+        return {"message": f"Branch '{branch_name}' deleted"}
+
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to delete branch: {e.stderr}",
+        )
+
+
+@router.post("/git/branches/rename")
+async def rename_branch(
+    project_id: str,
+    request: RenameBranchRequest,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, str]:
+    """Rename a branch."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    try:
+        await run_git_command(
+            project.root_path, "branch", "-m", request.old_name, request.new_name
+        )
+
+        logger.info(
+            "Branch renamed",
+            project_id=project_id,
+            old_name=request.old_name,
+            new_name=request.new_name,
+        )
+
+        return {"message": f"Branch renamed from '{request.old_name}' to '{request.new_name}'"}
+
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to rename branch: {e.stderr}",
+        )
+
+
+@router.post("/git/merge", response_model=MergeResponse)
+async def merge_branch(
+    project_id: str,
+    request: MergeRequest,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> MergeResponse:
+    """Merge a source branch into the current branch."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    try:
+        # Build merge command
+        args = ["merge", request.source]
+        if request.no_ff:
+            args.append("--no-ff")
+        if request.squash:
+            args.append("--squash")
+        if request.message:
+            args.extend(["-m", request.message])
+
+        await run_git_command(project.root_path, *args)
+
+        # Get merge commit hash
+        commit_result = await run_git_command(
+            project.root_path, "rev-parse", "--short", "HEAD"
+        )
+        merged_commit = commit_result.stdout.strip()
+
+        logger.info(
+            "Branch merged",
+            project_id=project_id,
+            source=request.source,
+        )
+
+        return MergeResponse(
+            success=True,
+            merged_commit=merged_commit,
+            message=f"Successfully merged '{request.source}'",
+        )
+
+    except subprocess.CalledProcessError as e:
+        # Check for merge conflicts
+        if "CONFLICT" in e.stderr or "CONFLICT" in e.stdout:
+            # Get list of conflicting files
+            status_result = await run_git_command(
+                project.root_path, "diff", "--name-only", "--diff-filter=U", check=False
+            )
+            conflicts = [f.strip() for f in status_result.stdout.split("\n") if f.strip()]
+
+            return MergeResponse(
+                success=False,
+                conflicts=conflicts,
+                message="Merge conflicts detected",
+            )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Merge failed: {e.stderr}",
+        )
+
+
+@router.post("/git/rebase", response_model=MergeResponse)
+async def rebase_branch(
+    project_id: str,
+    request: RebaseRequest,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> MergeResponse:
+    """Rebase current branch onto another branch."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    try:
+        await run_git_command(project.root_path, "rebase", request.onto)
+
+        # Get current commit hash
+        commit_result = await run_git_command(
+            project.root_path, "rev-parse", "--short", "HEAD"
+        )
+
+        return MergeResponse(
+            success=True,
+            merged_commit=commit_result.stdout.strip(),
+            message=f"Successfully rebased onto '{request.onto}'",
+        )
+
+    except subprocess.CalledProcessError as e:
+        # Check for rebase conflicts
+        if "CONFLICT" in e.stderr or "CONFLICT" in e.stdout:
+            status_result = await run_git_command(
+                project.root_path, "diff", "--name-only", "--diff-filter=U", check=False
+            )
+            conflicts = [f.strip() for f in status_result.stdout.split("\n") if f.strip()]
+
+            return MergeResponse(
+                success=False,
+                conflicts=conflicts,
+                message="Rebase conflicts detected",
+            )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Rebase failed: {e.stderr}",
+        )
+
+
+@router.post("/git/abort")
+async def abort_merge_or_rebase(
+    project_id: str,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, str]:
+    """Abort an in-progress merge or rebase."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    # Try aborting merge first
+    merge_result = await run_git_command(
+        project.root_path, "merge", "--abort", check=False
+    )
+    if merge_result.returncode == 0:
+        return {"message": "Merge aborted"}
+
+    # Try aborting rebase
+    rebase_result = await run_git_command(
+        project.root_path, "rebase", "--abort", check=False
+    )
+    if rebase_result.returncode == 0:
+        return {"message": "Rebase aborted"}
+
+    return {"message": "No merge or rebase in progress"}
+
+
+@router.get("/git/conflicts", response_model=ConflictCheckResponse)
+async def check_conflicts(
+    project_id: str,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> ConflictCheckResponse:
+    """Check for merge/rebase conflicts."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    # Check for conflicting files
+    status_result = await run_git_command(
+        project.root_path, "diff", "--name-only", "--diff-filter=U", check=False
+    )
+    conflicts = [f.strip() for f in status_result.stdout.split("\n") if f.strip()]
+
+    # Check if merge is in progress
+    merge_head = os.path.join(project.root_path, ".git", "MERGE_HEAD")
+    merge_in_progress = os.path.exists(merge_head)
+
+    # Check if rebase is in progress
+    rebase_merge = os.path.join(project.root_path, ".git", "rebase-merge")
+    rebase_apply = os.path.join(project.root_path, ".git", "rebase-apply")
+    rebase_in_progress = os.path.exists(rebase_merge) or os.path.exists(rebase_apply)
+
+    return ConflictCheckResponse(
+        has_conflicts=len(conflicts) > 0,
+        conflicting_files=conflicts,
+        merge_in_progress=merge_in_progress,
+        rebase_in_progress=rebase_in_progress,
+    )
+
+
+@router.post("/git/fetch")
+async def git_fetch(
+    project_id: str,
+    current_user: CurrentUserDep,
+    github_service: GitHubServiceDep,
+    db: AsyncSession = Depends(get_db_session),
+    prune: bool = Query(False),
+) -> dict[str, str]:
+    """Fetch from remote with PAT authentication."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    try:
+        # Get current remote URL
+        remote_result = await run_git_command(
+            project.root_path, "remote", "get-url", "origin", check=False
+        )
+        remote_url = remote_result.stdout.strip() if remote_result.returncode == 0 else None
+
+        # Get PAT and create authenticated URL
+        pat = await github_service.get_effective_pat(project)
+        auth_url = None
+
+        if remote_url and pat:
+            auth_url = github_service.get_authenticated_url(remote_url, pat)
+            await run_git_command(
+                project.root_path, "remote", "set-url", "origin", auth_url
+            )
+
+        try:
+            args = ["fetch", "origin"]
+            if prune:
+                args.append("--prune")
+            await run_git_command(project.root_path, *args)
+        finally:
+            # Restore original URL
+            if auth_url and remote_url:
+                await run_git_command(
+                    project.root_path, "remote", "set-url", "origin", remote_url
+                )
+
+        return {"message": "Fetched successfully"}
+
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Git fetch failed: {e.stderr}",
+        )
+
+
+@router.post("/git/pull")
+async def git_pull(
+    project_id: str,
+    current_user: CurrentUserDep,
+    github_service: GitHubServiceDep,
+    db: AsyncSession = Depends(get_db_session),
+    branch: str | None = Query(None),
+    rebase: bool = Query(False),
+) -> dict[str, str]:
+    """Pull from remote with PAT authentication."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    try:
+        # Get current remote URL
+        remote_result = await run_git_command(
+            project.root_path, "remote", "get-url", "origin", check=False
+        )
+        remote_url = remote_result.stdout.strip() if remote_result.returncode == 0 else None
+
+        # Get PAT and create authenticated URL
+        pat = await github_service.get_effective_pat(project)
+        auth_url = None
+
+        if remote_url and pat:
+            auth_url = github_service.get_authenticated_url(remote_url, pat)
+            await run_git_command(
+                project.root_path, "remote", "set-url", "origin", auth_url
+            )
+
+        try:
+            args = ["pull"]
+            if rebase:
+                args.append("--rebase")
+            args.append("origin")
+            if branch:
+                args.append(branch)
+            await run_git_command(project.root_path, *args)
+        finally:
+            # Restore original URL
+            if auth_url and remote_url:
+                await run_git_command(
+                    project.root_path, "remote", "set-url", "origin", remote_url
+                )
+
+        return {"message": "Pulled successfully"}
+
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Git pull failed: {e.stderr}",
+        )
 
 
 # --- Deploy Endpoints ---

@@ -337,7 +337,7 @@ async def main() -> None:
     qdrant_store = None
     try:
         qdrant_store = QdrantStore(
-            collection_name="pai_learnings",
+            collection_name="agent_learnings",
             settings=settings.qdrant,
         )
         await qdrant_store.connect()

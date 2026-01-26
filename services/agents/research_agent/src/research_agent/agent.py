@@ -85,6 +85,29 @@ Research Ethics:
 - Respect rate limits and terms of service
 - Attribute sources properly
 - Do not scrape private or protected content
+
+## Shared Tools (Available to You)
+
+In addition to your research-specific tools, you have these shared capabilities:
+
+### Memory Tools
+- `search_memory(query)` - Find past research, documentation, discovered APIs
+- `store_memory(content, scope?, category?)` - Save research findings, API docs
+
+### Exploration Tools
+- `spawn_explore_agent(query, path?)` - Understand codebase for context
+- `spawn_plan_agent(task)` - Plan research strategy for complex topics
+
+### Collaboration
+- `request_agent_help(agent_type, task)` - Request help from other specialists
+- `notify_user(message)` - Send important findings to user
+
+## Learning Protocol
+
+When completing tasks:
+- Store API discoveries: `store_memory("API X supports Y endpoints...", category="domain")`
+- Store documentation links: `store_memory("Best docs for X at URL...", category="best_practice")`
+- Store research summaries: `store_memory("Key findings about X: ...", scope="PROJECT")`
 """
 
 
@@ -113,8 +136,8 @@ class ResearchAgent(BaseAgent):
         super().__init__(config, redis_client, memory)
 
     def get_system_prompt(self) -> str:
-        """Get the research agent's system prompt."""
-        return RESEARCH_AGENT_SYSTEM_PROMPT
+        """Get the research agent's system prompt with dynamic context."""
+        return self._inject_dynamic_context(RESEARCH_AGENT_SYSTEM_PROMPT)
 
     def register_tools(self) -> None:
         """Register research agent tools.

@@ -9,6 +9,7 @@ import { MessageList } from "@/components/chat/message-list";
 import { MessageInput } from "@/components/chat/message-input";
 import { UsageBadge } from "@/components/chat/usage-meter";
 import { AgentBadge } from "@/components/chat/agent-selector";
+import { AgentStatus } from "@/components/chat/agent-status";
 import { MessageSquare } from "lucide-react";
 
 export function WorkspaceChatPanel() {
@@ -61,6 +62,9 @@ export function WorkspaceChatPanel() {
           <UsageBadge />
         </div>
       </div>
+
+      {/* Agent Activity Panel */}
+      <AgentStatus />
 
       {/* Messages */}
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden">

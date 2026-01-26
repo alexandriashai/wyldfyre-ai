@@ -14,6 +14,7 @@ from ai_messaging import RedisClient, get_redis_client
 from .config import APIConfig, get_api_config
 from .database import get_db_session
 from .services.auth_service import AuthService, TokenPayload
+from .services.github_service import GitHubService
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,13 @@ async def get_auth_service(
 ) -> AuthService:
     """Get authentication service."""
     return AuthService(db, config)
+
+
+async def get_github_service(
+    redis: RedisClient = Depends(get_redis),
+) -> GitHubService:
+    """Get GitHub service."""
+    return GitHubService(redis)
 
 
 async def get_current_user_optional(
@@ -108,6 +116,7 @@ ConfigDep = Annotated[APIConfig, Depends(get_config)]
 DbSessionDep = Annotated[AsyncSession, Depends(get_db_session)]
 RedisDep = Annotated[RedisClient, Depends(get_redis)]
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+GitHubServiceDep = Annotated[GitHubService, Depends(get_github_service)]
 CurrentUserDep = Annotated[TokenPayload, Depends(get_current_user)]
 CurrentUserOptionalDep = Annotated[TokenPayload | None, Depends(get_current_user_optional)]
 AdminUserDep = Annotated[TokenPayload, Depends(get_current_admin_user)]

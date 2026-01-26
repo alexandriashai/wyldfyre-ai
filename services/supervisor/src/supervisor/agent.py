@@ -427,6 +427,51 @@ BANNED PHRASES (never use these):
 Instead, break down complex requests into specific delegatable tasks and execute them one by one.
 
 If an agent is unavailable, inform the user of the specific issue and retry if appropriate.
+
+## Shared Tools (Available to You)
+
+In addition to delegation tools, you have these shared capabilities:
+
+### Memory Tools
+- `search_memory(query, limit?)` - Find relevant past learnings. USE THIS FIRST for infrastructure questions!
+- `store_memory(content, scope?, category?, tags?)` - Save important discoveries and corrections.
+- `list_memory_collections()` / `get_memory_stats()` - Memory management.
+
+### Exploration Tools (USE BEFORE COMPLEX TASKS)
+- `spawn_explore_agent(query, path?, thoroughness?)` - Launch READ-ONLY codebase exploration. Use this to understand before changing.
+- `spawn_plan_agent(task, context?)` - Design implementation approach. Returns structured plan.
+- `spawn_subagent(task)` - Execute generic subtask.
+
+### System Tools
+- `get_system_info()` / `resource_monitor()` - System status.
+- `check_service_health(services?)` - Check service health.
+
+### Code Editing
+- `aider_code(instruction, files, root_path)` - AI multi-file editing for complex refactoring.
+
+## Delegation Protocol
+
+**Before delegating complex tasks:**
+1. Use `search_memory` to check for relevant learnings
+2. Use `spawn_explore_agent` to understand the codebase
+3. Use `spawn_plan_agent` to design the approach
+4. Then delegate implementation to the appropriate specialist
+
+**Routing Rules:**
+- CODE: File modifications, git operations, code generation
+- DATA: SQL queries, database operations, ETL, vectors
+- INFRA: Docker, Nginx, SSL, domains, system services (VERIFY CLAIMS HERE)
+- RESEARCH: Web searches, documentation, API research
+- QA: Tests, E2E browser automation, security scanning
+
+**Never delegate:** Conversations, explanations, memory operations - handle these yourself.
+
+## Learning Protocol
+
+When completing tasks:
+- If a learning was USEFUL → System auto-boosts relevance
+- If you're WRONG about something → Store correction with `store_memory`
+- When discovering something NEW → Store it with appropriate scope (GLOBAL/PROJECT/DOMAIN)
 """
 
 
@@ -462,7 +507,7 @@ class SupervisorAgent(BaseAgent):
         self._pending_responses: dict[str, asyncio.Future] = {}
 
     def get_system_prompt(self) -> str:
-        """Get the supervisor's system prompt, with project context if available."""
+        """Get the supervisor's system prompt, with project and dynamic context."""
         base_prompt = SUPERVISOR_SYSTEM_PROMPT
 
         # Append project context if we're handling a project-scoped task
@@ -482,7 +527,8 @@ class SupervisorAgent(BaseAgent):
             project_section += "use the root_path above as the working directory. Do NOT ask which site or project they mean."
             base_prompt += project_section
 
-        return base_prompt
+        # Inject dynamic TELOS/PAI context
+        return self._inject_dynamic_context(base_prompt)
 
     def register_tools(self) -> None:
         """Register supervisor-specific tools."""
@@ -1758,6 +1804,24 @@ class SupervisorAgent(BaseAgent):
                         },
                     )
 
+                    # Publish todo progress - mark all todos as "starting"
+                    step_todos = step.get("todos", [])
+                    for todo_idx, todo_text in enumerate(step_todos):
+                        await self._pubsub.publish(
+                            "agent:responses",
+                            {
+                                "type": "todo_progress",
+                                "user_id": user_id,
+                                "conversation_id": conversation_id,
+                                "plan_id": plan_id,
+                                "step_id": step_id,
+                                "todo_index": todo_idx,
+                                "progress": 10,
+                                "status_message": "Starting...",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+
                 # Execute the step using Claude
                 try:
                     # Check for cancellation again before executing
@@ -1771,11 +1835,49 @@ class SupervisorAgent(BaseAgent):
                     step["status"] = "completed"
                     step["completed_at"] = datetime.now(timezone.utc).isoformat()
                     step["output"] = step_result
+
+                    # Publish todo completion for all todos in this step
+                    if self._pubsub and user_id:
+                        step_todos = step.get("todos", [])
+                        for todo_idx, todo_text in enumerate(step_todos):
+                            await self._pubsub.publish(
+                                "agent:responses",
+                                {
+                                    "type": "todo_progress",
+                                    "user_id": user_id,
+                                    "conversation_id": conversation_id,
+                                    "plan_id": plan_id,
+                                    "step_id": step_id,
+                                    "todo_index": todo_idx,
+                                    "progress": 100,
+                                    "status_message": "Done",
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                },
+                            )
                 except Exception as e:
                     step["status"] = "failed"
                     step["error"] = str(e)
                     step["completed_at"] = datetime.now(timezone.utc).isoformat()
                     logger.error("Step execution failed", step_id=step_id, error=str(e))
+
+                    # Mark todos as failed
+                    if self._pubsub and user_id:
+                        step_todos = step.get("todos", [])
+                        for todo_idx, todo_text in enumerate(step_todos):
+                            await self._pubsub.publish(
+                                "agent:responses",
+                                {
+                                    "type": "todo_progress",
+                                    "user_id": user_id,
+                                    "conversation_id": conversation_id,
+                                    "plan_id": plan_id,
+                                    "step_id": step_id,
+                                    "todo_index": todo_idx,
+                                    "progress": 0,
+                                    "status_message": f"Failed: {str(e)[:50]}",
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                },
+                            )
 
                 # ========== Improvement 2: Step-Level Scoring ==========
                 step_score = await self._score_step_execution(

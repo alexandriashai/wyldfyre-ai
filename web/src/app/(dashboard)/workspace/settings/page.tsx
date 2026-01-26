@@ -16,7 +16,9 @@ import {
   RefreshCw,
   Cpu,
   HardDrive,
+  Github,
 } from "lucide-react";
+import { GitHubProjectSettingsCard } from "@/components/workspace/github-project-settings";
 import { cn } from "@/lib/utils";
 
 const PROJECT_TYPES = [
@@ -442,6 +444,16 @@ export default function WorkspaceSettingsPage() {
             </div>
           )}
         </section>
+
+        {/* GitHub Integration */}
+        {selectedProject && (
+          <section className="space-y-4">
+            <GitHubProjectSettingsCard
+              projectId={selectedProject.id}
+              projectName={selectedProject.name}
+            />
+          </section>
+        )}
 
         <Button type="button" onClick={handleSave} disabled={isSaving} className="gap-2">
           <Save className="h-4 w-4" />

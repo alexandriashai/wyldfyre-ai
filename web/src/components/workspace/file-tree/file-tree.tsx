@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { cn } from "@/lib/utils";
-import { useWorkspaceStore, FileNode } from "@/stores/workspace-store";
+import { useWorkspaceStore, FileNode, GitStatus, GitFileStatus } from "@/stores/workspace-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { workspaceApi } from "@/lib/api";
 import {
@@ -18,6 +18,7 @@ import {
   Star,
   Trash2,
   Pencil,
+  Circle,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -26,11 +27,97 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+// Git status indicator component
+function GitStatusBadge({ status, isStaged }: { status: string; isStaged: boolean }) {
+  const getStatusConfig = () => {
+    switch (status) {
+      case "M":
+      case "modified":
+        return {
+          label: "M",
+          color: isStaged ? "text-green-500" : "text-amber-500",
+          title: isStaged ? "Modified (staged)" : "Modified",
+        };
+      case "A":
+      case "added":
+        return {
+          label: "A",
+          color: "text-green-500",
+          title: "Added",
+        };
+      case "D":
+      case "deleted":
+        return {
+          label: "D",
+          color: isStaged ? "text-green-500" : "text-red-500",
+          title: isStaged ? "Deleted (staged)" : "Deleted",
+        };
+      case "R":
+      case "renamed":
+        return {
+          label: "R",
+          color: isStaged ? "text-green-500" : "text-blue-500",
+          title: "Renamed",
+        };
+      case "?":
+      case "untracked":
+        return {
+          label: "U",
+          color: "text-muted-foreground",
+          title: "Untracked",
+        };
+      default:
+        return null;
+    }
+  };
+
+  const config = getStatusConfig();
+  if (!config) return null;
+
+  return (
+    <span
+      className={cn("text-[10px] font-bold shrink-0 ml-auto", config.color)}
+      title={config.title}
+    >
+      {config.label}
+    </span>
+  );
+}
+
+// Helper to build file status map from git status
+function buildFileStatusMap(gitStatus: GitStatus | null): Map<string, { status: string; isStaged: boolean }> {
+  const map = new Map<string, { status: string; isStaged: boolean }>();
+
+  if (!gitStatus) return map;
+
+  // Staged files (green)
+  gitStatus.staged?.forEach((file) => {
+    map.set(file.path, { status: file.status, isStaged: true });
+  });
+
+  // Modified (unstaged) files (amber) - only if not already staged
+  gitStatus.modified?.forEach((file) => {
+    if (!map.has(file.path)) {
+      map.set(file.path, { status: file.status, isStaged: false });
+    }
+  });
+
+  // Untracked files (gray)
+  gitStatus.untracked?.forEach((path) => {
+    if (!map.has(path)) {
+      map.set(path, { status: "?", isStaged: false });
+    }
+  });
+
+  return map;
+}
+
 interface FileTreeProps {
   nodes: FileNode[];
   onFileOpen: (path: string) => void;
   onRefresh: () => void;
   depth: number;
+  fileStatusMap?: Map<string, { status: string; isStaged: boolean }>;
 }
 
 const FILE_ICONS: Record<string, typeof File> = {
@@ -58,7 +145,16 @@ function getFileIcon(name: string) {
   return FILE_ICONS[ext] || File;
 }
 
-export function FileTree({ nodes, onFileOpen, onRefresh, depth }: FileTreeProps) {
+export function FileTree({ nodes, onFileOpen, onRefresh, depth, fileStatusMap }: FileTreeProps) {
+  const { gitStatus } = useWorkspaceStore();
+
+  // Build status map at the root level (depth 0) if not provided
+  const statusMap = useMemo(() => {
+    if (fileStatusMap) return fileStatusMap;
+    if (depth === 0) return buildFileStatusMap(gitStatus);
+    return new Map();
+  }, [fileStatusMap, gitStatus, depth]);
+
   return (
     <div>
       {nodes.map((node) => (
@@ -68,6 +164,7 @@ export function FileTree({ nodes, onFileOpen, onRefresh, depth }: FileTreeProps)
           onFileOpen={onFileOpen}
           onRefresh={onRefresh}
           depth={depth}
+          fileStatusMap={statusMap}
         />
       ))}
     </div>
@@ -79,9 +176,10 @@ interface FileTreeNodeProps {
   onFileOpen: (path: string) => void;
   onRefresh: () => void;
   depth: number;
+  fileStatusMap?: Map<string, { status: string; isStaged: boolean }>;
 }
 
-function FileTreeNode({ node, onFileOpen, onRefresh, depth }: FileTreeNodeProps) {
+function FileTreeNode({ node, onFileOpen, onRefresh, depth, fileStatusMap }: FileTreeNodeProps) {
   const { token } = useAuthStore();
   const {
     activeProjectId,
@@ -91,6 +189,9 @@ function FileTreeNode({ node, onFileOpen, onRefresh, depth }: FileTreeNodeProps)
     pinnedFiles,
     togglePinnedFile,
   } = useWorkspaceStore();
+
+  // Get git status for this file
+  const fileGitStatus = fileStatusMap?.get(node.path);
 
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(node.name);
@@ -192,7 +293,20 @@ function FileTreeNode({ node, onFileOpen, onRefresh, depth }: FileTreeNodeProps)
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <span className="truncate flex-1">{node.name}</span>
+              <span className={cn(
+                "truncate flex-1",
+                fileGitStatus && !fileGitStatus.isStaged && fileGitStatus.status !== "?" && "text-amber-600",
+                fileGitStatus?.isStaged && "text-green-600",
+                fileGitStatus?.status === "?" && "text-muted-foreground"
+              )}>{node.name}</span>
+            )}
+
+            {/* Git status badge */}
+            {fileGitStatus && !isDirectory && (
+              <GitStatusBadge
+                status={fileGitStatus.status}
+                isStaged={fileGitStatus.isStaged}
+              />
             )}
 
             {isPinned && (
@@ -235,6 +349,7 @@ function FileTreeNode({ node, onFileOpen, onRefresh, depth }: FileTreeNodeProps)
           onFileOpen={onFileOpen}
           onRefresh={onRefresh}
           depth={depth + 1}
+          fileStatusMap={fileStatusMap}
         />
       )}
     </div>

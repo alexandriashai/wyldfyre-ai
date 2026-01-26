@@ -44,7 +44,9 @@ import {
   Download,
   Check,
   Cpu,
+  Plug,
 } from "lucide-react";
+import { GitHubGlobalSettingsCard } from "@/components/settings/github-global-settings";
 import { cn } from "@/lib/utils";
 
 interface NotificationSettings {
@@ -412,6 +414,12 @@ export default function SettingsPage() {
             <TabsTrigger value="system" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
               <Cpu className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
               <span className="hidden sm:inline">System</span>
+            </TabsTrigger>
+          )}
+          {user?.is_admin && (
+            <TabsTrigger value="integrations" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+              <Plug className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+              <span className="hidden sm:inline">Integrations</span>
             </TabsTrigger>
           )}
         </TabsList>
@@ -1168,6 +1176,13 @@ export default function SettingsPage() {
             <Button onClick={handleSaveSystemAI} disabled={isSavingSystemAI}>
               {isSavingSystemAI ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving...</> : "Save System Configuration"}
             </Button>
+          </TabsContent>
+        )}
+
+        {/* Integrations Tab (Admin-only) */}
+        {user?.is_admin && (
+          <TabsContent value="integrations" className="space-y-6">
+            <GitHubGlobalSettingsCard />
           </TabsContent>
         )}
       </Tabs>

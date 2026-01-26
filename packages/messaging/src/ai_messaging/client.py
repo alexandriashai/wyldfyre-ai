@@ -277,6 +277,22 @@ class RedisClient:
         result = await self.client.sismember(name, value)  # type: ignore[misc]
         return cast(bool, result)
 
+    # Scan Operations
+    async def scan(
+        self,
+        cursor: int = 0,
+        match: str | None = None,
+        count: int | None = None,
+    ) -> tuple[int, list[str]]:
+        """Scan keys matching pattern."""
+        result = await self.client.scan(cursor=cursor, match=match, count=count)
+        return cast(tuple[int, list[str]], result)
+
+    async def keys(self, pattern: str = "*") -> list[str]:
+        """Get all keys matching pattern."""
+        result = await self.client.keys(pattern)
+        return cast(list[str], result)
+
     # Lua Script Operations
     async def eval(
         self,

@@ -34,6 +34,39 @@ class MessageHandler:
         self.pubsub = PubSubManager(redis)
         self.command_handler = CommandHandler(redis)
 
+    async def _get_conversation_history(
+        self, conversation_id: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch recent conversation history for context.
+
+        Returns list of messages with role, content, timestamp.
+        """
+        try:
+            conv_msgs_key = f"conversation:{conversation_id}:messages"
+            # Get recent message IDs (stored newest first via lpush)
+            message_ids = await self.redis.lrange(conv_msgs_key, 0, limit - 1)
+
+            if not message_ids:
+                return []
+
+            history = []
+            for msg_id in reversed(message_ids):  # Reverse to get chronological order
+                msg_key = f"message:{msg_id}"
+                msg_data = await self.redis.hgetall(msg_key)
+                if msg_data:
+                    history.append({
+                        "role": msg_data.get("role", "user"),
+                        "content": msg_data.get("content", ""),
+                        "timestamp": msg_data.get("timestamp", ""),
+                        "agent": msg_data.get("agent"),
+                    })
+
+            return history
+        except Exception as e:
+            logger.warning("Failed to fetch conversation history", error=str(e))
+            return []
+
     async def _resolve_project_context(self, project_id: str | None) -> dict[str, Any]:
         """
         Resolve project context including root path from project and domains.
@@ -387,6 +420,9 @@ class MessageHandler:
                 )
                 return
 
+        # Fetch recent conversation history for context
+        conversation_history = await self._get_conversation_history(conversation_id, limit=10)
+
         await self.pubsub.publish(
             channel="agent:supervisor:tasks",
             message={
@@ -398,6 +434,7 @@ class MessageHandler:
                     "conversation_id": conversation_id,
                     "message_id": message_id,
                     "content": content,
+                    "conversation_history": conversation_history,
                     "memory_tags": memory_tags,
                     "project_id": project_context.get("project_id"),
                     "project_name": project_context.get("project_name"),
@@ -418,6 +455,7 @@ class MessageHandler:
             correlation_id=correlation_id,
             user_id=connection.user_id,
             has_memory_tags=bool(memory_tags),
+            history_messages=len(conversation_history),
         )
 
     async def _handle_command(
@@ -1421,6 +1459,29 @@ RESPONSE TO ANALYZE:
                 user_id=user_id,
                 conversation_id=data.get("conversation_id"),
                 current_step=data.get("current_step"),
+            )
+
+        elif response_type == "todo_progress":
+            # Individual todo item progress within a step
+            await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "todo_progress",
+                    "conversation_id": data.get("conversation_id"),
+                    "plan_id": data.get("plan_id"),
+                    "step_id": data.get("step_id"),
+                    "todo_index": data.get("todo_index"),
+                    "progress": data.get("progress", 0),
+                    "status_message": data.get("status_message", ""),
+                    "timestamp": data.get("timestamp"),
+                },
+            )
+            logger.debug(
+                "Todo progress sent to user",
+                user_id=user_id,
+                step_id=data.get("step_id"),
+                todo_index=data.get("todo_index"),
+                progress=data.get("progress"),
             )
 
         elif response_type == "conversation_renamed":

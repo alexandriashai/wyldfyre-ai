@@ -1,0 +1,189 @@
+# Pack manifest for feature-dev skill pack
+# This is the enhanced pack.yaml format (Phase 7 - Skill Packs Enhancement)
+# Compatible with both PackLoader (new) and PluginRegistry (legacy)
+
+name: feature-dev
+version: 1.1.0
+description: Comprehensive feature development workflow with codebase exploration, architecture design, and quality review
+author: Wyld Fyre AI
+
+# Agents that can use this pack ("*" = all agents)
+agents:
+  - code-agent
+  - "*"
+
+# Dependencies on other packs (not core modules)
+dependencies: []
+
+# Required permissions
+permissions:
+  - file:read
+  - file:write
+  - git:read
+  - git:write
+
+# Pack configuration options
+config:
+  enable_planning:
+    type: boolean
+    default: true
+  enable_review:
+    type: boolean
+    default: true
+  architecture_depth:
+    type: string
+    default: "standard"
+    description: "minimal, standard, or comprehensive"
+
+# Skills - high-level capabilities that may use multiple tools
+skills:
+  - name: deep_research
+    description: Multi-source codebase research with pattern analysis
+    tools:
+      - explore_codebase
+    parameters:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Research topic or question
+        scope:
+          type: string
+          enum: ["module", "feature", "full"]
+          default: "feature"
+    preconditions:
+      - "Codebase must be accessible"
+    postconditions:
+      - "Research findings documented"
+      - "Patterns identified"
+    examples:
+      - query: "How does authentication work?"
+        scope: "feature"
+
+  - name: feature_implementation
+    description: End-to-end feature implementation workflow
+    tools:
+      - explore_codebase
+      - design_architecture
+      - generate_implementation_plan
+      - validate_implementation
+    parameters:
+      type: object
+      properties:
+        feature:
+          type: string
+          description: Feature to implement
+        requirements:
+          type: array
+          items:
+            type: string
+    preconditions:
+      - "Feature requirements defined"
+      - "Codebase explored"
+    postconditions:
+      - "Architecture designed"
+      - "Implementation plan created"
+      - "Code validated"
+
+  - name: code_review
+    description: Comprehensive code review with quality analysis
+    tools:
+      - validate_implementation
+    parameters:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            type: string
+        check_types:
+          type: array
+          items:
+            type: string
+          default: ["bugs", "security", "style", "performance"]
+    preconditions:
+      - "Files exist and are readable"
+    postconditions:
+      - "Issues identified with severity"
+      - "Recommendations provided"
+
+# Tools - individual capabilities
+tools:
+  - name: explore_codebase
+    description: Analyze codebase structure and patterns for feature development
+    handler: tools:explore_codebase
+    parameters:
+      type: object
+      properties:
+        query:
+          type: string
+          description: What to explore (e.g., "authentication flow", "API endpoints")
+        depth:
+          type: string
+          enum: ["shallow", "standard", "deep"]
+          default: "standard"
+      required:
+        - query
+
+  - name: design_architecture
+    description: Design architecture for a new feature based on existing patterns
+    handler: tools:design_architecture
+    parameters:
+      type: object
+      properties:
+        feature:
+          type: string
+          description: Feature to design
+        requirements:
+          type: array
+          items:
+            type: string
+          description: List of requirements
+        constraints:
+          type: array
+          items:
+            type: string
+          description: Technical constraints
+      required:
+        - feature
+
+  - name: generate_implementation_plan
+    description: Generate step-by-step implementation plan for a feature
+    handler: tools:generate_implementation_plan
+    parameters:
+      type: object
+      properties:
+        feature:
+          type: string
+          description: Feature to implement
+        architecture:
+          type: object
+          description: Architecture design from design_architecture
+      required:
+        - feature
+
+  - name: validate_implementation
+    description: Validate implementation against requirements and best practices
+    handler: tools:validate_implementation
+    parameters:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            type: string
+          description: Files to validate
+        requirements:
+          type: array
+          items:
+            type: string
+          description: Original requirements to check against
+      required:
+        - files
+
+# Hooks - event handlers
+hooks:
+  - event: task_start
+    handler: hooks:on_feature_task_start
+    priority: 60
+    description: Initialize feature development context

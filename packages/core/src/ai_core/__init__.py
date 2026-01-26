@@ -110,6 +110,15 @@ from .security import (
     get_security_validator,
     validate_tool,
 )
+from .security_policies import (
+    AttackTier,
+    PolicyRule,
+    PolicyValidationResult,
+    SecurityPolicies,
+    SecurityPolicyValidator,
+    get_policy_validator,
+    validate_with_policies,
+)
 from .plugins import (
     HookEvent,
     Plugin,
@@ -140,6 +149,24 @@ from .plugin_integration import (
     PluginIntegration,
     get_plugin_integration,
     init_agent_plugins,
+)
+from .pack_loader import (
+    Pack,
+    PackLoader,
+    PackStatus,
+    Skill,
+    get_pack_loader,
+    init_packs,
+)
+from .statusline import (
+    AgentStatusIcon,
+    LearningSignal,
+    StatuslineConfig,
+    StatuslineMode,
+    StatuslineService,
+    StatusMetrics,
+    get_statusline,
+    init_statusline,
 )
 from .metrics import (
     agent_active_tasks,
@@ -274,6 +301,14 @@ __all__ = [
     "ThreatLevel",
     "get_security_validator",
     "validate_tool",
+    # Security Policies (Phase 6)
+    "AttackTier",
+    "PolicyRule",
+    "PolicyValidationResult",
+    "SecurityPolicies",
+    "SecurityPolicyValidator",
+    "get_policy_validator",
+    "validate_with_policies",
     # Metrics
     "app_info",
     "http_requests_total",
@@ -339,4 +374,20 @@ __all__ = [
     "PluginIntegration",
     "get_plugin_integration",
     "init_agent_plugins",
+    # Pack Loader (Phase 7)
+    "Pack",
+    "PackLoader",
+    "PackStatus",
+    "Skill",
+    "get_pack_loader",
+    "init_packs",
+    # Statusline (Phase 8)
+    "AgentStatusIcon",
+    "LearningSignal",
+    "StatuslineConfig",
+    "StatuslineMode",
+    "StatuslineService",
+    "StatusMetrics",
+    "get_statusline",
+    "init_statusline",
 ]

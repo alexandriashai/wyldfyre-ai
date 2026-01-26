@@ -338,6 +338,42 @@ class BaseAgent(ABC):
         """
         pass
 
+    def _inject_dynamic_context(self, base_prompt: str) -> str:
+        """
+        Inject dynamic context into a system prompt.
+
+        Adds TELOS context and pre-warmed learnings from the session context.
+        Subclasses should call this in their get_system_prompt() implementation.
+
+        Args:
+            base_prompt: The base system prompt
+
+        Returns:
+            Enhanced prompt with dynamic context injected
+        """
+        sections = [base_prompt]
+
+        # Inject TELOS context if available
+        session_ctx = getattr(self, "_session_context", {})
+        telos_context = session_ctx.get("telos_context", "")
+        if telos_context:
+            sections.append(f"\n## TELOS Context (Current Goals)\n{telos_context[:2000]}")
+
+        # Inject pre-warmed learnings if available
+        warm_learnings = session_ctx.get("warm_learnings", [])
+        if warm_learnings:
+            learnings_text = "\n".join(
+                f"- {l.get('content', '')[:150]}" for l in warm_learnings[:5]
+            )
+            sections.append(f"\n## Relevant Learnings (from PAI memory)\n{learnings_text}")
+
+        # Inject current PAI phase context if available
+        phase_context = session_ctx.get("phase_context", "")
+        if phase_context:
+            sections.append(f"\n## Current Phase Context\n{phase_context[:1000]}")
+
+        return "\n".join(sections)
+
     @abstractmethod
     def register_tools(self) -> None:
         """
@@ -663,8 +699,26 @@ class BaseAgent(ABC):
             user_message = self._build_task_message(request)
 
             # For chat tasks, load conversation history for context
-            if request.task_type == "chat" and request.payload.get("conversation_id"):
-                await self._load_conversation_context(request.payload["conversation_id"])
+            if request.task_type == "chat":
+                # Prefer payload-provided history (most up-to-date)
+                if request.payload.get("conversation_history"):
+                    self._state.conversation_history = [
+                        ConversationMessage(
+                            role=msg.get("role", "user"),
+                            content=msg.get("content", "")
+                        )
+                        for msg in request.payload["conversation_history"]
+                        if msg.get("content")
+                    ]
+                    logger.debug(
+                        "Using payload conversation history",
+                        message_count=len(self._state.conversation_history),
+                    )
+                elif request.payload.get("conversation_id"):
+                    # Fallback to loading from Redis/DB
+                    await self._load_conversation_context(request.payload["conversation_id"])
+                else:
+                    self._state.conversation_history = []
             else:
                 # Reset conversation for non-chat tasks
                 self._state.conversation_history = []
