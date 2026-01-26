@@ -47,6 +47,11 @@ from .subagent_tools import (
     spawn_subagent,
 )
 
+from .exploration_tools import (
+    spawn_explore_agent,
+    spawn_plan_agent,
+)
+
 from .aider_tool import aider_code
 
 from .browser_shared import (
@@ -80,6 +85,9 @@ __all__ = [
     "system_info",
     # Subagent tools
     "spawn_subagent",
+    # Exploration and planning tools
+    "spawn_explore_agent",
+    "spawn_plan_agent",
     # Aider code editing
     "aider_code",
     # Browser shared tools

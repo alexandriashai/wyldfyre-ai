@@ -5,6 +5,8 @@ export interface MemoryNode {
   content: string;
   phase?: string;
   scope?: string;
+  project_id?: string;
+  project_name?: string;
   importance?: number;
   agent_source?: string;
   created_at?: string;
@@ -23,7 +25,7 @@ interface MemoryState {
   filterPhase: string | null;
   filterScope: string | null;
   filterImportance: number | null;
-  sortBy: "relevance" | "date" | "importance" | "phase";
+  sortBy: "relevance" | "date" | "importance" | "phase" | "project" | "scope";
 
   // Actions
   toggleSelect: (id: string) => void;
@@ -34,7 +36,7 @@ interface MemoryState {
   setFilterPhase: (phase: string | null) => void;
   setFilterScope: (scope: string | null) => void;
   setFilterImportance: (level: number | null) => void;
-  setSortBy: (sort: "relevance" | "date" | "importance" | "phase") => void;
+  setSortBy: (sort: "relevance" | "date" | "importance" | "phase" | "project" | "scope") => void;
 }
 
 export const useMemoryStore = create<MemoryState>((set) => ({

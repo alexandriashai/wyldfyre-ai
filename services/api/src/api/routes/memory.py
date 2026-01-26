@@ -292,7 +292,7 @@ class CreateLearningRequest(BaseModel):
     """Request body for creating a new learning."""
 
     content: str
-    phase: PAIPhase | None = None
+    phase: PAIPhase = PAIPhase.LEARN  # Required with default
     category: str | None = None
     scope: LearningScope = LearningScope.GLOBAL
     project_id: str | None = None
@@ -317,7 +317,7 @@ async def create_learning(
 
         # Build metadata
         meta: dict[str, Any] = {
-            "phase": body.phase.value if body.phase else None,
+            "phase": body.phase.value,  # Required field
             "category": body.category,
             "scope": body.scope.value,
             "outcome": "success",
@@ -365,6 +365,8 @@ class UpdateLearningRequest(BaseModel):
     phase: PAIPhase | None = None
     category: str | None = None
     confidence: float | None = None
+    scope: LearningScope | None = None
+    project_id: str | None = None
     tags: list[str] | None = None  # Tags for filtering and categorization
     metadata: dict[str, Any] | None = None
 
@@ -424,6 +426,11 @@ async def update_learning(
             meta_updates["category"] = body.category
         if body.confidence is not None:
             meta_updates["confidence"] = body.confidence
+        if body.scope is not None:
+            meta_updates["scope"] = body.scope.value
+        if body.project_id is not None:
+            # Allow clearing project_id by setting to empty string
+            meta_updates["project_id"] = body.project_id if body.project_id else None
         if body.tags is not None:
             meta_updates["tags"] = body.tags
         if body.metadata:
@@ -449,6 +456,8 @@ async def update_learning(
             "phase": result.get("metadata", {}).get("phase"),
             "category": result.get("metadata", {}).get("category"),
             "confidence": result.get("metadata", {}).get("confidence"),
+            "scope": result.get("metadata", {}).get("scope", "global"),
+            "project_id": result.get("metadata", {}).get("project_id"),
             "tags": result.get("metadata", {}).get("tags", []),
             "updated_at": result.get("metadata", {}).get("updated_at"),
             "message": "Learning updated successfully",
@@ -754,6 +763,7 @@ class SynthesizeProposal(BaseModel):
 
     action: str  # create, update, delete
     content: str | None = None
+    phase: str = "learn"  # PAI phase (observe, think, plan, build, execute, verify, learn)
     category: str | None = None
     confidence: float = 0.0
     verified: bool = False
@@ -875,11 +885,38 @@ def _grep_with_context(root_path: str, pattern: str, max_results: int = 5, conte
 
 
 def _glob_files(root_path: str, patterns: list[str], max_results: int = 20) -> list[str]:
-    """Find files matching glob patterns."""
+    """Find files matching glob patterns, excluding node_modules and other junk."""
     import glob as glob_module
 
+    # Directories to always exclude
+    EXCLUDE_DIRS = {
+        "node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache",
+        "vendor", "coverage", "public/assets", ".idea", ".vscode", "storage", "bootstrap/cache",
+        "target", "bin", "obj", ".nuxt", ".output", "out", ".svelte-kit", ".parcel-cache",
+    }
+    # File patterns to exclude (minified, compiled, etc.)
+    EXCLUDE_PATTERNS = {".min.js", ".min.css", ".bundle.js", ".chunk.js", ".map", ".d.ts"}
+
+    logger.info("Glob files called", root_path=root_path, patterns=patterns[:5], is_dir=os.path.isdir(root_path) if root_path else False)
+
     if not root_path or not os.path.isdir(root_path):
+        logger.warning("Glob files: invalid root_path", root_path=root_path)
         return []
+
+    def should_exclude(filepath: str) -> bool:
+        """Check if file path contains excluded directories or patterns."""
+        parts = filepath.split(os.sep)
+        # Check directories
+        if any(part in EXCLUDE_DIRS for part in parts):
+            return True
+        # Check for "public/assets" as a path component
+        if "public" in parts and "assets" in parts:
+            return True
+        # Check file patterns
+        lower_path = filepath.lower()
+        if any(pattern in lower_path for pattern in EXCLUDE_PATTERNS):
+            return True
+        return False
 
     found_files = set()
     for pattern in patterns:
@@ -894,16 +931,22 @@ def _glob_files(root_path: str, patterns: list[str], max_results: int = 20) -> l
 
         try:
             matches = glob_module.glob(full_pattern, recursive=True)
-            for m in matches[:max_results]:
+            for m in matches:
                 if os.path.isfile(m):
-                    found_files.add(os.path.relpath(m, root_path))
+                    rel_path = os.path.relpath(m, root_path)
+                    if not should_exclude(rel_path):
+                        found_files.add(rel_path)
+                        if len(found_files) >= max_results:
+                            break
         except Exception:
             pass
 
         if len(found_files) >= max_results:
             break
 
-    return list(found_files)[:max_results]
+    result = list(found_files)[:max_results]
+    logger.info("Glob files result", count=len(result), sample=result[:3] if result else [])
+    return result
 
 
 async def _analyze_codebase_files(
@@ -939,13 +982,27 @@ async def _analyze_codebase_files(
         files_to_analyze = _glob_files(root_path, file_patterns, max_results=max_files)
     else:
         # Smart defaults: find main source files
+        # Includes patterns for web apps, static sites, and documentation
         default_patterns = [
-            "src/**/*.ts", "src/**/*.tsx", "src/**/*.py",
-            "app/**/*.ts", "app/**/*.tsx", "app/**/*.py",
-            "lib/**/*.ts", "lib/**/*.py",
+            # Web app source files
+            "src/**/*.ts", "src/**/*.tsx", "src/**/*.py", "src/**/*.js", "src/**/*.jsx",
+            "app/**/*.ts", "app/**/*.tsx", "app/**/*.py", "app/**/*.js",
+            "lib/**/*.ts", "lib/**/*.py", "lib/**/*.js",
             "services/**/*.py", "packages/**/*.py",
             "**/models/*.py", "**/routes/*.py", "**/api/*.py",
             "**/components/**/*.tsx", "**/hooks/**/*.ts",
+            # Static site files (HTML, templates, styles)
+            "*.html", "*.htm", "**/*.html", "**/*.htm",
+            "*.twig", "**/*.twig", "*.jinja", "*.jinja2", "**/*.jinja", "**/*.jinja2",
+            "templates/**/*.html", "templates/**/*.twig",
+            "pages/**/*.html", "pages/**/*.js", "pages/**/*.tsx",
+            # Config and documentation
+            "*.md", "docs/**/*.md", "README.md",
+            "*.json", "*.yaml", "*.yml",
+            # CSS/SCSS
+            "*.css", "*.scss", "styles/**/*.css", "styles/**/*.scss",
+            # Root-level JS files (common in static sites)
+            "*.js", "js/**/*.js", "scripts/**/*.js",
         ]
         files_to_analyze = _glob_files(root_path, default_patterns, max_results=max_files * 2)
 
@@ -1270,9 +1327,11 @@ async def _get_project_root(db: AsyncSession, project_id: str) -> str | None:
         from database.models.project import Project
         result = await db.execute(select(Project).where(Project.id == project_id))
         project = result.scalar_one_or_none()
-        return project.root_path if project else None
+        root_path = project.root_path if project else None
+        logger.info("Project root lookup", project_id=project_id, root_path=root_path, project_found=project is not None)
+        return root_path
     except Exception as e:
-        logger.warning("Failed to get project root", error=str(e))
+        logger.warning("Failed to get project root", error=str(e), project_id=project_id)
         return None
 
 
@@ -1316,6 +1375,8 @@ async def synthesize_learnings(
     answer: str | None = None
     files_analyzed: list[str] | None = None
 
+    logger.info("Synthesize request received", mode=body.mode, project_id=body.project_id, question=body.question)
+
     # --- Step 1: Gather Context ---
     conversation_context = ""
     if body.conversation_id:
@@ -1324,9 +1385,27 @@ async def synthesize_learnings(
     root_path: str | None = None
     if body.project_id:
         root_path = await _get_project_root(db, body.project_id)
+        logger.info("Got root_path for project", project_id=body.project_id, root_path=root_path)
 
     # --- Step 2: Extract Candidate Learnings (mode-dependent) ---
     candidates: list[dict[str, Any]] = []
+
+    if body.mode in ("codebase", "question"):
+        # Validate project context for codebase/question modes
+        if not body.project_id:
+            return SynthesizeResponse(
+                proposals=[],
+                mode=body.mode,
+                answer="No project selected. Please select a project to analyze its codebase.",
+                files_analyzed=[],
+            )
+        if not root_path:
+            return SynthesizeResponse(
+                proposals=[],
+                mode=body.mode,
+                answer=f"Project has no root path configured. Please set the project's root directory.",
+                files_analyzed=[],
+            )
 
     if body.mode in ("codebase", "question") and root_path:
         # Codebase analysis or question-answering mode
@@ -1545,9 +1624,19 @@ Related existing learnings:
                     summary=evidence_result.get("summary"),
                 )
 
+                # Determine phase based on category and mode
+                phase = candidate.get("phase", "learn")
+                if category in ("pattern", "architecture", "design"):
+                    phase = "observe"
+                elif category in ("error", "bug", "issue"):
+                    phase = "verify"
+                elif category in ("process", "workflow"):
+                    phase = "execute"
+
                 proposals.append(SynthesizeProposal(
                     action=action,
                     content=final_content if action != "delete" else None,
+                    phase=phase,
                     category=category,
                     confidence=round(final_confidence, 2),
                     verified=is_verified,
@@ -1566,9 +1655,17 @@ Related existing learnings:
                     files_searched=evidence_result.get("files_searched", 0),
                     summary=evidence_result.get("summary"),
                 )
+                # Determine phase based on category
+                phase = candidate.get("phase", "learn")
+                if category in ("pattern", "architecture", "design"):
+                    phase = "observe"
+                elif category in ("error", "bug", "issue"):
+                    phase = "verify"
+
                 proposals.append(SynthesizeProposal(
                     action="create",
                     content=content,
+                    phase=phase,
                     category=category,
                     confidence=round(base_confidence, 2),
                     verified=verified,
@@ -1587,9 +1684,17 @@ Related existing learnings:
                 files_searched=evidence_result.get("files_searched", 0),
                 summary=evidence_result.get("summary"),
             )
+            # Determine phase based on category
+            phase = candidate.get("phase", "learn")
+            if category in ("pattern", "architecture", "design"):
+                phase = "observe"
+            elif category in ("error", "bug", "issue"):
+                phase = "verify"
+
             proposals.append(SynthesizeProposal(
                 action="create",
                 content=content,
+                phase=phase,
                 category=category,
                 confidence=round(base_confidence, 2),
                 verified=verified,

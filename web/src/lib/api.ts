@@ -697,9 +697,11 @@ export const memoryApi = {
     }>(response);
   },
 
-  async learnings(token: string, phase?: string) {
+  async learnings(token: string, phase?: string, projectId?: string, scope?: string) {
     const searchParams = new URLSearchParams();
     if (phase) searchParams.set('phase', phase);
+    if (projectId) searchParams.set('project_id', projectId);
+    if (scope) searchParams.set('scope', scope);
 
     const url = `${API_BASE_URL}/api/memory/learnings${searchParams.toString() ? `?${searchParams}` : ''}`;
     const response = await fetch(url, {
@@ -714,6 +716,9 @@ export const memoryApi = {
         content: string;
         outcome: string;
         created_at: string;
+        scope?: string;
+        project_id?: string;
+        project_name?: string;
       }>;
     }>(response);
   },
@@ -766,6 +771,8 @@ export const memoryApi = {
     phase?: string;
     category?: string;
     confidence?: number;
+    scope?: string;
+    project_id?: string | null;
     metadata?: Record<string, unknown>;
   }) {
     const response = await fetch(`${API_BASE_URL}/api/memory/learnings/${id}`, {
@@ -779,6 +786,8 @@ export const memoryApi = {
       phase?: string;
       category?: string;
       confidence?: number;
+      scope?: string;
+      project_id?: string;
       updated_at?: string;
       message?: string;
     }>(response);

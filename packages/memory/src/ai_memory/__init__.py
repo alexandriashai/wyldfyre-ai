@@ -9,6 +9,7 @@ This package provides the 3-tier PAI memory system:
 Also includes:
 - KnowledgeFederation: Cross-project knowledge sharing (Improvement 5)
 - SkillLibrary: Hierarchical skill patterns (Improvement 3)
+- PhaseMemoryManager: Phase-specific memory retrieval (Phase Memory Integration)
 """
 
 from .embeddings import (
@@ -23,6 +24,12 @@ from .pai_memory import (
     MemoryTier,
     PAIMemory,
     PAIPhase,
+)
+from .phase_memory import (
+    PhaseContext,
+    PhaseMemoryManager,
+    format_learnings_for_context,
+    format_phase_context_for_injection,
 )
 from .qdrant import QdrantStore
 from .skill_library import (
@@ -53,4 +60,9 @@ __all__ = [
     "Skill",
     "SkillLevel",
     "SkillLibrary",
+    # Phase Memory Manager (Phase Memory Integration)
+    "PhaseMemoryManager",
+    "PhaseContext",
+    "format_learnings_for_context",
+    "format_phase_context_for_injection",
 ]

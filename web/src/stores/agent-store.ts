@@ -11,11 +11,14 @@ export interface AgentAction {
   action: string;
   description: string;
   timestamp: string;
-  type?: "tool_call" | "tool_result" | "thinking" | "info" | "error" | "parallel";
+  type?: "tool_call" | "tool_result" | "thinking" | "info" | "error" | "parallel" | "subagent";
   duration?: number;
   output?: string;
   status?: ActionStatus;
   groupId?: string;
+  // Subagent-specific fields
+  isSubagent?: boolean;
+  subagentType?: "explore" | "plan" | "subagent";
 }
 
 export interface ActionGroup {
@@ -255,10 +258,28 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       return;
     }
 
+    // Detect subagent actions
+    const isSubagent = action.startsWith("subagent_");
+    let subagentType: AgentAction["subagentType"] = undefined;
+    if (isSubagent) {
+      // Extract subagent type from description (e.g., "explore: Starting...")
+      const match = description.match(/^(explore|plan|subagent):/i);
+      if (match) {
+        subagentType = match[1].toLowerCase() as AgentAction["subagentType"];
+      }
+    }
+
     // Infer action type from the action string
     let type: AgentAction["type"] = "info";
     let status: ActionStatus = "success";
-    if (action.includes("tool_call") || action.includes("calling") || action.includes("execute")) {
+    if (isSubagent) {
+      type = "subagent";
+      if (action.includes("start") || action.includes("tool_call")) {
+        status = "running";
+      } else if (action.includes("error")) {
+        status = "error";
+      }
+    } else if (action.includes("tool_call") || action.includes("calling") || action.includes("execute")) {
       type = "tool_call";
       status = "running";
     } else if (action.includes("tool_result") || action.includes("result")) {
@@ -286,6 +307,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       type,
       status,
       groupId,
+      isSubagent,
+      subagentType,
     };
 
     // Add to action log, keeping within max size

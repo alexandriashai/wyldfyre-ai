@@ -396,7 +396,7 @@ export function MessageList() {
         <SynthesizeModal
           content={synthesizeContent}
           conversationId={currentConversation?.id}
-          projectId={activeProjectId ?? undefined}
+          projectId={currentConversation?.project_id ?? activeProjectId ?? undefined}
           onClose={() => setSynthesizeContent(null)}
         />
       )}

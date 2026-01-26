@@ -27,6 +27,7 @@ interface EvidenceDetail {
 interface Proposal {
   action: "create" | "update" | "delete";
   content: string | null;
+  phase?: string;  // PAI phase (observe, think, plan, build, execute, verify, learn)
   category?: string;
   confidence: number;
   verified: boolean;
@@ -258,7 +259,9 @@ export function SynthesizeModal({
 }: SynthesizeModalProps) {
   const { token } = useAuthStore();
   const [mode, setMode] = useState<SynthesizeMode>(initialMode);
-  const [phase, setPhase] = useState<LoadingPhase>("extracting");
+  // Start in "idle" state for question/codebase modes, "extracting" for conversation
+  const [phase, setPhase] = useState<LoadingPhase>(initialMode === "conversation" ? "extracting" : "done");
+  const [isLoading, setIsLoading] = useState(initialMode === "conversation");
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [selected, setSelected] = useState<boolean[]>([]);
   const [editedContents, setEditedContents] = useState<string[]>([]);
@@ -268,14 +271,18 @@ export function SynthesizeModal({
   const [answer, setAnswer] = useState<string | null>(null);
   const [filesAnalyzed, setFilesAnalyzed] = useState<string[]>([]);
   const [questionInput, setQuestionInput] = useState(question || "");
+  const [hasStarted, setHasStarted] = useState(initialMode === "conversation");
 
   // Fetch proposals
   const fetchProposals = async () => {
     if (!token) return;
 
+    setHasStarted(true);
+    setIsLoading(true);
     setPhase("extracting");
     setError(null);
     setAnswer(null);
+    setProposals([]);
 
     try {
       // Simulate phase progression (backend does all steps)
@@ -306,6 +313,8 @@ export function SynthesizeModal({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to synthesize learnings");
       setPhase("error");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -344,6 +353,7 @@ export function SynthesizeModal({
         if (proposal.action === "create") {
           await memoryApi.store(token, {
             content: editedContent,
+            phase: proposal.phase || "learn",  // Include phase
             category: proposal.category,
             scope: editedScope,
             project_id: projectId,
@@ -353,6 +363,7 @@ export function SynthesizeModal({
         } else if (proposal.action === "update" && proposal.related_existing) {
           await memoryApi.update(token, proposal.related_existing.id, {
             content: editedContent,
+            phase: proposal.phase,  // Include phase
             category: proposal.category,
             confidence: proposal.confidence,
           });
@@ -401,18 +412,26 @@ export function SynthesizeModal({
             <button
               key={m}
               onClick={() => {
+                if (m === mode) return;
                 setMode(m);
-                if (phase === "done" || phase === "error") {
-                  setPhase("extracting");
-                  setProposals([]);
-                  setAnswer(null);
+                setHasStarted(false);
+                setIsLoading(false);
+                setProposals([]);
+                setAnswer(null);
+                setError(null);
+                setPhase("done");
+                // Auto-start conversation mode
+                if (m === "conversation") {
+                  setTimeout(() => fetchProposals(), 0);
                 }
               }}
+              disabled={isLoading}
               className={cn(
                 "px-3 py-1.5 text-sm rounded-md transition-colors",
                 mode === m
                   ? "bg-primary text-primary-foreground"
-                  : "bg-muted hover:bg-muted/80 text-muted-foreground"
+                  : "bg-muted hover:bg-muted/80 text-muted-foreground",
+                isLoading && "opacity-50 cursor-not-allowed"
               )}
             >
               {m === "conversation" ? "From Message" : m === "codebase" ? "Analyze Codebase" : "Ask Question"}
@@ -421,55 +440,52 @@ export function SynthesizeModal({
         </div>
 
         {/* Question Input (for question mode) */}
-        {mode === "question" && phase !== "done" && (
+        {mode === "question" && !hasStarted && (
           <div className="space-y-2 py-2">
             <label className="text-sm font-medium">What would you like to know about the codebase?</label>
+            {!projectId && (
+              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-md px-3 py-2 text-sm text-yellow-600">
+                ⚠️ No project selected. Select a project in the workspace to analyze its codebase.
+              </div>
+            )}
             <textarea
               value={questionInput}
               onChange={(e) => setQuestionInput(e.target.value)}
               placeholder="e.g., How does the review system work? What is the authentication flow?"
               className="w-full text-sm bg-background border border-border rounded-md px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary"
               rows={3}
+              disabled={!projectId}
             />
             <Button
               onClick={fetchProposals}
-              disabled={!questionInput.trim() || (phase !== "extracting" && phase !== "error")}
+              disabled={!questionInput.trim() || isLoading || !projectId}
               className="w-full"
             >
-              {phase === "extracting" || phase === "verifying" || phase === "classifying" ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Analyzing...
-                </>
-              ) : (
-                "Analyze Codebase"
-              )}
+              Analyze Codebase
             </Button>
           </div>
         )}
 
         {/* Codebase mode trigger */}
-        {mode === "codebase" && phase !== "done" && phase !== "error" && proposals.length === 0 && (
+        {mode === "codebase" && !hasStarted && (
           <div className="flex flex-col items-center py-4 gap-3">
+            {!projectId && (
+              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-md px-3 py-2 text-sm text-yellow-600 w-full text-center">
+                ⚠️ No project selected. Select a project in the workspace first.
+              </div>
+            )}
             <p className="text-sm text-muted-foreground text-center">
               This will analyze source files in your project to extract knowledge about how the application works.
             </p>
-            <Button onClick={fetchProposals}>
-              {phase === "extracting" || phase === "verifying" || phase === "classifying" ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  {phaseText[phase]}
-                </>
-              ) : (
-                "Start Analysis"
-              )}
+            <Button onClick={fetchProposals} disabled={isLoading || !projectId}>
+              Start Analysis
             </Button>
           </div>
         )}
 
         <div className="flex-1 min-h-0 overflow-y-auto space-y-3 py-2">
           {/* Loading state */}
-          {phase !== "done" && phase !== "error" && (
+          {isLoading && (
             <div className="flex flex-col items-center justify-center py-8 gap-3">
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
               <p className="text-sm text-muted-foreground">{phaseText[phase]}</p>
@@ -477,15 +493,18 @@ export function SynthesizeModal({
           )}
 
           {/* Error state */}
-          {phase === "error" && (
+          {!isLoading && phase === "error" && (
             <div className="flex flex-col items-center justify-center py-8 gap-3">
               <AlertTriangle className="h-8 w-8 text-destructive" />
               <p className="text-sm text-destructive">{error}</p>
+              <Button variant="outline" size="sm" onClick={() => { setHasStarted(false); setError(null); }}>
+                Try Again
+              </Button>
             </div>
           )}
 
-          {/* No results (only show if no answer either) */}
-          {phase === "done" && proposals.length === 0 && !answer && (
+          {/* No results (only show if completed and no answer) */}
+          {!isLoading && hasStarted && phase === "done" && proposals.length === 0 && !answer && (
             <div className="flex flex-col items-center justify-center py-8 gap-3">
               <CheckCircle className="h-8 w-8 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">
@@ -499,7 +518,7 @@ export function SynthesizeModal({
           )}
 
           {/* Answer display (for question mode) */}
-          {phase === "done" && answer && (
+          {!isLoading && answer && (
             <div className="bg-primary/5 border border-primary/20 rounded-lg p-4 space-y-2">
               <h4 className="font-medium text-sm flex items-center gap-2">
                 <CheckCircle className="h-4 w-4 text-primary" />
@@ -523,7 +542,7 @@ export function SynthesizeModal({
           )}
 
           {/* Proposals list */}
-          {phase === "done" && proposals.length > 0 && (
+          {!isLoading && proposals.length > 0 && (
             <>
               <div className="flex items-center justify-between px-1">
                 <p className="text-xs text-muted-foreground">
@@ -555,7 +574,7 @@ export function SynthesizeModal({
           )}
         </div>
 
-        {phase === "done" && proposals.length > 0 && (
+        {!isLoading && proposals.length > 0 && (
           <DialogFooter>
             <Button variant="outline" onClick={onClose} disabled={isApplying}>
               Cancel
@@ -576,7 +595,16 @@ export function SynthesizeModal({
           </DialogFooter>
         )}
 
-        {(phase === "error" || (phase === "done" && proposals.length === 0)) && (
+        {!isLoading && hasStarted && proposals.length === 0 && !answer && (
+          <DialogFooter>
+            <Button variant="outline" onClick={onClose}>
+              Close
+            </Button>
+          </DialogFooter>
+        )}
+
+        {/* Close button for answer-only results (question mode with answer but no proposals) */}
+        {!isLoading && answer && proposals.length === 0 && (
           <DialogFooter>
             <Button variant="outline" onClick={onClose}>
               Close

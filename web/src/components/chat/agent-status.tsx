@@ -26,6 +26,9 @@ import {
   TrendingUp,
   TrendingDown,
   Target,
+  Search,
+  FileCode,
+  GitBranch,
 } from "lucide-react";
 import { SupervisorThinkingInline } from "./supervisor-thinking";
 
@@ -59,6 +62,23 @@ function formatAgentName(name: string): string {
 
 function getActionIcon(action: AgentAction): React.ReactNode {
   const isRunning = action.status === "running";
+
+  // Special handling for subagent actions
+  if (action.isSubagent || action.type === "subagent") {
+    if (isRunning) return <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-500" />;
+    if (action.status === "error") return <XCircle className="h-3.5 w-3.5 text-red-500" />;
+
+    // Icon based on subagent type
+    switch (action.subagentType) {
+      case "explore":
+        return <Search className="h-3.5 w-3.5 text-cyan-500" />;
+      case "plan":
+        return <FileCode className="h-3.5 w-3.5 text-cyan-500" />;
+      default:
+        return <GitBranch className="h-3.5 w-3.5 text-cyan-500" />;
+    }
+  }
+
   if (isRunning) return <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />;
 
   switch (action.type) {
@@ -78,7 +98,16 @@ function getActionIcon(action: AgentAction): React.ReactNode {
 }
 
 function getTimelineDotColor(action: AgentAction): string {
-  if (action.status === "running") return "bg-blue-500 animate-pulse";
+  if (action.status === "running") {
+    return action.isSubagent ? "bg-cyan-500 animate-pulse" : "bg-blue-500 animate-pulse";
+  }
+
+  // Subagent-specific colors
+  if (action.isSubagent || action.type === "subagent") {
+    if (action.status === "error") return "bg-red-500";
+    return "bg-cyan-500";
+  }
+
   switch (action.type) {
     case "tool_call":
     case "tool_result":
@@ -100,16 +129,21 @@ interface ActionItemProps {
 function ActionItem({ action, showReasoning = true }: ActionItemProps) {
   const [expanded, setExpanded] = useState(false);
   const hasOutput = action.output && action.output.length > 0;
+  const isSubagent = action.isSubagent || action.type === "subagent";
 
   // Extract reasoning from output if it's a thinking action
   const reasoning = action.type === "thinking" ? action.description : null;
   const confidence = action.output?.match(/confidence[:\s]+(\d+)/i)?.[1];
 
   return (
-    <div className="relative pl-5 py-0.5 group">
+    <div className={cn(
+      "relative pl-5 py-0.5 group",
+      isSubagent && "pl-7 ml-2 border-l-2 border-cyan-500/30"
+    )}>
       {/* Timeline dot */}
       <div className={cn(
-        "absolute left-[3px] top-[10px] w-1.5 h-1.5 rounded-full",
+        "absolute top-[10px] w-1.5 h-1.5 rounded-full",
+        isSubagent ? "left-[7px]" : "left-[3px]",
         getTimelineDotColor(action)
       )} />
 
@@ -128,12 +162,18 @@ function ActionItem({ action, showReasoning = true }: ActionItemProps) {
           >
             <span className={cn(
               "text-xs font-medium shrink-0",
-              getAgentColor(action.agent)
+              isSubagent ? "text-cyan-500" : getAgentColor(action.agent)
             )}>
-              {formatAgentName(action.agent)}
+              {isSubagent ? (action.subagentType || "subagent") : formatAgentName(action.agent)}
             </span>
-            <span className="text-xs text-foreground/80 truncate">
-              {action.description}
+            <span className={cn(
+              "text-xs truncate",
+              isSubagent ? "text-cyan-300/80" : "text-foreground/80"
+            )}>
+              {/* For subagents, strip the prefix from description */}
+              {isSubagent && action.description.includes(": ")
+                ? action.description.split(": ").slice(1).join(": ")
+                : action.description}
             </span>
             {action.duration !== undefined && action.duration > 0 && (
               <span className="text-[10px] text-muted-foreground shrink-0 flex items-center gap-0.5">

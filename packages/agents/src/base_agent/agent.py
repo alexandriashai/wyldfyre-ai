@@ -58,6 +58,7 @@ from ai_core import (
     init_agent_plugins,
 )
 from ai_memory import PAIMemory, PAIPhase
+from ai_memory.phase_memory import PhaseMemoryManager, format_phase_context_for_injection
 from ai_messaging import (
     AgentHeartbeat,
     AgentStatusMessage,
@@ -183,6 +184,11 @@ class BaseAgent(ABC):
         self._running = False
         self._plan_exploring = False  # Read-only mode during plan exploration
 
+        # Initialize PhaseMemoryManager for enhanced memory retrieval
+        self._phase_memory: PhaseMemoryManager | None = None
+        if memory:
+            self._phase_memory = PhaseMemoryManager(memory)
+
         # Create permission context for this agent
         self._permission_context = PermissionContext(
             agent_type=config.agent_type,
@@ -223,7 +229,7 @@ class BaseAgent(ABC):
         """
         Register shared tools available to all agents.
 
-        These include memory, collaboration, subagent, and system tools.
+        These include memory, collaboration, subagent, exploration, and system tools.
         Agents can override this to exclude specific shared tools.
         """
         from .shared_tools import (
@@ -239,6 +245,9 @@ class BaseAgent(ABC):
             broadcast_status,
             # Subagent tools
             spawn_subagent,
+            # Exploration and planning tools
+            spawn_explore_agent,
+            spawn_plan_agent,
             # System tools
             get_system_info,
             check_service_health,
@@ -264,6 +273,10 @@ class BaseAgent(ABC):
         # Register subagent tools
         self._tool_registry.register(spawn_subagent._tool)  # type: ignore[attr-defined]
 
+        # Register exploration and planning tools
+        self._tool_registry.register(spawn_explore_agent._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(spawn_plan_agent._tool)  # type: ignore[attr-defined]
+
         # Register system tools (read-only monitoring)
         self._tool_registry.register(get_system_info._tool)  # type: ignore[attr-defined]
         self._tool_registry.register(check_service_health._tool)  # type: ignore[attr-defined]
@@ -278,7 +291,7 @@ class BaseAgent(ABC):
         logger.debug(
             "Registered shared tools",
             agent=self.config.name,
-            tool_count=17,
+            tool_count=19,  # Updated to include explore/plan tools
         )
 
     @property
@@ -657,6 +670,19 @@ class BaseAgent(ABC):
                 self._state.conversation_history = []
 
             # === THINK phase: Analysis and reasoning ===
+            think_context = None
+            plan_context = None
+            if self._phase_memory:
+                # Get reasoning patterns and analysis strategies
+                think_context = await self._phase_memory.get_phase_context(
+                    phase=PAIPhase.THINK,
+                    task_id=task_id,
+                    task_description=user_message[:500],
+                    agent_type=self.agent_type.value,
+                    permission_level=self.config.permission_level,
+                    project_id=self._state.current_project_id,
+                )
+
             if self._memory:
                 relevant_learnings = getattr(request, "_pai_context", {}).get("learnings", [])
                 await self._memory.store_task_trace(
@@ -666,11 +692,23 @@ class BaseAgent(ABC):
                         "agent_type": self.agent_type.value,
                         "task_type": request.task_type,
                         "relevant_learnings_count": len(relevant_learnings),
+                        "think_context_learnings": len(think_context.learnings) if think_context else 0,
                         "message_length": len(user_message),
                     },
                 )
 
             # === PLAN phase: Tool selection and strategy ===
+            if self._phase_memory:
+                # Get successful plans and tool patterns
+                plan_context = await self._phase_memory.get_phase_context(
+                    phase=PAIPhase.PLAN,
+                    task_id=task_id,
+                    task_description=user_message[:500],
+                    agent_type=self.agent_type.value,
+                    permission_level=self.config.permission_level,
+                    project_id=self._state.current_project_id,
+                )
+
             if self._memory:
                 available_tools = self._tool_registry.get_claude_schemas(self.config.permission_level)
                 await self._memory.store_task_trace(
@@ -679,16 +717,50 @@ class BaseAgent(ABC):
                     data={
                         "agent_type": self.agent_type.value,
                         "available_tools_count": len(available_tools) if available_tools else 0,
+                        "plan_context_learnings": len(plan_context.learnings) if plan_context else 0,
+                        "plan_context_patterns": len(plan_context.patterns) if plan_context else 0,
                         "max_iterations": request.max_iterations or self.config.max_tool_iterations,
                     },
                 )
+
+            # Build enhanced PAI context for Claude
+            pai_context = getattr(request, "_pai_context", {})
+            enhanced_learnings = list(pai_context.get("learnings", []))  # Make a copy
+
+            # Track seen IDs for deduplication
+            seen_ids = {l.get("id") for l in enhanced_learnings if l.get("id")}
+
+            # Add THINK phase context
+            if think_context and think_context.learnings:
+                for learning in think_context.learnings:
+                    learning_id = learning.get("id")
+                    if learning_id and learning_id not in seen_ids:
+                        seen_ids.add(learning_id)
+                        enhanced_learnings.append(learning)
+
+            # Add PLAN phase context
+            if plan_context:
+                if plan_context.learnings:
+                    for learning in plan_context.learnings:
+                        learning_id = learning.get("id")
+                        if learning_id and learning_id not in seen_ids:
+                            seen_ids.add(learning_id)
+                            enhanced_learnings.append(learning)
+                if plan_context.patterns:
+                    for pattern in plan_context.patterns:
+                        pattern_id = pattern.get("id")
+                        if pattern_id and pattern_id not in seen_ids:
+                            seen_ids.add(pattern_id)
+                            enhanced_learnings.append(pattern)
 
             # Execute with Claude (with optional iteration limit override)
             result = await self._execute_with_claude(
                 task_id,
                 user_message,
                 max_iterations=request.max_iterations,
-                pai_learnings=getattr(request, "_pai_context", {}).get("learnings", []) or None,
+                pai_learnings=enhanced_learnings or None,
+                think_context=think_context,
+                plan_context=plan_context,
             )
 
             # Record success
@@ -719,6 +791,16 @@ class BaseAgent(ABC):
             if post_hook and hasattr(post_hook, "post_task_hook") and self._memory:
                 try:
                     correlation_id = hook_context.get("correlation_id", task_id)
+                    # Get used learning IDs from hook context and PhaseMemoryManager
+                    used_learning_ids = hook_context.get("learning_ids", [])
+                    if self._phase_memory:
+                        used_learning_ids.extend(self._phase_memory.get_used_learning_ids(task_id))
+                        # Clean up PhaseMemoryManager cache for this task
+                        self._phase_memory.clear_cache(task_id)
+
+                    # Get task traces for trace-based learning extraction
+                    task_traces = await self._memory.get_task_traces(task_id)
+
                     await post_hook.post_task_hook(
                         agent_type=self.agent_type.value,
                         task_type=request.task_type,
@@ -727,6 +809,9 @@ class BaseAgent(ABC):
                         memory=self._memory,
                         success=True,
                         permission_level=self._permission_context.base_level.value if self._permission_context else 1,
+                        used_learning_ids=list(set(used_learning_ids)),  # Deduplicate
+                        task_traces=task_traces,
+                        project_id=self._state.current_project_id,
                     )
                 except Exception as e:
                     logger.warning(f"Post-task hook failed: {e}")
@@ -809,6 +894,15 @@ class BaseAgent(ABC):
                     if post_hook and hasattr(post_hook, "post_task_hook"):
                         try:
                             correlation_id = hook_context.get("correlation_id", task_id)
+                            # Get used learning IDs for decay on failure
+                            used_learning_ids = hook_context.get("learning_ids", [])
+                            if self._phase_memory:
+                                used_learning_ids.extend(self._phase_memory.get_used_learning_ids(task_id))
+                                self._phase_memory.clear_cache(task_id)
+
+                            # Get task traces
+                            task_traces = await self._memory.get_task_traces(task_id)
+
                             await post_hook.post_task_hook(
                                 agent_type=self.agent_type.value,
                                 task_type=request.task_type,
@@ -817,6 +911,9 @@ class BaseAgent(ABC):
                                 memory=self._memory,
                                 success=False,
                                 permission_level=self._permission_context.base_level.value if self._permission_context else 1,
+                                used_learning_ids=list(set(used_learning_ids)),
+                                task_traces=task_traces,
+                                project_id=self._state.current_project_id,
                             )
                         except Exception as hook_err:
                             logger.warning(f"Post-task hook failed for error case: {hook_err}")
@@ -947,6 +1044,8 @@ class BaseAgent(ABC):
         user_message: str,
         max_iterations: int | None = None,
         pai_learnings: list | None = None,
+        think_context: Any | None = None,
+        plan_context: Any | None = None,
     ) -> dict[str, Any]:
         """
         Execute task using Claude with tool use.
@@ -962,6 +1061,8 @@ class BaseAgent(ABC):
             user_message: The message to process
             max_iterations: Override for max tool iterations (uses config default if None)
             pai_learnings: Relevant learnings from PAI memory to inject into context
+            think_context: Optional PhaseContext from THINK phase
+            plan_context: Optional PhaseContext from PLAN phase
         """
         # Determine iteration limit (task override > config default)
         iteration_limit = max_iterations or self.config.max_tool_iterations
@@ -972,14 +1073,43 @@ class BaseAgent(ABC):
         total_input_tokens = 0
         total_output_tokens = 0
 
-        # Inject PAI learnings into user message if available
+        # Build enhanced context injection with structured sections
+        context_sections = []
+
+        # Add THINK phase context (reasoning patterns)
+        if think_context and (think_context.learnings or think_context.skills):
+            think_text = format_phase_context_for_injection(
+                think_context,
+                include_patterns=False,
+                include_skills=True,
+            )
+            if think_text:
+                context_sections.append(f"[Reasoning Context]\n{think_text}")
+
+        # Add PLAN phase context (successful plans, tool patterns)
+        if plan_context and (plan_context.learnings or plan_context.patterns):
+            plan_text = format_phase_context_for_injection(
+                plan_context,
+                include_patterns=True,
+                include_skills=False,
+            )
+            if plan_text:
+                context_sections.append(f"[Planning Context]\n{plan_text}")
+
+        # Add general PAI learnings (from OBSERVE phase)
         if pai_learnings:
             learnings_text = "\n".join(
-                f"- {l.get('content', str(l)) if isinstance(l, dict) else str(l)}"
+                f"- {l.get('content', l.get('text', str(l))) if isinstance(l, dict) else str(l)}"
                 for l in pai_learnings[:5]
             )
+            if learnings_text:
+                context_sections.append(f"[Relevant Learnings]\n{learnings_text}")
+
+        # Inject context into user message if we have any
+        if context_sections:
+            context_block = "\n\n".join(context_sections)
             user_message = (
-                f"[Relevant learnings from previous tasks]\n{learnings_text}\n\n"
+                f"[Context from previous tasks]\n{context_block}\n\n"
                 f"[Current task]\n{user_message}"
             )
 

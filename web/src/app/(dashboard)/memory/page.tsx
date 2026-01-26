@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useAuthStore } from "@/stores/auth-store";
 import { useMemoryStore } from "@/stores/memory-store";
-import { memoryApi } from "@/lib/api";
+import { memoryApi, projectsApi, Project } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -42,6 +42,8 @@ import {
   List,
   SortAsc,
   X,
+  FolderOpen,
+  Globe,
 } from "lucide-react";
 
 interface SearchResult {
@@ -63,7 +65,14 @@ interface Learning {
   created_at: string;
   importance?: number;
   scope?: string;
+  project_id?: string;
+  project_name?: string;
 }
+
+const scopes = [
+  { value: "global", label: "Global", icon: Globe },
+  { value: "project", label: "Project", icon: FolderOpen },
+];
 
 interface MemoryStats {
   total_memories: number;
@@ -128,15 +137,35 @@ export default function MemoryPage() {
   const [createContent, setCreateContent] = useState("");
   const [createPhase, setCreatePhase] = useState("");
   const [createCategory, setCreateCategory] = useState("");
+  const [createScope, setCreateScope] = useState("global");
+  const [createProjectId, setCreateProjectId] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Project filtering
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProjectFilter, setSelectedProjectFilter] = useState<string | null>(null);
+  const [selectedScopeFilter, setSelectedScopeFilter] = useState<string | null>(null);
+  // Edit memory - additional fields
+  const [editScope, setEditScope] = useState("");
+  const [editProjectId, setEditProjectId] = useState("");
 
   useEffect(() => {
     if (token) {
       fetchStats();
       fetchLearnings();
+      fetchProjects();
     }
   }, [token]);
+
+  const fetchProjects = async () => {
+    if (!token) return;
+    try {
+      const response = await projectsApi.list(token);
+      setProjects(response.projects || []);
+    } catch (error) {
+      console.error("Failed to fetch projects:", error);
+    }
+  };
 
   const fetchStats = async () => {
     if (!token) return;
@@ -150,12 +179,17 @@ export default function MemoryPage() {
     }
   };
 
-  const fetchLearnings = async (phase?: string) => {
+  const fetchLearnings = async (phase?: string, projectId?: string, scope?: string) => {
     if (!token) return;
     setIsLoadingLearnings(true);
     setLearningsError(null);
     try {
-      const response = await memoryApi.learnings(token, phase || undefined);
+      const response = await memoryApi.learnings(
+        token,
+        phase || undefined,
+        projectId || undefined,
+        scope || undefined
+      );
       if ((response as any).error) {
         setLearningsError((response as any).error);
         setLearnings([]);
@@ -198,6 +232,8 @@ export default function MemoryPage() {
         content: createContent.trim(),
         phase: createPhase && createPhase !== "none" ? createPhase : undefined,
         category: createCategory || undefined,
+        scope: createScope || "global",
+        project_id: createScope === "project" && createProjectId ? createProjectId : undefined,
       });
       if ((result as any).error) {
         console.error("Store failed:", (result as any).error);
@@ -205,8 +241,10 @@ export default function MemoryPage() {
         setCreateContent("");
         setCreatePhase("");
         setCreateCategory("");
+        setCreateScope("global");
+        setCreateProjectId("");
         setIsCreateOpen(false);
-        fetchLearnings(selectedPhase || undefined);
+        fetchLearnings(selectedPhase || undefined, selectedProjectFilter || undefined, selectedScopeFilter || undefined);
         fetchStats();
       }
     } catch (error) {
@@ -218,14 +256,29 @@ export default function MemoryPage() {
 
   const handlePhaseFilter = (phase: string | null) => {
     setSelectedPhase(phase);
-    fetchLearnings(phase || undefined);
+    fetchLearnings(phase || undefined, selectedProjectFilter || undefined, selectedScopeFilter || undefined);
   };
 
-  const handleEditStart = (item: { id: string; content: string; phase?: string; category?: string }) => {
+  const handleProjectFilter = (projectId: string | null) => {
+    setSelectedProjectFilter(projectId);
+    fetchLearnings(selectedPhase || undefined, projectId || undefined, selectedScopeFilter || undefined);
+  };
+
+  const handleScopeFilter = (scope: string | null) => {
+    setSelectedScopeFilter(scope);
+    if (scope !== "project") {
+      setSelectedProjectFilter(null);
+    }
+    fetchLearnings(selectedPhase || undefined, selectedProjectFilter || undefined, scope || undefined);
+  };
+
+  const handleEditStart = (item: { id: string; content: string; phase?: string; category?: string; scope?: string; project_id?: string }) => {
     setEditingId(item.id);
     setEditContent(item.content);
     setEditPhase(item.phase || "");
     setEditCategory(item.category || "");
+    setEditScope(item.scope || "global");
+    setEditProjectId(item.project_id || "");
   };
 
   const handleEditSave = async () => {
@@ -236,8 +289,10 @@ export default function MemoryPage() {
         content: editContent || undefined,
         phase: editPhase || undefined,
         category: editCategory || undefined,
+        scope: editScope || undefined,
+        project_id: editScope === "project" && editProjectId ? editProjectId : null,
       });
-      fetchLearnings(selectedPhase || undefined);
+      fetchLearnings(selectedPhase || undefined, selectedProjectFilter || undefined, selectedScopeFilter || undefined);
       if (searchQuery) handleSearch();
       setEditingId(null);
     } catch (error) {
@@ -346,9 +401,24 @@ export default function MemoryPage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  // Create a project ID to name mapping
+  const projectNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    projects.forEach((p) => map.set(p.id, p.name));
+    return map;
+  }, [projects]);
+
+  // Enrich learnings with project names
+  const enrichedLearnings = useMemo(() => {
+    return learnings.map((l) => ({
+      ...l,
+      project_name: l.project_id ? projectNameMap.get(l.project_id) : undefined,
+    }));
+  }, [learnings, projectNameMap]);
+
   // Sort learnings
   const sortedLearnings = useMemo(() => {
-    const sorted = [...learnings];
+    const sorted = [...enrichedLearnings];
     switch (sortBy) {
       case "date":
         sorted.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -359,20 +429,26 @@ export default function MemoryPage() {
       case "phase":
         sorted.sort((a, b) => (a.phase || "").localeCompare(b.phase || ""));
         break;
+      case "project":
+        sorted.sort((a, b) => (a.project_name || "zzz").localeCompare(b.project_name || "zzz"));
+        break;
+      case "scope":
+        sorted.sort((a, b) => (a.scope || "global").localeCompare(b.scope || "global"));
+        break;
       default:
         break;
     }
     return sorted;
-  }, [learnings, sortBy]);
+  }, [enrichedLearnings, sortBy]);
 
   return (
-    <div className="p-4 sm:p-6 h-full overflow-y-auto">
-      <div className="flex items-center justify-between mb-6">
-        <div>
+    <div className="p-4 sm:p-6 h-full overflow-y-auto overflow-x-hidden">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
+        <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-bold">Memory</h1>
           <p className="text-sm text-muted-foreground">Browse and manage the AI memory system</p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           <Button
             size="sm"
             className="h-7 text-xs"
@@ -508,6 +584,8 @@ export default function MemoryPage() {
                 <SelectItem value="date">Date</SelectItem>
                 <SelectItem value="importance">Importance</SelectItem>
                 <SelectItem value="phase">Phase</SelectItem>
+                <SelectItem value="project">Project</SelectItem>
+                <SelectItem value="scope">Scope</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -534,7 +612,7 @@ export default function MemoryPage() {
             </div>
           )}
 
-          <ScrollArea className="h-[500px]">
+          <ScrollArea className="h-[500px] w-full">
             {searchResults.length === 0 && !searchError ? (
               <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
                 <Search className="h-12 w-12 mb-4 opacity-50" />
@@ -544,7 +622,7 @@ export default function MemoryPage() {
               <div className="space-y-3">
                 {searchResults.map((result) => (
                   <Card key={result.id} className="group">
-                    <CardContent className="pt-3 pb-3">
+                    <CardContent className="pt-3 pb-3 px-3">
                       <div className="flex items-start gap-2">
                         {isSelectMode && (
                           <button onClick={() => toggleSelect(result.id)} className="mt-1 shrink-0">
@@ -556,33 +634,29 @@ export default function MemoryPage() {
                           </button>
                         )}
                         <div className="flex-1 min-w-0">
-                          <div className="flex justify-between items-start mb-1">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              {result.phase && (
-                                <Badge className={`text-[10px] h-4 px-1.5 ${phaseColors[result.phase] || ""}`}>
-                                  {result.phase}
-                                </Badge>
-                              )}
-                              {result.category && <Badge variant="secondary" className="text-[10px] h-4 px-1.5">{result.category}</Badge>}
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <Badge variant="outline" className="text-[10px] h-4 px-1.5">
-                                {(result.score * 100).toFixed(0)}%
+                          <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                            {result.phase && (
+                              <Badge className={`text-[10px] h-4 px-1.5 shrink-0 ${phaseColors[result.phase] || ""}`}>
+                                {result.phase}
                               </Badge>
-                              <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleEditStart(result)}>
-                                  <Pencil className="h-2.5 w-2.5" />
-                                </Button>
-                                <Button variant="ghost" size="icon" className="h-5 w-5 text-destructive" onClick={() => setDeletingId(result.id)}>
-                                  <Trash2 className="h-2.5 w-2.5" />
-                                </Button>
-                              </div>
-                            </div>
+                            )}
+                            {result.category && <Badge variant="secondary" className="text-[10px] h-4 px-1.5 shrink-0">{result.category}</Badge>}
+                            <Badge variant="outline" className="text-[10px] h-4 px-1.5 shrink-0">
+                              {(result.score * 100).toFixed(0)}%
+                            </Badge>
                           </div>
-                          <p className="text-sm">{result.content}</p>
+                          <p className="text-sm break-words">{result.content}</p>
                           {result.created_at && (
                             <p className="text-[10px] text-muted-foreground mt-1">{new Date(result.created_at).toLocaleString()}</p>
                           )}
+                        </div>
+                        <div className="flex gap-0.5 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleEditStart(result)}>
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => setDeletingId(result.id)}>
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
                         </div>
                       </div>
                     </CardContent>
@@ -594,9 +668,10 @@ export default function MemoryPage() {
         </TabsContent>
 
         <TabsContent value="learnings" className="space-y-4">
+          {/* Phase filter */}
           <div className="flex flex-wrap gap-1.5">
             <Button variant={selectedPhase === null ? "default" : "outline"} size="sm" className="h-6 text-xs" onClick={() => handlePhaseFilter(null)}>
-              All
+              All Phases
             </Button>
             {phases.map((phase) => (
               <Button
@@ -611,6 +686,57 @@ export default function MemoryPage() {
             ))}
           </div>
 
+          {/* Scope and Project filter */}
+          <div className="flex flex-wrap gap-2 items-center">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">Scope:</span>
+              <Button
+                variant={selectedScopeFilter === null ? "default" : "outline"}
+                size="sm"
+                className="h-6 text-xs"
+                onClick={() => handleScopeFilter(null)}
+              >
+                All
+              </Button>
+              <Button
+                variant={selectedScopeFilter === "global" ? "default" : "outline"}
+                size="sm"
+                className="h-6 text-xs"
+                onClick={() => handleScopeFilter("global")}
+              >
+                <Globe className="h-3 w-3 mr-1" />
+                Global
+              </Button>
+              <Button
+                variant={selectedScopeFilter === "project" ? "default" : "outline"}
+                size="sm"
+                className="h-6 text-xs"
+                onClick={() => handleScopeFilter("project")}
+              >
+                <FolderOpen className="h-3 w-3 mr-1" />
+                Project
+              </Button>
+            </div>
+
+            {(selectedScopeFilter === "project" || selectedScopeFilter === null) && projects.length > 0 && (
+              <Select
+                value={selectedProjectFilter || "all"}
+                onValueChange={(v) => handleProjectFilter(v === "all" ? null : v)}
+              >
+                <SelectTrigger className="h-6 w-40 text-xs">
+                  <FolderOpen className="h-3 w-3 mr-1" />
+                  <SelectValue placeholder="All projects" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Projects</SelectItem>
+                  {projects.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
           {learningsError && (
             <div className="flex items-center gap-2 p-3 rounded-md bg-destructive/10 text-destructive text-sm mb-3">
               <X className="h-4 w-4 shrink-0" />
@@ -618,7 +744,7 @@ export default function MemoryPage() {
             </div>
           )}
 
-          <ScrollArea className="h-[500px]">
+          <ScrollArea className="h-[500px] w-full">
             {isLoadingLearnings ? (
               <div className="flex items-center justify-center h-64">
                 <Loader2 className="h-8 w-8 animate-spin" />
@@ -632,7 +758,7 @@ export default function MemoryPage() {
               <div className="space-y-2">
                 {sortedLearnings.map((learning) => (
                   <Card key={learning.id} className="group">
-                    <CardContent className="pt-3 pb-3">
+                    <CardContent className="pt-3 pb-3 px-3">
                       <div className="flex items-start gap-2">
                         {isSelectMode && (
                           <button onClick={() => toggleSelect(learning.id)} className="mt-1 shrink-0">
@@ -644,31 +770,41 @@ export default function MemoryPage() {
                           </button>
                         )}
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between mb-1">
-                            <div className="flex items-center gap-1.5">
-                              {learning.phase && (
-                                <Badge className={`text-[10px] h-4 px-1.5 ${phaseColors[learning.phase] || ""}`}>
-                                  {learning.phase}
-                                </Badge>
-                              )}
-                              {learning.category && <Badge variant="secondary" className="text-[10px] h-4 px-1.5">{learning.category}</Badge>}
-                              <Badge variant={learning.outcome === "success" ? "default" : "destructive"} className="text-[10px] h-4 px-1.5">
-                                {learning.outcome}
+                          <div className="flex items-center gap-1 flex-wrap mb-1">
+                            {learning.phase && (
+                              <Badge className={`text-[10px] h-4 px-1.5 shrink-0 ${phaseColors[learning.phase] || ""}`}>
+                                {learning.phase}
                               </Badge>
-                            </div>
-                            <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => handleEditStart(learning)}>
-                                <Pencil className="h-2.5 w-2.5" />
-                              </Button>
-                              <Button variant="ghost" size="icon" className="h-5 w-5 text-destructive" onClick={() => setDeletingId(learning.id)}>
-                                <Trash2 className="h-2.5 w-2.5" />
-                              </Button>
-                            </div>
+                            )}
+                            {learning.category && <Badge variant="secondary" className="text-[10px] h-4 px-1.5 shrink-0">{learning.category}</Badge>}
+                            <Badge variant={learning.outcome === "success" ? "default" : "destructive"} className="text-[10px] h-4 px-1.5 shrink-0">
+                              {learning.outcome}
+                            </Badge>
+                            {learning.scope === "global" && (
+                              <Badge variant="outline" className="text-[10px] h-4 px-1.5 shrink-0 bg-blue-500/10 text-blue-600 border-blue-500/30">
+                                <Globe className="h-2.5 w-2.5 mr-0.5" />
+                                Global
+                              </Badge>
+                            )}
+                            {learning.scope === "project" && (
+                              <Badge variant="outline" className="text-[10px] h-4 px-1.5 shrink-0 bg-amber-500/10 text-amber-600 border-amber-500/30 max-w-[120px]">
+                                <FolderOpen className="h-2.5 w-2.5 mr-0.5 shrink-0" />
+                                <span className="truncate">{learning.project_name || "Project"}</span>
+                              </Badge>
+                            )}
                           </div>
-                          <p className="text-sm">{learning.content}</p>
+                          <p className="text-sm break-words">{learning.content}</p>
                           <p className="text-[10px] text-muted-foreground mt-1">
                             {learning.created_at ? new Date(learning.created_at).toLocaleString() : "Date unknown"}
                           </p>
+                        </div>
+                        <div className="flex gap-0.5 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => handleEditStart(learning)}>
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => setDeletingId(learning.id)}>
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
                         </div>
                       </div>
                     </CardContent>
@@ -783,6 +919,41 @@ export default function MemoryPage() {
                 <Input value={editCategory} onChange={(e) => setEditCategory(e.target.value)} placeholder="e.g., discovery" />
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label>Scope</Label>
+                <Select value={editScope} onValueChange={setEditScope}>
+                  <SelectTrigger><SelectValue placeholder="Select scope" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="global">
+                      <div className="flex items-center gap-1.5">
+                        <Globe className="h-3 w-3" />
+                        Global
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="project">
+                      <div className="flex items-center gap-1.5">
+                        <FolderOpen className="h-3 w-3" />
+                        Project
+                      </div>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {editScope === "project" && (
+                <div className="grid gap-2">
+                  <Label>Project</Label>
+                  <Select value={editProjectId} onValueChange={setEditProjectId}>
+                    <SelectTrigger><SelectValue placeholder="Select project" /></SelectTrigger>
+                    <SelectContent>
+                      {projects.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditingId(null)}>Cancel</Button>
@@ -836,6 +1007,41 @@ export default function MemoryPage() {
                   placeholder="e.g., preference, fact"
                 />
               </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label>Scope</Label>
+                <Select value={createScope} onValueChange={setCreateScope}>
+                  <SelectTrigger><SelectValue placeholder="Select scope" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="global">
+                      <div className="flex items-center gap-1.5">
+                        <Globe className="h-3 w-3" />
+                        Global - Available everywhere
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="project">
+                      <div className="flex items-center gap-1.5">
+                        <FolderOpen className="h-3 w-3" />
+                        Project - Specific to a project
+                      </div>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {createScope === "project" && (
+                <div className="grid gap-2">
+                  <Label>Project</Label>
+                  <Select value={createProjectId} onValueChange={setCreateProjectId}>
+                    <SelectTrigger><SelectValue placeholder="Select project" /></SelectTrigger>
+                    <SelectContent>
+                      {projects.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
           </div>
           <DialogFooter>
