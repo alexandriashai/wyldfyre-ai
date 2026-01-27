@@ -43,9 +43,13 @@ function CommitItem({ entry, isFirst, isLast }: CommitItemProps) {
     toast({ title: "Commit hash copied" });
   };
 
-  const formattedDate = entry.date
-    ? formatDistanceToNow(new Date(entry.date), { addSuffix: true })
-    : "unknown";
+  const formattedDate = (() => {
+    if (!entry.date) return "unknown";
+    const date = new Date(entry.date);
+    // Check if date is valid
+    if (isNaN(date.getTime())) return "unknown";
+    return formatDistanceToNow(date, { addSuffix: true });
+  })();
 
   // Split message into subject and body
   const [subject, ...bodyLines] = entry.message.split("\n");
