@@ -46,7 +46,11 @@ class AnthropicUsageClient(BaseUsageClient):
         if self._api_key:
             return self._api_key
         settings = get_settings()
-        return settings.api.anthropic_admin_api_key.get_secret_value()
+        # Try admin key first, fall back to regular key
+        admin_key = settings.api.anthropic_admin_api_key.get_secret_value()
+        if admin_key:
+            return admin_key
+        return settings.api.anthropic_api_key.get_secret_value()
 
     def _get_headers(self) -> dict[str, str]:
         """Get headers for API requests."""
@@ -59,7 +63,8 @@ class AnthropicUsageClient(BaseUsageClient):
     async def is_configured(self) -> bool:
         """Check if the client has valid API credentials configured."""
         key = self.api_key
-        return bool(key and key.startswith("sk-ant-admin-"))
+        # Accept both admin keys (sk-ant-admin-) and regular keys (sk-ant-api)
+        return bool(key and (key.startswith("sk-ant-admin-") or key.startswith("sk-ant-api")))
 
     async def test_connection(self) -> tuple[bool, str | None]:
         """Test the API connection."""

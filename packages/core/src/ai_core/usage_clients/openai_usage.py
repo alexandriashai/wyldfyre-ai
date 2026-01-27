@@ -44,7 +44,11 @@ class OpenAIUsageClient(BaseUsageClient):
         if self._api_key:
             return self._api_key
         settings = get_settings()
-        return settings.api.openai_admin_api_key.get_secret_value()
+        # Try admin key first, fall back to regular key
+        admin_key = settings.api.openai_admin_api_key.get_secret_value()
+        if admin_key:
+            return admin_key
+        return settings.api.openai_api_key.get_secret_value()
 
     def _get_headers(self) -> dict[str, str]:
         """Get headers for API requests."""
@@ -56,7 +60,7 @@ class OpenAIUsageClient(BaseUsageClient):
     async def is_configured(self) -> bool:
         """Check if the client has valid API credentials configured."""
         key = self.api_key
-        # OpenAI admin keys don't have a consistent prefix, just check non-empty
+        # Accept any valid-looking key
         return bool(key and len(key) > 10)
 
     async def test_connection(self) -> tuple[bool, str | None]:
