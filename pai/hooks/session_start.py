@@ -64,12 +64,16 @@ async def session_start_hook(
         except Exception as e:
             result["telos_error"] = str(e)
 
-    # Load TELOS context
+    # Load TELOS context (including agent-specific MODELS and STRATEGIES)
     if telos:
         try:
             # Determine task type for relevance filtering
             task_type = metadata.get("task_type", "default") if metadata else "default"
-            telos_context = await telos.get_context_for_task(task_type, project_id)
+            telos_context = await telos.get_context_for_task(
+                task_type,
+                project_id=project_id,
+                agent_type=agent_type,
+            )
             result["telos_context"] = telos_context
         except Exception as e:
             result["telos_error"] = str(e)

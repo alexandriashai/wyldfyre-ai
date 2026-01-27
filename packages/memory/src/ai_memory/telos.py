@@ -270,6 +270,12 @@ class TelosManager:
         # Create projects subdirectory
         (self.telos_dir / "projects").mkdir(exist_ok=True)
 
+        # Create agents subdirectory for agent-specific TELOS
+        agents_dir = self.telos_dir / "agents"
+        agents_dir.mkdir(exist_ok=True)
+        for agent in ["code", "data", "infra", "research", "qa"]:
+            (agents_dir / agent).mkdir(exist_ok=True)
+
         # Create default global TELOS files if they don't exist
         for file_type in TelosFileType:
             file_path = self.telos_dir / file_type.value
@@ -530,6 +536,31 @@ class TelosManager:
                 async with aiofiles.open(file_path, "r") as f:
                     content = await f.read()
                 result[file_type.name.lower()] = content
+
+        return result
+
+    async def load_agent_telos(self, agent_type: str) -> dict[str, str]:
+        """
+        Load agent-specific MODELS and STRATEGIES.
+
+        Args:
+            agent_type: Agent type (code, data, infra, research, qa)
+
+        Returns:
+            Dictionary with 'models' and 'strategies' content
+        """
+        agent_dir = self.telos_dir / "agents" / agent_type
+        result = {"models": "", "strategies": ""}
+
+        models_file = agent_dir / "MODELS.md"
+        if models_file.exists():
+            async with aiofiles.open(models_file, "r") as f:
+                result["models"] = await f.read()
+
+        strategies_file = agent_dir / "STRATEGIES.md"
+        if strategies_file.exists():
+            async with aiofiles.open(strategies_file, "r") as f:
+                result["strategies"] = await f.read()
 
         return result
 
@@ -974,6 +1005,7 @@ class TelosManager:
         self,
         task_type: str,
         project_id: str | None = None,
+        agent_type: str | None = None,
     ) -> str:
         """
         Get formatted TELOS context for injection into task.
@@ -981,6 +1013,7 @@ class TelosManager:
         Args:
             task_type: Type of task being executed
             project_id: Optional project context
+            agent_type: Optional agent type (code, data, infra, research, qa)
 
         Returns:
             Formatted context string for injection
@@ -1020,11 +1053,42 @@ class TelosManager:
             if active_challenges:
                 context_parts.append(f"[Active Challenges] {active_challenges[0].description[:150]}")
 
+        # Add agent-specific context if agent_type provided
+        if agent_type:
+            agent_telos = await self.load_agent_telos(agent_type)
+            if agent_telos["models"]:
+                # Extract key models (first 3 model names)
+                models_summary = self._extract_heading_summaries(agent_telos["models"], limit=3)
+                if models_summary:
+                    context_parts.append(f"[Agent Models] {models_summary}")
+            if agent_telos["strategies"]:
+                # Extract top strategies (first 3 strategy names)
+                strategies_summary = self._extract_heading_summaries(agent_telos["strategies"], limit=3)
+                if strategies_summary:
+                    context_parts.append(f"[Agent Strategies] {strategies_summary}")
+
         return "\n".join(context_parts)
 
     # =========================================================================
     # Private Helpers
     # =========================================================================
+
+    def _extract_heading_summaries(self, content: str, limit: int = 3) -> str:
+        """
+        Extract heading names from markdown content.
+
+        Args:
+            content: Markdown content to parse
+            limit: Maximum number of headings to extract
+
+        Returns:
+            Comma-separated list of heading names
+        """
+        # Find ## headings (level 2 headers) which are the model/strategy names
+        headings = re.findall(r"^## (.+?)(?:\n|$)", content, re.MULTILINE)
+        if headings:
+            return ", ".join(headings[:limit])
+        return ""
 
     async def _load_goals(self, project_id: str | None = None) -> list[Goal]:
         """Load goals from file or cache."""
