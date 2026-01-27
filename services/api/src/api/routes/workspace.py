@@ -785,6 +785,132 @@ async def git_status(
     )
 
 
+class GenerateCommitMessageResponse(BaseModel):
+    """Response with AI-generated commit message."""
+    title: str
+    description: str | None = None
+    full_message: str
+
+
+@router.post("/git/generate-commit-message", response_model=GenerateCommitMessageResponse)
+async def generate_commit_message(
+    project_id: str,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> GenerateCommitMessageResponse:
+    """Generate a commit message using AI based on staged/modified files."""
+    from ai_core import LLMClient
+
+    project = await get_project_with_root(project_id, current_user, db)
+
+    # Get the diff of changes
+    try:
+        diff_result = await run_git_command(
+            project.root_path, "diff", "--cached", check=False
+        )
+        staged_diff = diff_result.stdout
+
+        # If no staged changes, get unstaged diff
+        if not staged_diff.strip():
+            diff_result = await run_git_command(
+                project.root_path, "diff", check=False
+            )
+            staged_diff = diff_result.stdout
+
+        # Get list of changed files
+        status_result = await run_git_command(
+            project.root_path, "status", "--porcelain"
+        )
+        changed_files = [
+            line[3:] for line in status_result.stdout.strip().split("\n")
+            if line.strip()
+        ]
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get git diff: {e.stderr}",
+        )
+
+    if not staged_diff.strip() and not changed_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No changes to generate commit message for",
+        )
+
+    # Truncate diff if too long
+    max_diff_length = 8000
+    if len(staged_diff) > max_diff_length:
+        staged_diff = staged_diff[:max_diff_length] + "\n... (diff truncated)"
+
+    # Generate commit message with AI
+    llm = LLMClient()
+    try:
+        response = await llm.create_message(
+            model="fast",
+            max_tokens=500,
+            system="""You are a commit message generator. Analyze the git diff and generate a clear, concise commit message.
+
+Follow these rules:
+1. Title: Start with a type (feat, fix, refactor, docs, style, test, chore) followed by a colon and brief description
+2. Title should be max 72 characters, imperative mood ("Add feature" not "Added feature")
+3. Description (optional): Add 1-3 bullet points explaining the key changes if needed
+4. Be specific about what changed, not why (the diff shows what)
+
+Output format:
+TITLE: <commit title>
+DESCRIPTION: <optional bullet points, or "none" if simple change>""",
+            messages=[{
+                "role": "user",
+                "content": f"""Generate a commit message for these changes:
+
+Changed files: {', '.join(changed_files[:20])}
+
+Diff:
+{staged_diff}"""
+            }],
+        )
+
+        # Parse the response
+        text = response.text_content
+        title = ""
+        description = None
+
+        for line in text.split("\n"):
+            if line.startswith("TITLE:"):
+                title = line.replace("TITLE:", "").strip()
+            elif line.startswith("DESCRIPTION:"):
+                desc = line.replace("DESCRIPTION:", "").strip()
+                if desc.lower() != "none":
+                    description = desc
+
+        # Extract any additional description lines
+        if "DESCRIPTION:" in text:
+            desc_start = text.find("DESCRIPTION:") + len("DESCRIPTION:")
+            desc_text = text[desc_start:].strip()
+            if desc_text.lower() != "none":
+                description = desc_text
+
+        if not title:
+            title = "chore: update files"
+
+        full_message = title
+        if description:
+            full_message = f"{title}\n\n{description}"
+
+        return GenerateCommitMessageResponse(
+            title=title,
+            description=description,
+            full_message=full_message,
+        )
+
+    except Exception as e:
+        logger.error("Failed to generate commit message", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate commit message: {str(e)}",
+        )
+
+
 @router.post("/git/commit", response_model=GitCommitResponse)
 async def git_commit(
     project_id: str,
@@ -799,7 +925,13 @@ async def git_commit(
         # Stage specific files
         for f in request.files:
             validate_path(project.root_path, f)
-            await run_git_command(project.root_path, "add", f)
+            file_path = Path(project.root_path) / f
+            # Check if file exists or if it's a deletion (git status shows deleted files)
+            try:
+                await run_git_command(project.root_path, "add", f)
+            except subprocess.CalledProcessError as e:
+                # Skip files that can't be added (deleted, moved, etc.)
+                logger.warning("Could not stage file", file=f, error=str(e.stderr))
     else:
         # Stage all changes
         await run_git_command(project.root_path, "add", "-A")

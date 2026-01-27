@@ -584,7 +584,7 @@ class CommandHandler:
         }
 
     async def _plan_view(self, args: str, context: dict[str, Any]) -> dict[str, Any]:
-        """View plan details with progress."""
+        """View plan details with progress and open plan panel."""
         plan_id = args.strip()
         if not plan_id:
             return {
@@ -611,12 +611,34 @@ class CommandHandler:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
+        # Convert plan steps to frontend format
+        frontend_steps = []
+        for step in plan.steps:
+            frontend_steps.append({
+                "id": step.id,
+                "title": step.title,
+                "description": step.description,
+                "status": step.status.value,
+                "agent": step.agent,
+                "files": getattr(step, 'files', []),
+                "todos": getattr(step, 'todos', []),
+                "output": step.output,
+                "error": step.error,
+                "started_at": step.started_at.isoformat() if step.started_at else None,
+                "completed_at": step.completed_at.isoformat() if step.completed_at else None,
+            })
+
         return {
             "type": "command_result",
             "command": "plan",
             "content": format_plan_for_display(plan),
             "action": "plan_view",
             "plan": plan.to_dict(),
+            # These fields trigger the plan panel to open
+            "plan_content": format_plan_for_display(plan),
+            "plan_status": plan.status.value.upper(),
+            "steps": frontend_steps,
+            "plan_id": plan.id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 

@@ -31,6 +31,7 @@ import {
   Check,
   Square,
   Undo2,
+  Sparkles,
 } from "lucide-react";
 import {
   AlertDialog,
@@ -155,6 +156,7 @@ export function CommitPanel() {
   const [isLoading, setIsLoading] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
   const [isReverting, setIsReverting] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [stagedOpen, setStagedOpen] = useState(true);
   const [unstagedOpen, setUnstagedOpen] = useState(true);
   const [untrackedOpen, setUntrackedOpen] = useState(true);
@@ -281,6 +283,29 @@ export function CommitPanel() {
     }
   };
 
+  const handleGenerateMessage = async () => {
+    if (!token || !activeProjectId) return;
+
+    setIsGenerating(true);
+    try {
+      const result = await workspaceApi.generateCommitMessage(token, activeProjectId);
+      setCommitMessage(result.full_message);
+      toast({
+        title: "Commit message generated",
+        description: result.title.slice(0, 50) + (result.title.length > 50 ? "..." : ""),
+      });
+    } catch (err) {
+      console.error("Generate message failed:", err);
+      toast({
+        title: "Failed to generate message",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const toggleSelectUnstaged = (path: string) => {
     setSelectedUnstaged((prev) => {
       const next = new Set(prev);
@@ -355,17 +380,33 @@ export function CommitPanel() {
         <>
           {/* Commit message input */}
           <div className="p-3 border-b">
-            <Textarea
-              placeholder="Commit message..."
-              value={commitMessage}
-              onChange={(e) => setCommitMessage(e.target.value)}
-              className="min-h-[60px] text-sm resize-none"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  handleCommit();
-                }
-              }}
-            />
+            <div className="relative">
+              <Textarea
+                placeholder="Commit message..."
+                value={commitMessage}
+                onChange={(e) => setCommitMessage(e.target.value)}
+                className="min-h-[60px] text-sm resize-none pr-10"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    handleCommit();
+                  }
+                }}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute right-1 top-1 h-7 w-7 text-muted-foreground hover:text-primary"
+                onClick={handleGenerateMessage}
+                disabled={isGenerating || totalChanges === 0}
+                title="Generate commit message with AI"
+              >
+                {isGenerating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
             <div className="flex items-center gap-2 mt-2">
               <Button
                 size="sm"

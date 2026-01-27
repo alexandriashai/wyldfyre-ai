@@ -1280,6 +1280,14 @@ export const workspaceApi = {
     return handleResponse<{ commit_hash: string; message: string; files_changed: number }>(response);
   },
 
+  async generateCommitMessage(token: string, projectId: string) {
+    const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/generate-commit-message`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<{ title: string; description: string | null; full_message: string }>(response);
+  },
+
   async gitRevertFiles(token: string, projectId: string, files?: string[]) {
     const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/git/revert-files`, {
       method: 'POST',

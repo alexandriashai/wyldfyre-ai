@@ -249,9 +249,15 @@ export function useChat() {
             } else {
               updatePlan(
                 data.plan_content,
-                normalizePlanStatus(data.plan_status)
+                normalizePlanStatus(data.plan_status),
+                data.plan_id
               );
             }
+          }
+          // Handle steps from plan view command
+          if (data.steps && Array.isArray(data.steps)) {
+            console.log("[Plan] Loading steps from command_result:", data.steps.length);
+            updateSteps(data.steps, 0, data.plan_id);
           }
           break;
 
@@ -272,9 +278,16 @@ export function useChat() {
           break;
 
         case "plan_update":
+          console.log("[Plan] plan_update received:", {
+            plan_content: data.plan_content?.substring(0, 100),
+            plan_status: data.plan_status,
+            plan_id: data.plan_id,
+            conversation_id: data.conversation_id
+          });
           if (data.plan_content !== undefined) {
             const planStatus = normalizePlanStatus(data.plan_status);
-            updatePlan(data.plan_content, planStatus);
+            console.log("[Plan] Calling updatePlan with status:", planStatus, "planId:", data.plan_id);
+            updatePlan(data.plan_content, planStatus, data.plan_id);
             setIsSending(false);
           }
           break;
@@ -294,8 +307,14 @@ export function useChat() {
           break;
 
         case "step_update":
+          console.log("[Plan] step_update received:", {
+            steps_count: data.steps?.length,
+            current_step: data.current_step,
+            plan_id: data.plan_id,
+            conversation_id: data.conversation_id
+          });
           if (data.steps) {
-            updateSteps(data.steps, data.current_step || 0);
+            updateSteps(data.steps, data.current_step || 0, data.plan_id);
             if (data.modification) {
               console.log(`[Plan] Modified: ${data.modification}`);
             }
@@ -433,6 +452,30 @@ export function useChat() {
               timestamp: data.timestamp || new Date().toISOString(),
             });
           }
+          break;
+
+        case "rollback_complete":
+          // Rollback operation completed
+          useChatStore.getState().setRollbackResult({
+            success: true,
+            planId: data.plan_id || "",
+            stepId: data.step_id,
+            filesRestored: data.files_restored || [],
+            filesDeleted: data.files_deleted || [],
+            timestamp: data.timestamp || new Date().toISOString(),
+          });
+          break;
+
+        case "redo_complete":
+          // Redo operation completed
+          useChatStore.getState().setRollbackResult({
+            success: true,
+            planId: data.plan_id || "",
+            stepId: data.step_id,
+            filesRestored: data.files_reapplied || [],
+            filesDeleted: data.files_created || [],
+            timestamp: data.timestamp || new Date().toISOString(),
+          });
           break;
 
         default:
@@ -705,6 +748,50 @@ export function useChat() {
     }));
   }, [currentConversation]);
 
+  // Rollback file changes from a plan or task
+  const rollback = useCallback((options: {
+    planId?: string;
+    taskId?: string;
+    stepId?: string;
+    dryRun?: boolean;
+    infoOnly?: boolean;
+  }) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN || !currentConversation) {
+      return;
+    }
+    useChatStore.getState().setIsRollingBack(true);
+    socketRef.current.send(JSON.stringify({
+      type: "rollback",
+      plan_id: options.planId,
+      task_id: options.taskId,
+      step_id: options.stepId,
+      dry_run: options.dryRun ?? false,
+      info_only: options.infoOnly ?? false,
+      conversation_id: currentConversation.id,
+    }));
+  }, [currentConversation]);
+
+  // Redo (reapply) previously rolled-back file changes
+  const redo = useCallback((options: {
+    planId?: string;
+    taskId?: string;
+    stepId?: string;
+    dryRun?: boolean;
+  }) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN || !currentConversation) {
+      return;
+    }
+    useChatStore.getState().setIsRollingBack(true);
+    socketRef.current.send(JSON.stringify({
+      type: "redo",
+      plan_id: options.planId,
+      task_id: options.taskId,
+      step_id: options.stepId,
+      dry_run: options.dryRun ?? false,
+      conversation_id: currentConversation.id,
+    }));
+  }, [currentConversation]);
+
   return {
     isConnected,
     isConnecting,
@@ -720,5 +807,8 @@ export function useChat() {
     resumeTask,
     cancelTask,
     addMessageWhileBusy,
+    // Rollback/Redo
+    rollback,
+    redo,
   };
 }

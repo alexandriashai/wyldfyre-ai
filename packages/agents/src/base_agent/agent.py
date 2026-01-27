@@ -184,6 +184,15 @@ class BaseAgent(ABC):
         self._running = False
         self._plan_exploring = False  # Read-only mode during plan exploration
 
+        # Initialize RollbackManager for file change tracking
+        from .rollback import RollbackManager
+        self._rollback_manager = RollbackManager(redis_client)
+        self._rollback_context: dict[str, str | None] = {
+            "plan_id": None,
+            "step_id": None,
+            "task_id": None,
+        }
+
         # Initialize PhaseMemoryManager for enhanced memory retrieval
         self._phase_memory: PhaseMemoryManager | None = None
         if memory:
@@ -609,6 +618,87 @@ class BaseAgent(ABC):
         """Check if current task is paused."""
         return self._state.task_control == TaskControlState.PAUSED
 
+    def set_rollback_context(
+        self,
+        plan_id: str | None = None,
+        step_id: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        """
+        Set rollback context for file change tracking.
+
+        When set, any file modifications will be tracked for potential rollback.
+        Used when tasks are delegated from the supervisor with plan context.
+        """
+        self._rollback_context = {
+            "plan_id": plan_id,
+            "step_id": step_id,
+            "task_id": task_id,
+        }
+        logger.debug(
+            "Rollback context set",
+            agent=self.name,
+            plan_id=plan_id,
+            step_id=step_id,
+            task_id=task_id,
+        )
+
+    def clear_rollback_context(self) -> None:
+        """Clear the rollback context."""
+        self._rollback_context = {"plan_id": None, "step_id": None, "task_id": None}
+
+    async def snapshot_file_for_rollback(
+        self,
+        file_path: str,
+        is_create: bool = False,
+    ) -> None:
+        """
+        Snapshot a file before modification for rollback support.
+
+        Called automatically by file operation tools when rollback context is set.
+        """
+        from .rollback import ChangeType
+
+        plan_id = self._rollback_context.get("plan_id")
+        step_id = self._rollback_context.get("step_id")
+        task_id = self._rollback_context.get("task_id")
+
+        change_type = ChangeType.CREATE if is_create else ChangeType.MODIFY
+
+        # Plan-based tracking
+        if plan_id and step_id:
+            await self._rollback_manager.snapshot_file(
+                plan_id=plan_id,
+                step_id=step_id,
+                file_path=file_path,
+                change_type=change_type,
+            )
+        # Task-based tracking (for non-plan tasks)
+        elif task_id:
+            await self._rollback_manager.snapshot_task_file(
+                task_id=task_id,
+                file_path=file_path,
+                change_type=change_type,
+            )
+
+    async def capture_after_content_for_rollback(self, file_path: str) -> None:
+        """Capture after content for redo support."""
+        plan_id = self._rollback_context.get("plan_id")
+        step_id = self._rollback_context.get("step_id")
+        task_id = self._rollback_context.get("task_id")
+
+        if plan_id and step_id:
+            await self._rollback_manager.capture_after_content(
+                plan_id=plan_id,
+                step_id=step_id,
+                file_path=file_path,
+            )
+        elif task_id:
+            await self._rollback_manager.capture_task_after_content(
+                task_id=task_id,
+                file_path=file_path,
+            )
+
     async def process_task(self, request: TaskRequest) -> TaskResponse:
         """
         Process a task request.
@@ -642,6 +732,24 @@ class BaseAgent(ABC):
         conversation_id = request.payload.get("conversation_id")
         self._state.current_user_id = user_id
         self._state.current_conversation_id = conversation_id
+
+        # Extract and set rollback context from delegated task
+        rollback_ctx = request.payload.get("_rollback_context")
+        if rollback_ctx:
+            self.set_rollback_context(
+                plan_id=rollback_ctx.get("plan_id"),
+                step_id=rollback_ctx.get("step_id"),
+                task_id=rollback_ctx.get("task_id"),
+            )
+        else:
+            # Initialize task-level rollback tracking for non-delegated tasks
+            await self._rollback_manager.start_task(
+                task_id=task_id,
+                conversation_id=conversation_id or "",
+                user_id=user_id or "",
+                description=f"{request.task_type}: {str(request.payload.get('content', ''))[:100]}",
+            )
+            self.set_rollback_context(task_id=task_id)
 
         # Send status update to WebSocket clients
         if user_id and self._pubsub:
@@ -990,6 +1098,8 @@ class BaseAgent(ABC):
             # Clear context
             self._state.current_user_id = None
             self._state.current_conversation_id = None
+            # Clear rollback context
+            self.clear_rollback_context()
             agent_active_tasks.labels(agent_type=self.agent_type.value).dec()
 
             # Send idle status update to WebSocket clients
@@ -1439,6 +1549,15 @@ class BaseAgent(ABC):
                             output=None,
                         )
                     else:
+                        # Snapshot file before modification for rollback support
+                        if call.name in ("write_file", "edit_file", "create_file"):
+                            file_path = call.arguments.get("path") or call.arguments.get("file_path")
+                            if file_path and any(self._rollback_context.values()):
+                                is_create = call.name == "create_file" or (
+                                    call.name == "write_file" and not Path(file_path).exists()
+                                )
+                                await self.snapshot_file_for_rollback(file_path, is_create=is_create)
+
                         result = await self._tool_registry.execute(
                             call.name,
                             call.arguments,
@@ -1450,6 +1569,12 @@ class BaseAgent(ABC):
                                 "_agent": self,
                             },
                         )
+
+                        # Capture after content for redo support
+                        if call.name in ("write_file", "edit_file", "create_file") and result.success:
+                            file_path = call.arguments.get("path") or call.arguments.get("file_path")
+                            if file_path and any(self._rollback_context.values()):
+                                await self.capture_after_content_for_rollback(file_path)
 
                         await self._trigger_post_tool_hook(
                             call.name, call.arguments, result, task_id

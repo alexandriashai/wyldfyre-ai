@@ -102,6 +102,17 @@ export interface ContinuationRequest {
   conversationId?: string;
 }
 
+// Rollback types
+export interface RollbackResult {
+  success: boolean;
+  planId: string;
+  stepId?: string;
+  filesRestored: string[];
+  filesDeleted: string[];
+  errors?: string[];
+  timestamp: string;
+}
+
 interface Conversation {
   id: string;
   title: string;
@@ -155,6 +166,7 @@ interface ChatState {
 
   // Plan state (Claude CLI style)
   currentPlan: string | null;
+  currentPlanId: string | null;
   planStatus: PlanStatus;
   planSteps: PlanStep[];
   currentStepIndex: number;
@@ -179,6 +191,10 @@ interface ChatState {
 
   // Continuation request (when agent hits max iterations)
   continuationRequest: ContinuationRequest | null;
+
+  // Rollback state
+  lastRollbackResult: RollbackResult | null;
+  isRollingBack: boolean;
 
   // Active agent for chat
   activeAgent: string | null;
@@ -219,8 +235,9 @@ interface ChatState {
   setConnectionState: (state: "connected" | "connecting" | "disconnected" | "reconnecting") => void;
 
   // Plan actions
-  updatePlan: (content: string, status?: PlanStatus) => void;
-  updateSteps: (steps: PlanStep[], currentStep: number) => void;
+  updatePlan: (content: string, status?: PlanStatus, planId?: string) => void;
+  updateSteps: (steps: PlanStep[], currentStep: number, planId?: string) => void;
+  setCurrentPlanId: (planId: string | null) => void;
   approvePlan: (token: string) => Promise<void>;
   rejectPlan: (token: string) => Promise<void>;
   clearPlan: () => void;
@@ -255,6 +272,10 @@ interface ChatState {
   setContinuationRequest: (request: ContinuationRequest | null) => void;
   clearContinuationRequest: () => void;
 
+  // Rollback actions
+  setRollbackResult: (result: RollbackResult | null) => void;
+  setIsRollingBack: (isRollingBack: boolean) => void;
+
   // Agent selection actions
   setActiveAgent: (agent: string | null) => void;
   setAvailableAgents: (agents: string[]) => void;
@@ -288,6 +309,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingMessages: [],
   connectionState: "disconnected",
   currentPlan: null,
+  currentPlanId: null,
   planStatus: null,
   planSteps: [],
   currentStepIndex: 0,
@@ -300,6 +322,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   showFileChangePreview: false,
   todoProgress: {},
   continuationRequest: null,
+  lastRollbackResult: null,
+  isRollingBack: false,
   activeAgent: null,
   availableAgents: ["wyld", "code", "data", "infra", "research", "qa"],
   pinnedConversations: new Set<string>(),
@@ -621,7 +645,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   // Plan actions
-  updatePlan: (content: string, status?: PlanStatus) => {
+  updatePlan: (content: string, status?: PlanStatus, planId?: string) => {
     const currentStatus = status || "DRAFT";
     const state = get();
 
@@ -631,6 +655,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     set({
       currentPlan: content,
+      currentPlanId: planId || state.currentPlanId,
       planStatus: currentStatus,
       // Preserve existing steps unless starting a new draft
       planSteps: shouldClearSteps ? [] : state.planSteps,
@@ -638,9 +663,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  updateSteps: (steps: PlanStep[], currentStep: number) => {
+  updateSteps: (steps: PlanStep[], currentStep: number, planId?: string) => {
     // Determine plan status from step states
-    let derivedStatus: PlanStatus = get().planStatus;
+    const state = get();
+    let derivedStatus: PlanStatus = state.planStatus;
     if (steps.length > 0) {
       if (steps.some((s) => s.status === "in_progress")) {
         derivedStatus = "APPROVED"; // "APPROVED" displays as "Executing..." in UI
@@ -652,7 +678,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       planSteps: steps,
       currentStepIndex: currentStep,
       planStatus: derivedStatus,
+      currentPlanId: planId || state.currentPlanId,
     });
+  },
+
+  setCurrentPlanId: (planId: string | null) => {
+    set({ currentPlanId: planId });
   },
 
   approvePlan: async (token: string) => {
@@ -690,6 +721,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clearPlan: () => {
     set({
       currentPlan: null,
+      currentPlanId: null,
       planStatus: null,
       planSteps: [],
       currentStepIndex: 0,
@@ -831,6 +863,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   clearContinuationRequest: () => {
     set({ continuationRequest: null });
+  },
+
+  // Rollback actions
+  setRollbackResult: (result) => {
+    set({ lastRollbackResult: result, isRollingBack: false });
+  },
+
+  setIsRollingBack: (isRollingBack) => {
+    set({ isRollingBack });
   },
 
   // Agent selection actions

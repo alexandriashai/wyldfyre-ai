@@ -40,6 +40,7 @@ from base_agent import (
     ToolResult,
     tool,
 )
+from base_agent.rollback import RollbackManager, ChangeType
 from base_agent.shared_tools import get_memory_tools
 
 from .router import RoutingDecision, RoutingStrategy, TaskRouter
@@ -505,6 +506,7 @@ class SupervisorAgent(BaseAgent):
         self._router = TaskRouter()
         self._agent_status: dict[AgentType, AgentStatus] = {}
         self._pending_responses: dict[str, asyncio.Future] = {}
+        self._rollback_manager = RollbackManager(redis_client)
 
     def get_system_prompt(self) -> str:
         """Get the supervisor's system prompt, with project and dynamic context."""
@@ -829,6 +831,15 @@ class SupervisorAgent(BaseAgent):
                     task_payload["project_name"] = project_ctx["project_name"]
                 if "domain" not in task_payload and project_ctx.get("domain"):
                     task_payload["domain"] = project_ctx["domain"]
+
+            # Inject rollback context for file change tracking
+            rollback_ctx = supervisor._rollback_context
+            if any(rollback_ctx.values()):
+                task_payload["_rollback_context"] = {
+                    "plan_id": rollback_ctx.get("plan_id"),
+                    "step_id": rollback_ctx.get("step_id"),
+                    "task_id": rollback_ctx.get("task_id"),
+                }
 
             # Create task request
             request = TaskRequest(
@@ -1370,6 +1381,14 @@ class SupervisorAgent(BaseAgent):
         if request.task_type == "host_command":
             return await self._handle_host_command(request)
 
+        # Handle rollback request
+        if request.task_type == "rollback":
+            return await self._handle_rollback(request)
+
+        # Handle redo request (reapply rolled-back changes)
+        if request.task_type == "redo":
+            return await self._handle_redo(request)
+
         # Inject project context for project-scoped tasks
         self._current_project_context = None
         payload = request.payload or {}
@@ -1770,6 +1789,9 @@ class SupervisorAgent(BaseAgent):
             plan["status"] = "executing"
             await self._redis.set(plan_key, json.dumps(plan))
 
+            # Initialize rollback tracking for this plan
+            await self._rollback_manager.start_plan(plan_id, conversation_id)
+
             # Send initial execution status
             await self.publish_thinking(
                 "decision",
@@ -1812,6 +1834,10 @@ class SupervisorAgent(BaseAgent):
                 step_id = step.get("id")
                 step_title = step.get("title", f"Step {i + 1}")
                 step_description = step.get("description", "")
+
+                # Initialize rollback tracking for this step
+                if step_id:
+                    await self._rollback_manager.start_step(plan_id, step_id, step_title)
 
                 # Update step status to in_progress
                 step["status"] = "in_progress"
@@ -1917,6 +1943,13 @@ class SupervisorAgent(BaseAgent):
                     step["completed_at"] = datetime.now(timezone.utc).isoformat()
                     step["output"] = step_result
 
+                    # Publish thinking about step completion
+                    await self.publish_thinking(
+                        "observation",
+                        f"Step {i + 1} completed successfully: {step_title}",
+                        context={"phase": "step_completed", "step_number": i + 1, "step_id": step_id},
+                    )
+
                     # Publish todo completion for all todos in this step
                     if self._pubsub and user_id:
                         step_todos = step.get("todos", [])
@@ -1940,6 +1973,13 @@ class SupervisorAgent(BaseAgent):
                     step["error"] = str(e)
                     step["completed_at"] = datetime.now(timezone.utc).isoformat()
                     logger.error("Step execution failed", step_id=step_id, error=str(e))
+
+                    # Publish thinking about the failure
+                    await self.publish_thinking(
+                        "observation",
+                        f"Step {i + 1} encountered an error: {str(e)[:100]}. I'll assess whether to continue with remaining steps or adjust the plan.",
+                        context={"phase": "step_failed", "step_number": i + 1, "step_id": step_id, "error": str(e)[:200]},
+                    )
 
                     # Mark todos as failed
                     if self._pubsub and user_id:
@@ -1976,10 +2016,23 @@ class SupervisorAgent(BaseAgent):
                 # Check for course correction on remaining steps
                 remaining_steps = steps[i + 1:]
                 if remaining_steps and step_score < 0.5:
+                    # Publish thinking about low score and potential correction
+                    await self.publish_thinking(
+                        "analysis",
+                        f"Step {i + 1} scored low ({step_score:.2f}). Analyzing whether the remaining {len(remaining_steps)} steps need adjustment based on what I've learned.",
+                        context={"phase": "course_correction_check", "step_score": step_score, "remaining_steps": len(remaining_steps)},
+                    )
+
                     replanned_steps, did_replan = await self._maybe_course_correct(
                         step_scores, remaining_steps, plan
                     )
                     if did_replan:
+                        # Publish thinking about the replan decision
+                        await self.publish_thinking(
+                            "decision",
+                            f"I've restructured the remaining plan. Replaced {len(remaining_steps)} steps with {len(replanned_steps)} new steps that should be more effective based on what I've learned so far.",
+                            context={"phase": "course_corrected", "old_steps": len(remaining_steps), "new_steps": len(replanned_steps)},
+                        )
                         # Replace remaining steps with replanned versions
                         steps[i + 1:] = replanned_steps
                         plan["steps"] = steps
@@ -2045,6 +2098,21 @@ class SupervisorAgent(BaseAgent):
             plan["status"] = "completed"
             plan["completed_at"] = datetime.now(timezone.utc).isoformat()
             await self._redis.set(plan_key, json.dumps(plan))
+
+            # Publish thinking summary about plan completion
+            success_rate = completed_steps / max(len(steps), 1)
+            if success_rate == 1.0:
+                completion_thought = f"All {len(steps)} steps completed successfully. The implementation is ready for review."
+            elif success_rate > 0.7:
+                completion_thought = f"Plan completed with {completed_steps}/{len(steps)} steps successful. Some steps had issues but the core implementation should be functional."
+            else:
+                completion_thought = f"Plan finished with {completed_steps}/{len(steps)} steps completed. There were significant challenges that may require additional attention."
+
+            await self.publish_thinking(
+                "observation",
+                completion_thought,
+                context={"phase": "plan_completed", "completed_steps": completed_steps, "total_steps": len(steps), "success_rate": success_rate},
+            )
 
             # Send completion message
             await self.publish_action("complete", f"Plan completed: {completed_steps}/{len(steps)} steps")
@@ -2590,9 +2658,38 @@ Execute this step now. Make real file changes, not just descriptions."""
                         except Exception:
                             pass
 
+                    # Snapshot file before modification for rollback support
+                    if tool_name in ("write_file", "edit_file"):
+                        file_path = tool_input.get("path", "")
+                        if file_path:
+                            plan_id = plan.get("id") or plan.get("plan_id", "")
+                            step_id = step.get("id", "")
+                            if plan_id and step_id:
+                                # Determine change type
+                                change_type = ChangeType.CREATE if not Path(file_path).exists() else ChangeType.MODIFY
+                                await self._rollback_manager.snapshot_file(
+                                    plan_id=plan_id,
+                                    step_id=step_id,
+                                    file_path=file_path,
+                                    change_type=change_type,
+                                )
+
                     # Execute the tool
                     result, is_error = await self._run_step_tool(tool_name, tool_input, root_path)
                     actions_taken.append(f"{tool_name}({tool_input.get('path', tool_input.get('pattern', ''))[:50]})")
+
+                    # Capture after content for redo support
+                    if tool_name in ("write_file", "edit_file") and not is_error:
+                        file_path = tool_input.get("path", "")
+                        if file_path:
+                            plan_id = plan.get("id") or plan.get("plan_id", "")
+                            step_id = step.get("id", "")
+                            if plan_id and step_id:
+                                await self._rollback_manager.capture_after_content(
+                                    plan_id=plan_id,
+                                    step_id=step_id,
+                                    file_path=file_path,
+                                )
 
                     # Fire post-tool plugin hook
                     if self._plugin_integration:
@@ -3482,6 +3579,343 @@ Execute this step now. Make real file changes, not just descriptions."""
             agent_type=self.agent_type,
         )
 
+    async def _handle_rollback(self, request: TaskRequest) -> TaskResponse:
+        """
+        Handle rollback request to undo file changes from plan/step/task execution.
+
+        Payload options:
+        - plan_id: ID of the plan to rollback (for plan-based rollback)
+        - task_id: ID of the task to rollback (for single task rollback)
+        - step_id: Optional - If provided with plan_id, rollback only this step
+        - dry_run: Optional - If True, report what would happen without making changes
+        - info_only: Optional - If True, just return rollback info without performing rollback
+        """
+        payload = request.payload or {}
+        plan_id = payload.get("plan_id")
+        task_id = payload.get("task_id")
+        step_id = payload.get("step_id")
+        dry_run = payload.get("dry_run", False)
+        info_only = payload.get("info_only", False)
+        user_id = payload.get("user_id")
+        conversation_id = payload.get("conversation_id")
+
+        # Handle task-level rollback (for non-plan tasks)
+        if task_id:
+            return await self._handle_task_rollback(
+                request, task_id, dry_run, info_only, user_id, conversation_id
+            )
+
+        if not plan_id:
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error="plan_id is required for rollback",
+                agent_type=self.agent_type,
+            )
+
+        logger.info(
+            "Processing rollback request",
+            plan_id=plan_id,
+            step_id=step_id,
+            dry_run=dry_run,
+            info_only=info_only,
+        )
+
+        try:
+            # Info only - return what can be rolled back
+            if info_only:
+                info = await self._rollback_manager.get_rollback_info(plan_id)
+                if not info:
+                    return TaskResponse(
+                        task_id=request.id,
+                        status=TaskStatus.COMPLETED,
+                        result={"message": "No rollback data available for this plan", "has_rollback": False},
+                        agent_type=self.agent_type,
+                    )
+
+                return TaskResponse(
+                    task_id=request.id,
+                    status=TaskStatus.COMPLETED,
+                    result={"has_rollback": True, **info},
+                    agent_type=self.agent_type,
+                )
+
+            # Perform rollback (step or plan)
+            if step_id:
+                result = await self._rollback_manager.rollback_step(plan_id, step_id, dry_run=dry_run)
+            else:
+                result = await self._rollback_manager.rollback_plan(plan_id, dry_run=dry_run)
+
+            # Publish thinking about rollback
+            action_type = "dry run" if dry_run else "rollback"
+            if result.get("success"):
+                files_count = len(result.get("files_restored", [])) + len(result.get("files_deleted", []))
+                await self.publish_thinking(
+                    "observation",
+                    f"{'Would restore' if dry_run else 'Restored'} {files_count} files from {'step ' + step_id if step_id else 'plan'}.",
+                    context={"phase": "rollback", "dry_run": dry_run, "files_count": files_count},
+                )
+            else:
+                await self.publish_thinking(
+                    "observation",
+                    f"Rollback {'check' if dry_run else 'attempt'} encountered issues: {', '.join(result.get('errors', []))}",
+                    context={"phase": "rollback_error", "errors": result.get("errors", [])},
+                )
+
+            # Notify frontend about rollback
+            if self._pubsub and user_id and not dry_run and result.get("success"):
+                await self._pubsub.publish(
+                    "agent:responses",
+                    {
+                        "type": "rollback_complete",
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
+                        "plan_id": plan_id,
+                        "step_id": step_id,
+                        "files_restored": result.get("files_restored", []),
+                        "files_deleted": result.get("files_deleted", []),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+            status = TaskStatus.COMPLETED if result.get("success") else TaskStatus.FAILED
+            return TaskResponse(
+                task_id=request.id,
+                status=status,
+                result=result,
+                error="; ".join(result.get("errors", [])) if not result.get("success") else None,
+                agent_type=self.agent_type,
+            )
+
+        except Exception as e:
+            logger.error("Rollback failed", error=str(e), plan_id=plan_id)
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error=str(e),
+                agent_type=self.agent_type,
+            )
+
+    async def _handle_task_rollback(
+        self,
+        request: TaskRequest,
+        task_id: str,
+        dry_run: bool,
+        info_only: bool,
+        user_id: str | None,
+        conversation_id: str | None,
+    ) -> TaskResponse:
+        """Handle rollback for a single task (non-plan)."""
+        logger.info("Processing task rollback", task_id=task_id, dry_run=dry_run)
+
+        try:
+            if info_only:
+                info = await self._rollback_manager.get_task_rollback_info(task_id)
+                if not info:
+                    return TaskResponse(
+                        task_id=request.id,
+                        status=TaskStatus.COMPLETED,
+                        result={"message": "No rollback data for this task", "has_rollback": False},
+                        agent_type=self.agent_type,
+                    )
+                return TaskResponse(
+                    task_id=request.id,
+                    status=TaskStatus.COMPLETED,
+                    result={"has_rollback": True, **info},
+                    agent_type=self.agent_type,
+                )
+
+            result = await self._rollback_manager.rollback_task(task_id, dry_run=dry_run)
+
+            if result.get("success"):
+                files_count = len(result.get("files_restored", [])) + len(result.get("files_deleted", []))
+                await self.publish_thinking(
+                    "observation",
+                    f"{'Would restore' if dry_run else 'Restored'} {files_count} files from task.",
+                    context={"phase": "task_rollback", "task_id": task_id, "files_count": files_count},
+                )
+
+            if self._pubsub and user_id and not dry_run and result.get("success"):
+                await self._pubsub.publish(
+                    "agent:responses",
+                    {
+                        "type": "rollback_complete",
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
+                        "task_id": task_id,
+                        "files_restored": result.get("files_restored", []),
+                        "files_deleted": result.get("files_deleted", []),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+            status = TaskStatus.COMPLETED if result.get("success") else TaskStatus.FAILED
+            return TaskResponse(
+                task_id=request.id,
+                status=status,
+                result=result,
+                error="; ".join(result.get("errors", [])) if not result.get("success") else None,
+                agent_type=self.agent_type,
+            )
+
+        except Exception as e:
+            logger.error("Task rollback failed", error=str(e), task_id=task_id)
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error=str(e),
+                agent_type=self.agent_type,
+            )
+
+    async def _handle_redo(self, request: TaskRequest) -> TaskResponse:
+        """
+        Handle redo request to reapply previously rolled-back file changes.
+
+        Payload options:
+        - plan_id: ID of the plan to redo (for plan-based redo)
+        - task_id: ID of the task to redo (for single task redo)
+        - step_id: Optional - If provided with plan_id, redo only this step
+        - dry_run: Optional - If True, report what would happen without making changes
+        """
+        payload = request.payload or {}
+        plan_id = payload.get("plan_id")
+        task_id = payload.get("task_id")
+        step_id = payload.get("step_id")
+        dry_run = payload.get("dry_run", False)
+        user_id = payload.get("user_id")
+        conversation_id = payload.get("conversation_id")
+
+        # Handle task-level redo
+        if task_id:
+            return await self._handle_task_redo(
+                request, task_id, dry_run, user_id, conversation_id
+            )
+
+        if not plan_id:
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error="plan_id or task_id is required for redo",
+                agent_type=self.agent_type,
+            )
+
+        logger.info(
+            "Processing redo request",
+            plan_id=plan_id,
+            step_id=step_id,
+            dry_run=dry_run,
+        )
+
+        try:
+            # Perform redo (step or plan)
+            if step_id:
+                result = await self._rollback_manager.redo_step(plan_id, step_id, dry_run=dry_run)
+            else:
+                result = await self._rollback_manager.redo_plan(plan_id, dry_run=dry_run)
+
+            # Publish thinking about redo
+            if result.get("success"):
+                files_count = len(result.get("files_reapplied", [])) + len(result.get("files_created", []))
+                await self.publish_thinking(
+                    "observation",
+                    f"{'Would reapply' if dry_run else 'Reapplied'} {files_count} file changes from {'step ' + step_id if step_id else 'plan'}.",
+                    context={"phase": "redo", "dry_run": dry_run, "files_count": files_count},
+                )
+            else:
+                await self.publish_thinking(
+                    "observation",
+                    f"Redo {'check' if dry_run else 'attempt'} encountered issues: {result.get('error') or ', '.join(result.get('errors', []))}",
+                    context={"phase": "redo_error", "errors": result.get("errors", [])},
+                )
+
+            # Notify frontend about redo
+            if self._pubsub and user_id and not dry_run and result.get("success"):
+                await self._pubsub.publish(
+                    "agent:responses",
+                    {
+                        "type": "redo_complete",
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
+                        "plan_id": plan_id,
+                        "step_id": step_id,
+                        "files_reapplied": result.get("files_reapplied", []),
+                        "files_created": result.get("files_created", []),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+            status = TaskStatus.COMPLETED if result.get("success") else TaskStatus.FAILED
+            return TaskResponse(
+                task_id=request.id,
+                status=status,
+                result=result,
+                error=result.get("error") or ("; ".join(result.get("errors", [])) if not result.get("success") else None),
+                agent_type=self.agent_type,
+            )
+
+        except Exception as e:
+            logger.error("Redo failed", error=str(e), plan_id=plan_id)
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error=str(e),
+                agent_type=self.agent_type,
+            )
+
+    async def _handle_task_redo(
+        self,
+        request: TaskRequest,
+        task_id: str,
+        dry_run: bool,
+        user_id: str | None,
+        conversation_id: str | None,
+    ) -> TaskResponse:
+        """Handle redo for a single task (non-plan)."""
+        logger.info("Processing task redo", task_id=task_id, dry_run=dry_run)
+
+        try:
+            result = await self._rollback_manager.redo_task(task_id, dry_run=dry_run)
+
+            if result.get("success"):
+                files_count = len(result.get("files_reapplied", [])) + len(result.get("files_created", []))
+                await self.publish_thinking(
+                    "observation",
+                    f"{'Would reapply' if dry_run else 'Reapplied'} {files_count} file changes from task.",
+                    context={"phase": "task_redo", "task_id": task_id, "files_count": files_count},
+                )
+
+            if self._pubsub and user_id and not dry_run and result.get("success"):
+                await self._pubsub.publish(
+                    "agent:responses",
+                    {
+                        "type": "redo_complete",
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
+                        "task_id": task_id,
+                        "files_reapplied": result.get("files_reapplied", []),
+                        "files_created": result.get("files_created", []),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+            status = TaskStatus.COMPLETED if result.get("success") else TaskStatus.FAILED
+            return TaskResponse(
+                task_id=request.id,
+                status=status,
+                result=result,
+                error=result.get("error") or ("; ".join(result.get("errors", [])) if not result.get("success") else None),
+                agent_type=self.agent_type,
+            )
+
+        except Exception as e:
+            logger.error("Task redo failed", error=str(e), task_id=task_id)
+            return TaskResponse(
+                task_id=request.id,
+                status=TaskStatus.FAILED,
+                error=str(e),
+                agent_type=self.agent_type,
+            )
+
     async def _parse_modification_intent(
         self, user_message: str, steps: list, plan: dict
     ) -> tuple[str | None, dict]:
@@ -4163,6 +4597,13 @@ Rules:
         if recent_avg < 0.5:
             logger.warning(f"Low step scores ({recent_avg:.2f}), considering re-plan")
 
+            # Publish thinking about the assessment
+            await self.publish_thinking(
+                "reasoning",
+                f"Recent step performance is below expectations (avg score: {recent_avg:.2f}). The current approach may not be optimal. Considering whether to adjust the remaining steps.",
+                context={"phase": "course_correction_analysis", "recent_avg": recent_avg, "remaining_steps": len(remaining_steps)},
+            )
+
             # Only replan if there are significant remaining steps
             if len(remaining_steps) >= 2:
                 try:
@@ -4172,6 +4613,11 @@ Rules:
                         return replanned, True
                 except Exception as e:
                     logger.warning(f"Re-planning failed: {e}")
+                    await self.publish_thinking(
+                        "observation",
+                        f"Attempted to adjust the plan but encountered an issue. Continuing with the original steps.",
+                        context={"phase": "replan_failed", "error": str(e)[:100]},
+                    )
 
         return remaining_steps, False
 
@@ -4197,6 +4643,13 @@ Rules:
 
         # Get original goal
         goal = plan.get("description", plan.get("title", ""))
+
+        # Publish thinking about regeneration
+        await self.publish_thinking(
+            "reasoning",
+            f"Generating alternative steps for the remaining {len(remaining_steps)} tasks. I'll break down complex steps into smaller, more focused actions based on what worked and what didn't.",
+            context={"phase": "replanning", "failing_context": failing_context, "remaining_count": len(remaining_steps)},
+        )
 
         # Generate new plan prompt
         prompt = f"""The current plan is struggling. Recent step scores: {step_scores[-3:]}.

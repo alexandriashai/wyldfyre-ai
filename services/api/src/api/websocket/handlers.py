@@ -144,6 +144,8 @@ class MessageHandler:
             "unsubscribe": self._handle_unsubscribe,
             "task_control": self._handle_task_control,
             "add_message": self._handle_add_message,
+            "rollback": self._handle_rollback,
+            "redo": self._handle_redo,
         }
 
         handler = handlers.get(message_type)
@@ -677,6 +679,136 @@ class MessageHandler:
             "type": "message_queued",
             "content": content[:50] + "..." if len(content) > 50 else content,
             "conversation_id": conversation_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+    async def _handle_rollback(
+        self,
+        connection: Connection,
+        data: dict[str, Any],
+    ) -> None:
+        """
+        Handle rollback request to undo file changes.
+
+        Allows users to revert changes made during plan/step execution.
+        """
+        plan_id = data.get("plan_id")
+        step_id = data.get("step_id")  # Optional - rollback specific step
+        dry_run = data.get("dry_run", False)
+        info_only = data.get("info_only", False)
+        conversation_id = data.get("conversation_id")
+
+        if not plan_id:
+            await self._send_error(connection, "plan_id is required for rollback")
+            return
+
+        logger.info(
+            "Rollback request",
+            user_id=connection.user_id,
+            plan_id=plan_id,
+            step_id=step_id,
+            dry_run=dry_run,
+            info_only=info_only,
+        )
+
+        # Create rollback task request for supervisor
+        from ai_messaging import TaskRequest, AgentType
+
+        request = TaskRequest(
+            task_type="rollback",
+            payload={
+                "plan_id": plan_id,
+                "step_id": step_id,
+                "dry_run": dry_run,
+                "info_only": info_only,
+                "user_id": connection.user_id,
+                "conversation_id": conversation_id,
+            },
+            target_agent=AgentType.SUPERVISOR,
+        )
+
+        # Publish to supervisor task queue
+        subscriber_count = await self.pubsub.publish(
+            "agent:supervisor:tasks",
+            request.model_dump_json(),
+        )
+
+        if subscriber_count == 0:
+            await self._send_error(connection, "Supervisor agent is not running")
+            return
+
+        # Send acknowledgment
+        await connection.websocket.send_json({
+            "type": "rollback_initiated",
+            "plan_id": plan_id,
+            "step_id": step_id,
+            "dry_run": dry_run,
+            "info_only": info_only,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+    async def _handle_redo(
+        self,
+        connection: Connection,
+        data: dict[str, Any],
+    ) -> None:
+        """
+        Handle redo request to reapply rolled-back file changes.
+
+        Allows users to reapply changes that were previously rolled back.
+        """
+        plan_id = data.get("plan_id")
+        task_id = data.get("task_id")
+        step_id = data.get("step_id")  # Optional - redo specific step
+        dry_run = data.get("dry_run", False)
+        conversation_id = data.get("conversation_id")
+
+        if not plan_id and not task_id:
+            await self._send_error(connection, "plan_id or task_id is required for redo")
+            return
+
+        logger.info(
+            "Redo request",
+            user_id=connection.user_id,
+            plan_id=plan_id,
+            task_id=task_id,
+            step_id=step_id,
+            dry_run=dry_run,
+        )
+
+        # Create redo task request for supervisor
+        from ai_messaging import TaskRequest, AgentType
+
+        request = TaskRequest(
+            task_type="redo",
+            payload={
+                "plan_id": plan_id,
+                "task_id": task_id,
+                "step_id": step_id,
+                "dry_run": dry_run,
+                "user_id": connection.user_id,
+                "conversation_id": conversation_id,
+            },
+            target_agent=AgentType.SUPERVISOR,
+        )
+
+        # Publish to supervisor task queue
+        subscriber_count = await self.pubsub.publish(
+            "agent:supervisor:tasks",
+            request.model_dump_json(),
+        )
+
+        if subscriber_count == 0:
+            await self._send_error(connection, "Supervisor agent is not running")
+            return
+
+        # Send acknowledgment
+        await connection.websocket.send_json({
+            "type": "redo_initiated",
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "step_id": step_id,
+            "dry_run": dry_run,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
@@ -1373,6 +1505,52 @@ RESPONSE TO ANALYZE:
                 thought_type=data.get("thought_type"),
                 content_preview=data.get("content", "")[:50] if data.get("content") else None,
                 sent_count=sent_count,
+            )
+
+        elif response_type == "rollback_complete":
+            # Rollback operation completed
+            await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "rollback_complete",
+                    "plan_id": data.get("plan_id"),
+                    "task_id": data.get("task_id"),
+                    "step_id": data.get("step_id"),
+                    "files_restored": data.get("files_restored", []),
+                    "files_deleted": data.get("files_deleted", []),
+                    "conversation_id": data.get("conversation_id"),
+                    "timestamp": data.get("timestamp"),
+                },
+            )
+            logger.info(
+                "Rollback complete sent to user",
+                user_id=user_id,
+                plan_id=data.get("plan_id"),
+                task_id=data.get("task_id"),
+                files_count=len(data.get("files_restored", [])) + len(data.get("files_deleted", [])),
+            )
+
+        elif response_type == "redo_complete":
+            # Redo operation completed
+            await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "redo_complete",
+                    "plan_id": data.get("plan_id"),
+                    "task_id": data.get("task_id"),
+                    "step_id": data.get("step_id"),
+                    "files_reapplied": data.get("files_reapplied", []),
+                    "files_created": data.get("files_created", []),
+                    "conversation_id": data.get("conversation_id"),
+                    "timestamp": data.get("timestamp"),
+                },
+            )
+            logger.info(
+                "Redo complete sent to user",
+                user_id=user_id,
+                plan_id=data.get("plan_id"),
+                task_id=data.get("task_id"),
+                files_count=len(data.get("files_reapplied", [])) + len(data.get("files_created", [])),
             )
 
         elif response_type == "error":

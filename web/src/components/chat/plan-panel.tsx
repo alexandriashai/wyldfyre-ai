@@ -32,6 +32,7 @@ import {
   Link2,
 } from "lucide-react";
 import { PlanChangelog } from "./plan-changelog";
+import { StepRollbackButton } from "./rollback-controls";
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -120,9 +121,10 @@ interface StepItemProps {
   index: number;
   isLast: boolean;
   todoProgressMap: Record<number, TodoProgress>;
+  planId?: string;
 }
 
-function StepItem({ step, index, isLast, todoProgressMap }: StepItemProps) {
+function StepItem({ step, index, isLast, todoProgressMap, planId }: StepItemProps) {
   const [showOutput, setShowOutput] = useState(false);
   const duration = getStepDuration(step);
   const hasOutput = step.output && step.output.length > 0;
@@ -197,6 +199,10 @@ function StepItem({ step, index, isLast, todoProgressMap }: StepItemProps) {
                 <Clock className="h-2.5 w-2.5" />
                 {formatDuration(duration)}
               </span>
+            )}
+            {/* Rollback button for completed steps */}
+            {step.status === "completed" && planId && (
+              <StepRollbackButton planId={planId} stepId={step.id} className="ml-auto" />
             )}
           </div>
 
@@ -356,6 +362,7 @@ export function PlanPanel({ className }: PlanPanelProps) {
   const { token } = useAuthStore();
   const {
     currentPlan,
+    currentPlanId,
     planStatus,
     planSteps,
     currentStepIndex,
@@ -478,6 +485,7 @@ export function PlanPanel({ className }: PlanPanelProps) {
                     index={index}
                     isLast={index === planSteps.length - 1}
                     todoProgressMap={getTodoProgressMap(step.id)}
+                    planId={currentPlanId || undefined}
                   />
                 ))}
                 <ProgressBar steps={planSteps} />

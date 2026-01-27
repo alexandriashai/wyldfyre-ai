@@ -263,12 +263,37 @@ class PlanManager:
         return True
 
     async def get_plan(self, plan_id: str) -> Optional[Plan]:
-        """Get a plan by ID."""
+        """Get a plan by ID (supports partial ID matching)."""
+        # Check exact match in memory cache
         if plan_id in self._active_plans:
             return self._active_plans[plan_id]
 
-        # Try to load from Redis
-        return await self._load_plan(plan_id)
+        # Check partial match in memory cache
+        for full_id, plan in self._active_plans.items():
+            if full_id.startswith(plan_id):
+                return plan
+
+        # Try exact match from Redis
+        plan = await self._load_plan(plan_id)
+        if plan:
+            return plan
+
+        # Try partial ID match - scan for plans starting with this ID
+        cursor = 0
+        while True:
+            cursor, keys = await self.redis.scan(cursor=cursor, match=f"plan:{plan_id}*", count=100)
+            for key in keys:
+                if ":history" in key:
+                    continue
+                # Extract the full plan ID from key (plan:<uuid>)
+                full_id = key.replace("plan:", "")
+                plan = await self._load_plan(full_id)
+                if plan:
+                    return plan
+            if cursor == 0:
+                break
+
+        return None
 
     async def get_active_plan(self, conversation_id: str) -> Optional[Plan]:
         """Get the active plan for a conversation."""
