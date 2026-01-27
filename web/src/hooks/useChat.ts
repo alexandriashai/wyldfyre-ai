@@ -121,8 +121,17 @@ export function useChat() {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const sendingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const maxReconnectAttempts = 10;
+
+  // Clear sending timeout helper
+  const clearSendingTimeout = () => {
+    if (sendingTimeoutRef.current) {
+      clearTimeout(sendingTimeoutRef.current);
+      sendingTimeoutRef.current = null;
+    }
+  };
 
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -172,6 +181,16 @@ export function useChat() {
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
       const data: ChatMessage = JSON.parse(event.data);
+
+      // Clear sending state for any response-type message (not pong/connected/subscribed)
+      const responseTypes = [
+        "message", "token", "error", "command_result", "command_error",
+        "plan_update", "plan_status", "step_update", "agent_status", "agent_action",
+        "thinking_stream", "rollback_complete", "redo_complete", "continuation_required"
+      ];
+      if (responseTypes.includes(data.type)) {
+        clearSendingTimeout();
+      }
 
       switch (data.type) {
         case "connected":
@@ -610,6 +629,13 @@ export function useChat() {
       addMessage(userMessage);
       setMessageStatus(messageId, "sending");
       setIsSending(true);
+
+      // Safety timeout - clear sending state after 30 seconds if not cleared by response
+      clearSendingTimeout();
+      sendingTimeoutRef.current = setTimeout(() => {
+        console.warn("[Chat] Sending timeout - clearing stuck sending state");
+        setIsSending(false);
+      }, 30000);
 
       // If disconnected, queue the message
       if (socketRef.current?.readyState !== WebSocket.OPEN) {
