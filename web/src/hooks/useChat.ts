@@ -201,6 +201,10 @@ export function useChat() {
         case "agent_status":
           if (data.agent && data.status) {
             updateAgentStatus(data.agent, data.status, data.task);
+            // Clear sending state when agent starts working (status=busy)
+            if (data.status === "busy") {
+              setIsSending(false);
+            }
           }
           break;
 
@@ -309,6 +313,7 @@ export function useChat() {
               }
             }
           }
+          setIsSending(false); // Clear sending state on plan status update
           break;
 
         case "step_update":
@@ -324,6 +329,7 @@ export function useChat() {
               console.log(`[Plan] Modified: ${data.modification}`);
             }
           }
+          setIsSending(false); // Clear sending state when plan steps arrive
           break;
 
         case "task_control_ack":
