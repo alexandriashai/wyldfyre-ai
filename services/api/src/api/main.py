@@ -42,6 +42,7 @@ from .routes import (
 from .websocket.handlers import AgentResponseHandler
 from .websocket.manager import get_connection_manager
 from .websocket.terminal import router as terminal_router
+from .services.usage_sync_service import get_usage_sync_service
 
 logger = get_logger(__name__)
 
@@ -94,12 +95,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error("Failed to start agent response handler", error=str(e))
 
+    # Start usage sync service
+    usage_sync_service = None
+    try:
+        usage_sync_service = get_usage_sync_service()
+        await usage_sync_service.start()
+        logger.info("Usage sync service started")
+    except Exception as e:
+        logger.error("Failed to start usage sync service", error=str(e))
+
     logger.info("API server started")
 
     yield
 
     # Shutdown
     logger.info("Shutting down API server...")
+
+    # Stop usage sync service
+    if usage_sync_service:
+        await usage_sync_service.stop()
 
     # Stop agent response handler
     if agent_handler:

@@ -6,6 +6,7 @@ from ai_core import AgentType, DomainStatus, TaskStatus
 
 from .base import Base, TimestampMixin, UUIDMixin, generate_uuid
 from .api_usage import APIProvider, APIUsage, BudgetAlert, UsageType
+from .provider_usage import ProviderUsage, SyncType, UsageSyncLog
 from .conversation import Conversation, ConversationStatus, PlanStatus
 from .conversation_tag import ConversationTag
 from .credential import BrowserSession, StoredCredential
@@ -28,6 +29,8 @@ __all__ = [
     # API Usage enums
     "APIProvider",
     "UsageType",
+    # Provider Usage enums
+    "SyncType",
     # Project & Conversation enums
     "ProjectStatus",
     "ConversationStatus",
@@ -40,6 +43,8 @@ __all__ = [
     "Message",
     "APIUsage",
     "BudgetAlert",
+    "ProviderUsage",
+    "UsageSyncLog",
     "Project",
     "Conversation",
     "StoredCredential",

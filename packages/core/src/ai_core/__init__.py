@@ -168,6 +168,13 @@ from .statusline import (
     get_statusline,
     init_statusline,
 )
+from .usage_clients import (
+    AnthropicUsageClient,
+    BaseUsageClient,
+    CostRecord,
+    OpenAIUsageClient,
+    UsageRecord,
+)
 from .metrics import (
     agent_active_tasks,
     agent_errors_total,
@@ -390,4 +397,10 @@ __all__ = [
     "StatusMetrics",
     "get_statusline",
     "init_statusline",
+    # Usage Clients
+    "BaseUsageClient",
+    "UsageRecord",
+    "CostRecord",
+    "AnthropicUsageClient",
+    "OpenAIUsageClient",
 ]

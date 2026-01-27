@@ -1428,6 +1428,77 @@ export interface UsageRecord {
   created_at: string;
 }
 
+// Provider Usage Reconciliation Types
+
+export interface ProviderUsageRecord {
+  id: string;
+  provider: string;
+  report_date: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  cost_usd: number;
+  workspace_id: string | null;
+}
+
+export interface ProviderUsageResponse {
+  records: ProviderUsageRecord[];
+  total: number;
+  period_start: string;
+  period_end: string;
+}
+
+export interface ModelReconciliation {
+  model: string;
+  local_cost: number;
+  provider_cost: number;
+  difference: number;
+  difference_percentage: number;
+  local_input_tokens: number;
+  local_output_tokens: number;
+  provider_input_tokens: number;
+  provider_output_tokens: number;
+}
+
+export interface ReconciliationResponse {
+  period_start: string;
+  period_end: string;
+  local_total: number;
+  provider_total: number;
+  total_difference: number;
+  total_difference_percentage: number;
+  by_model: ModelReconciliation[];
+}
+
+export interface ProviderSyncStatus {
+  configured: boolean;
+  last_sync: {
+    completed_at: string;
+    records_synced: number;
+    sync_type: string;
+  } | null;
+}
+
+export interface SyncStatusResponse {
+  anthropic: ProviderSyncStatus;
+  openai: ProviderSyncStatus;
+}
+
+export interface SyncResult {
+  configured: boolean;
+  success?: boolean;
+  records_synced?: number;
+  duration_seconds?: number;
+  error?: string;
+}
+
+export interface SyncResponse {
+  anthropic: SyncResult;
+  openai: SyncResult;
+  message: string;
+}
+
 // Usage Analytics API
 export const usageApi = {
   async daily(token: string, date?: string) {
@@ -1497,6 +1568,43 @@ export const usageApi = {
       page: number;
       page_size: number;
     }>(response);
+  },
+
+  // Provider Usage Reconciliation Methods
+
+  async providerReported(token: string, days: number = 30) {
+    const searchParams = new URLSearchParams({ days: days.toString() });
+    const response = await fetch(`${API_BASE_URL}/api/usage/provider-reported?${searchParams}`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<ProviderUsageResponse>(response);
+  },
+
+  async reconciliation(token: string, days: number = 30) {
+    const searchParams = new URLSearchParams({ days: days.toString() });
+    const response = await fetch(`${API_BASE_URL}/api/usage/reconciliation?${searchParams}`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<ReconciliationResponse>(response);
+  },
+
+  async syncStatus(token: string) {
+    const response = await fetch(`${API_BASE_URL}/api/usage/sync-status`, {
+      method: 'GET',
+      headers: getHeaders(token),
+    });
+    return handleResponse<SyncStatusResponse>(response);
+  },
+
+  async triggerSync(token: string, days: number = 7) {
+    const searchParams = new URLSearchParams({ days: days.toString() });
+    const response = await fetch(`${API_BASE_URL}/api/usage/sync?${searchParams}`, {
+      method: 'POST',
+      headers: getHeaders(token),
+    });
+    return handleResponse<SyncResponse>(response);
   },
 };
 

@@ -55,6 +55,9 @@ class DailyUsagePoint(BaseModel):
     cost: float
     tokens: int
     requests: int
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
 
 
 class UsageHistoryResponse(BaseModel):
@@ -126,3 +129,90 @@ class UsageListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+# Provider Usage Reconciliation Schemas
+
+
+class ProviderUsageRecord(BaseModel):
+    """Provider-reported usage record."""
+
+    id: str
+    provider: str
+    report_date: datetime
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cached_tokens: int
+    cost_usd: float
+    workspace_id: str | None
+
+    class Config:
+        from_attributes = True
+
+
+class ProviderUsageResponse(BaseModel):
+    """Provider-reported usage response."""
+
+    records: list[ProviderUsageRecord]
+    total: int
+    period_start: datetime
+    period_end: datetime
+
+
+class ModelReconciliation(BaseModel):
+    """Reconciliation data for a single model."""
+
+    model: str
+    local_cost: float
+    provider_cost: float
+    difference: float
+    difference_percentage: float
+    local_input_tokens: int
+    local_output_tokens: int
+    provider_input_tokens: int
+    provider_output_tokens: int
+
+
+class ReconciliationResponse(BaseModel):
+    """Local vs provider cost reconciliation response."""
+
+    period_start: datetime
+    period_end: datetime
+    local_total: float
+    provider_total: float
+    total_difference: float
+    total_difference_percentage: float
+    by_model: list[ModelReconciliation]
+
+
+class ProviderSyncStatus(BaseModel):
+    """Sync status for a single provider."""
+
+    configured: bool
+    last_sync: dict | None = None
+
+
+class SyncStatusResponse(BaseModel):
+    """Sync configuration and status response."""
+
+    anthropic: ProviderSyncStatus
+    openai: ProviderSyncStatus
+
+
+class SyncResult(BaseModel):
+    """Result of a sync operation for a provider."""
+
+    configured: bool
+    success: bool | None = None
+    records_synced: int | None = None
+    duration_seconds: float | None = None
+    error: str | None = None
+
+
+class SyncResponse(BaseModel):
+    """Response from manual sync trigger."""
+
+    anthropic: SyncResult
+    openai: SyncResult
+    message: str

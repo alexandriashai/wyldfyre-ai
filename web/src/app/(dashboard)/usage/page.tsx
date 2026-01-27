@@ -8,6 +8,8 @@ import {
   UsageHistory,
   BudgetStatus,
   AgentBreakdown,
+  ReconciliationResponse,
+  SyncStatusResponse,
 } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -22,10 +24,13 @@ import {
   Loader2,
   ArrowUpRight,
   ArrowDownRight,
-  Zap,
   BarChart3,
   Download,
   Calendar,
+  RefreshCw,
+  CheckCircle,
+  XCircle,
+  Scale,
 } from "lucide-react";
 import {
   LineChart,
@@ -40,7 +45,6 @@ import {
   PieChart,
   Pie,
   Cell,
-  Legend,
 } from "recharts";
 
 const CHART_COLORS = [
@@ -56,7 +60,10 @@ export default function UsagePage() {
   const [history, setHistory] = useState<UsageHistory | null>(null);
   const [budgetStatus, setBudgetStatus] = useState<BudgetStatus | null>(null);
   const [agentBreakdown, setAgentBreakdown] = useState<AgentBreakdown[]>([]);
+  const [reconciliation, setReconciliation] = useState<ReconciliationResponse | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [timeRange, setTimeRange] = useState<TimeRange>("30d");
 
   useEffect(() => {
@@ -69,20 +76,38 @@ export default function UsagePage() {
     if (!token) return;
     setIsLoading(true);
     try {
-      const [daily, hist, budget, agents] = await Promise.all([
+      const [daily, hist, budget, agents, recon, status] = await Promise.all([
         usageApi.daily(token),
         usageApi.history(token, days),
         usageApi.budget(token),
         usageApi.byAgent(token, days),
+        usageApi.reconciliation(token, days).catch(() => null),
+        usageApi.syncStatus(token).catch(() => null),
       ]);
       setDailySummary(daily);
       setHistory(hist);
       setBudgetStatus(budget);
       setAgentBreakdown(agents.breakdown || []);
+      setReconciliation(recon);
+      setSyncStatus(status);
     } catch (error) {
       console.error("Failed to fetch usage data:", error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleSync = async () => {
+    if (!token || isSyncing) return;
+    setIsSyncing(true);
+    try {
+      await usageApi.triggerSync(token, 7);
+      // Refresh data after sync
+      await fetchAllData();
+    } catch (error) {
+      console.error("Failed to sync:", error);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -131,15 +156,6 @@ export default function UsagePage() {
       value: agent.cost,
     }));
   }, [agentBreakdown]);
-
-  // Model donut data
-  const modelDonutData = useMemo(() => {
-    if (!dailySummary?.breakdown_by_model) return [];
-    return dailySummary.breakdown_by_model.map((model) => ({
-      name: model.model,
-      value: model.cost,
-    }));
-  }, [dailySummary]);
 
   const exportCSV = () => {
     if (!history?.daily_data) return;
@@ -375,6 +391,7 @@ export default function UsagePage() {
         <TabsList>
           <TabsTrigger value="alerts">Budget Alerts</TabsTrigger>
           <TabsTrigger value="history">History Table</TabsTrigger>
+          <TabsTrigger value="reconciliation">Local vs. Provider</TabsTrigger>
         </TabsList>
 
         <TabsContent value="alerts" className="space-y-4">
@@ -482,6 +499,187 @@ export default function UsagePage() {
                     <p className="text-lg font-bold">{history.total_requests}</p>
                     <p className="text-xs text-muted-foreground">Total Requests</p>
                   </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="reconciliation" className="space-y-4">
+          {/* Sync Status Cards */}
+          <div className="grid gap-4 grid-cols-1 md:grid-cols-3 mb-4">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground">Anthropic</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-2">
+                  {syncStatus?.anthropic?.configured ? (
+                    <CheckCircle className="h-4 w-4 text-green-500" />
+                  ) : (
+                    <XCircle className="h-4 w-4 text-muted-foreground" />
+                  )}
+                  <span className="text-sm font-medium">
+                    {syncStatus?.anthropic?.configured ? "Configured" : "Not Configured"}
+                  </span>
+                </div>
+                {syncStatus?.anthropic?.last_sync && (
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Last sync: {new Date(syncStatus.anthropic.last_sync.completed_at).toLocaleString()}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground">OpenAI</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-2">
+                  {syncStatus?.openai?.configured ? (
+                    <CheckCircle className="h-4 w-4 text-green-500" />
+                  ) : (
+                    <XCircle className="h-4 w-4 text-muted-foreground" />
+                  )}
+                  <span className="text-sm font-medium">
+                    {syncStatus?.openai?.configured ? "Configured" : "Not Configured"}
+                  </span>
+                </div>
+                {syncStatus?.openai?.last_sync && (
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Last sync: {new Date(syncStatus.openai.last_sync.completed_at).toLocaleString()}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground">Sync Now</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full h-8"
+                  onClick={handleSync}
+                  disabled={isSyncing || (!syncStatus?.anthropic?.configured && !syncStatus?.openai?.configured)}
+                >
+                  {isSyncing ? (
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3 mr-1" />
+                  )}
+                  {isSyncing ? "Syncing..." : "Sync Provider Data"}
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Summary Cards */}
+          {reconciliation && (
+            <div className="grid gap-4 grid-cols-1 md:grid-cols-3 mb-4">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs font-medium text-muted-foreground">Local Estimate</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-2">
+                    <DollarSign className="h-4 w-4 text-blue-500" />
+                    <span className="text-xl font-bold">{formatCost(reconciliation.local_total)}</span>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs font-medium text-muted-foreground">Provider Reported</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-2">
+                    <DollarSign className="h-4 w-4 text-green-500" />
+                    <span className="text-xl font-bold">{formatCost(reconciliation.provider_total)}</span>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs font-medium text-muted-foreground">Difference</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-2">
+                    <Scale className="h-4 w-4 text-orange-500" />
+                    <span className={`text-xl font-bold ${
+                      reconciliation.total_difference > 0 ? "text-red-500" :
+                      reconciliation.total_difference < 0 ? "text-green-500" : ""
+                    }`}>
+                      {reconciliation.total_difference > 0 ? "+" : ""}
+                      {formatCost(reconciliation.total_difference)}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      ({reconciliation.total_difference_percentage > 0 ? "+" : ""}
+                      {reconciliation.total_difference_percentage.toFixed(1)}%)
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          {/* Comparison Table */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Scale className="h-4 w-4" />
+                Cost Comparison by Model
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {!reconciliation?.by_model?.length ? (
+                <div className="text-center py-8 text-muted-foreground text-sm">
+                  <p>No reconciliation data available.</p>
+                  <p className="text-xs mt-2">
+                    Configure admin API keys and sync to see provider-reported costs.
+                  </p>
+                </div>
+              ) : (
+                <div className="max-h-[400px] overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-card">
+                      <tr className="border-b">
+                        <th className="text-left py-2 font-medium text-muted-foreground">Model</th>
+                        <th className="text-right py-2 font-medium text-muted-foreground">Local</th>
+                        <th className="text-right py-2 font-medium text-muted-foreground">Provider</th>
+                        <th className="text-right py-2 font-medium text-muted-foreground">Diff</th>
+                        <th className="text-right py-2 font-medium text-muted-foreground">%</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reconciliation.by_model.map((row) => (
+                        <tr key={row.model} className="border-b border-muted/30 hover:bg-muted/20">
+                          <td className="py-1.5 font-medium">{row.model}</td>
+                          <td className="text-right">{formatCost(row.local_cost)}</td>
+                          <td className="text-right">{formatCost(row.provider_cost)}</td>
+                          <td className={`text-right ${
+                            row.difference > 0 ? "text-red-500" :
+                            row.difference < 0 ? "text-green-500" : ""
+                          }`}>
+                            {row.difference > 0 ? "+" : ""}
+                            {formatCost(row.difference)}
+                          </td>
+                          <td className={`text-right ${
+                            row.difference_percentage > 5 ? "text-red-500" :
+                            row.difference_percentage < -5 ? "text-green-500" : ""
+                          }`}>
+                            {row.difference_percentage > 0 ? "+" : ""}
+                            {row.difference_percentage.toFixed(1)}%
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </CardContent>

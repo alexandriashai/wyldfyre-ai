@@ -84,6 +84,15 @@ class APISettings(BaseSettings):
 
     anthropic_api_key: SecretStr = Field(default=SecretStr(""), alias="ANTHROPIC_API_KEY")
     openai_api_key: SecretStr = Field(default=SecretStr(""), alias="OPENAI_API_KEY")
+    # Admin API keys for usage/costs APIs (separate from regular inference keys)
+    anthropic_admin_api_key: SecretStr = Field(
+        default=SecretStr(""),
+        alias="ANTHROPIC_ADMIN_API_KEY",
+    )
+    openai_admin_api_key: SecretStr = Field(
+        default=SecretStr(""),
+        alias="OPENAI_ADMIN_API_KEY",
+    )
     github_pat: SecretStr = Field(default=SecretStr(""), alias="GITHUB_PAT")
     cloudflare_api_key: SecretStr = Field(default=SecretStr(""), alias="CLOUDFLARE_API_KEY")
     cloudflare_email: str = Field(default="", alias="CLOUDFLARE_EMAIL")
