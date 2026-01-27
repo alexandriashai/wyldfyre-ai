@@ -5,7 +5,6 @@ Fetches usage and cost data from Anthropic's Admin API.
 Requires an Admin API key (sk-ant-admin-...).
 """
 
-import json
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -63,8 +62,8 @@ class AnthropicUsageClient(BaseUsageClient):
     async def is_configured(self) -> bool:
         """Check if the client has valid API credentials configured."""
         key = self.api_key
-        # Accept both admin keys (sk-ant-admin-) and regular keys (sk-ant-api)
-        return bool(key and (key.startswith("sk-ant-admin-") or key.startswith("sk-ant-api")))
+        # Accept admin keys (sk-ant-admin- or sk-ant-admin01-) and regular keys (sk-ant-api)
+        return bool(key and (key.startswith("sk-ant-admin") or key.startswith("sk-ant-api")))
 
     async def test_connection(self) -> tuple[bool, str | None]:
         """Test the API connection."""
@@ -74,14 +73,15 @@ class AnthropicUsageClient(BaseUsageClient):
         try:
             async with httpx.AsyncClient() as client:
                 # Try to fetch a minimal usage report to test credentials
+                # Anthropic uses RFC 3339 timestamps and array parameters
+                now = datetime.now(timezone.utc)
                 response = await client.get(
                     f"{self.BASE_URL}/v1/organizations/usage_report/messages",
                     headers=self._get_headers(),
-                    params={
-                        "start_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                        "end_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                        "group_by": "model",
-                    },
+                    params=[
+                        ("starting_at", now.strftime("%Y-%m-%dT00:00:00Z")),
+                        ("group_by[]", "model"),
+                    ],
                     timeout=30.0,
                 )
                 if response.status_code == 200:
@@ -118,44 +118,63 @@ class AnthropicUsageClient(BaseUsageClient):
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.BASE_URL}/v1/organizations/usage_report/messages",
-                    headers=self._get_headers(),
-                    params={
-                        "start_date": start_date.strftime("%Y-%m-%d"),
-                        "end_date": end_date.strftime("%Y-%m-%d"),
-                        "group_by": "model",
-                    },
-                    timeout=60.0,
-                )
-                response.raise_for_status()
-                data = response.json()
+                # Anthropic uses RFC 3339 timestamps and requires array params
+                # Use 1d bucket width for daily aggregation
+                page = None
+                while True:
+                    params = [
+                        ("starting_at", start_date.strftime("%Y-%m-%dT00:00:00Z")),
+                        ("ending_at", end_date.strftime("%Y-%m-%dT23:59:59Z")),
+                        ("bucket_width", "1d"),
+                        ("group_by[]", "model"),
+                    ]
+                    if page:
+                        params.append(("page", page))
 
-                # Process usage data
-                for item in data.get("data", []):
-                    # Parse date from the response
-                    report_date = datetime.fromisoformat(
-                        item.get("date", start_date.isoformat())
+                    response = await client.get(
+                        f"{self.BASE_URL}/v1/organizations/usage_report/messages",
+                        headers=self._get_headers(),
+                        params=params,
+                        timeout=60.0,
                     )
+                    response.raise_for_status()
+                    data = response.json()
 
-                    record = UsageRecord(
-                        provider="anthropic",
-                        model=item.get("model", "unknown"),
-                        report_date=report_date,
-                        input_tokens=item.get("input_tokens", 0),
-                        output_tokens=item.get("output_tokens", 0),
-                        cached_tokens=item.get("cache_read_input_tokens", 0),
-                        cost_usd=Decimal("0"),  # Will be filled from cost API
-                        workspace_id=item.get("workspace_id"),
-                        raw_response=item,
-                    )
-                    records.append(record)
+                    # Process usage data - data is array of time buckets
+                    for bucket in data.get("data", []):
+                        # Parse date from the bucket's starting_at
+                        bucket_start = bucket.get("starting_at", start_date.isoformat())
+                        report_date = datetime.fromisoformat(
+                            bucket_start.replace("Z", "+00:00")
+                        )
+
+                        # Each bucket has results array
+                        for item in bucket.get("results", []):
+                            record = UsageRecord(
+                                provider="anthropic",
+                                model=item.get("model", "unknown"),
+                                report_date=report_date,
+                                input_tokens=item.get("uncached_input_tokens", 0),
+                                output_tokens=item.get("output_tokens", 0),
+                                cached_tokens=item.get("cache_read_input_tokens", 0),
+                                cost_usd=Decimal("0"),  # Will be filled from cost API
+                                workspace_id=item.get("workspace_id"),
+                                raw_response=item,
+                            )
+                            records.append(record)
+
+                    # Check for next page
+                    if data.get("has_more", False):
+                        page = data.get("next_page")
+                    else:
+                        break
 
         except httpx.HTTPStatusError as e:
             logger.error(
                 "Anthropic usage API error",
                 status_code=e.response.status_code,
                 error=str(e),
+                response_text=e.response.text,
             )
         except httpx.RequestError as e:
             logger.error("Anthropic usage API connection error", error=str(e))
@@ -187,44 +206,68 @@ class AnthropicUsageClient(BaseUsageClient):
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.BASE_URL}/v1/organizations/cost_report",
-                    headers=self._get_headers(),
-                    params={
-                        "start_date": start_date.strftime("%Y-%m-%d"),
-                        "end_date": end_date.strftime("%Y-%m-%d"),
-                        "group_by": "model",
-                    },
-                    timeout=60.0,
-                )
-                response.raise_for_status()
-                data = response.json()
+                # Anthropic uses RFC 3339 timestamps and requires array params
+                # group_by description gives us model breakdown
+                page = None
+                while True:
+                    params = [
+                        ("starting_at", start_date.strftime("%Y-%m-%dT00:00:00Z")),
+                        ("ending_at", end_date.strftime("%Y-%m-%dT23:59:59Z")),
+                        ("bucket_width", "1d"),
+                        ("group_by[]", "description"),
+                    ]
+                    if page:
+                        params.append(("page", page))
 
-                # Process cost data
-                for item in data.get("data", []):
-                    report_date = datetime.fromisoformat(
-                        item.get("date", start_date.isoformat())
+                    response = await client.get(
+                        f"{self.BASE_URL}/v1/organizations/cost_report",
+                        headers=self._get_headers(),
+                        params=params,
+                        timeout=60.0,
                     )
+                    response.raise_for_status()
+                    data = response.json()
 
-                    # Cost is typically in USD cents, convert to dollars
-                    cost_cents = item.get("cost_usd_cents", 0)
-                    cost_usd = Decimal(str(cost_cents)) / Decimal("100")
+                    # Process cost data - data is array of time buckets
+                    for bucket in data.get("data", []):
+                        bucket_start = bucket.get("starting_at", start_date.isoformat())
+                        report_date = datetime.fromisoformat(
+                            bucket_start.replace("Z", "+00:00")
+                        )
 
-                    record = CostRecord(
-                        provider="anthropic",
-                        model=item.get("model", "unknown"),
-                        report_date=report_date,
-                        cost_usd=cost_usd,
-                        workspace_id=item.get("workspace_id"),
-                        raw_response=item,
-                    )
-                    records.append(record)
+                        # Each bucket has results array
+                        for item in bucket.get("results", []):
+                            # Cost amount is in lowest currency units (cents) as string
+                            # e.g., "123.45" in USD represents $1.2345
+                            amount_str = item.get("amount", "0")
+                            cost_cents = Decimal(amount_str)
+                            cost_usd = cost_cents / Decimal("100")
+
+                            # Model comes from description grouping
+                            model = item.get("model", "unknown") or "unknown"
+
+                            record = CostRecord(
+                                provider="anthropic",
+                                model=model,
+                                report_date=report_date,
+                                cost_usd=cost_usd,
+                                workspace_id=item.get("workspace_id"),
+                                raw_response=item,
+                            )
+                            records.append(record)
+
+                    # Check for next page
+                    if data.get("has_more", False):
+                        page = data.get("next_page")
+                    else:
+                        break
 
         except httpx.HTTPStatusError as e:
             logger.error(
                 "Anthropic cost API error",
                 status_code=e.response.status_code,
                 error=str(e),
+                response_text=e.response.text,
             )
         except httpx.RequestError as e:
             logger.error("Anthropic cost API connection error", error=str(e))

@@ -1972,6 +1972,54 @@ class BaseAgent(ABC):
             },
         )
 
+    async def publish_thinking(
+        self,
+        thought_type: str,
+        content: str,
+        context: dict | None = None,
+        user_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> None:
+        """
+        Publish narrative thinking/reasoning to frontend.
+
+        This enables rich visibility into agent decision-making and reasoning,
+        displayed in a separate "Thinking" panel alongside the action log.
+
+        Args:
+            thought_type: Type of thought - "reasoning" | "decision" | "analysis" | "observation"
+            content: Human-readable narrative of the agent's thinking
+            context: Optional metadata dict with additional context
+            user_id: Optional user ID (uses current context if not provided)
+            conversation_id: Optional conversation ID (uses current context if not provided)
+        """
+        if not self._pubsub:
+            return
+
+        from datetime import datetime, timezone
+
+        # Use provided IDs or fall back to current context
+        resolved_user_id = user_id or self._state.current_user_id
+        resolved_conversation_id = conversation_id or self._state.current_conversation_id
+
+        # Don't publish if we don't have a user to send to
+        if not resolved_user_id:
+            return
+
+        await self._pubsub.publish(
+            channel="agent:responses",
+            message={
+                "type": "thinking_stream",
+                "thought_type": thought_type,
+                "content": content,
+                "context": context or {},
+                "agent": self.agent_type.value,
+                "user_id": resolved_user_id,
+                "conversation_id": resolved_conversation_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
     # Hooks for subclasses
     async def on_task_start(self, request: TaskRequest) -> None:
         """Called when a task starts. Override in subclasses."""

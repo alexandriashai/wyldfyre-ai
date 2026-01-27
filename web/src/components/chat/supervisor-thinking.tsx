@@ -135,7 +135,9 @@ function ConfidenceBadge({ confidence }: { confidence: number }) {
 
 function formatTime(timestamp: string): string {
   try {
+    if (!timestamp) return "--:--:--";
     const date = new Date(timestamp);
+    if (isNaN(date.getTime())) return "--:--:--";
     return date.toLocaleTimeString("en-US", {
       hour12: false,
       hour: "2-digit",
@@ -200,7 +202,13 @@ export function SupervisorThinking({
         <div className="px-3 pb-3 space-y-1 max-h-48 overflow-y-auto">
           {/* Interleave thoughts and confidence updates by timestamp */}
           {[...thoughts, ...confidenceUpdates.map(u => ({ ...u, _type: "confidence" as const }))]
-            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+            .sort((a, b) => {
+              const dateA = new Date(a.timestamp);
+              const dateB = new Date(b.timestamp);
+              const timeA = isNaN(dateA.getTime()) ? 0 : dateA.getTime();
+              const timeB = isNaN(dateB.getTime()) ? 0 : dateB.getTime();
+              return timeA - timeB;
+            })
             .map((item, i) => {
               if ("_type" in item && item._type === "confidence") {
                 return <ConfidenceUpdate key={`conf-${i}`} update={item as ConfidenceUpdate} />;

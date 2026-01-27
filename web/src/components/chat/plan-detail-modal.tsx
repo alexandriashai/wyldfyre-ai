@@ -221,7 +221,9 @@ function HistoryTimeline({ entries }: { entries: PlanHistoryEntry[] }) {
               )}
             </div>
             <p className="text-[10px] text-muted-foreground mt-0.5">
-              {new Date(entry.timestamp).toLocaleString()}
+              {entry.timestamp && !isNaN(new Date(entry.timestamp).getTime())
+                ? new Date(entry.timestamp).toLocaleString()
+                : "--"}
             </p>
             {entry.details && (
               <p className="text-xs text-muted-foreground mt-1">{entry.details}</p>

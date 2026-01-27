@@ -105,6 +105,11 @@ COMMANDS = {
             "reset": "Reset HEAD: /git reset [--hard] [ref]",
         },
     },
+    "continue": {
+        "description": "Continue a step that hit max iterations",
+        "usage": "/continue [additional_iterations]",
+        "aliases": ["cont"],
+    },
 }
 
 
@@ -1302,6 +1307,33 @@ class CommandHandler:
             }
         finally:
             await pubsub.stop()
+
+    async def _cmd_continue(self, args: str, context: dict[str, Any]) -> dict[str, Any]:
+        """
+        Continue a step that hit max iterations.
+
+        Usage: /continue [additional_iterations]
+        """
+        # Parse additional iterations (default 10)
+        try:
+            additional_iterations = int(args.strip()) if args.strip() else 10
+            additional_iterations = max(5, min(100, additional_iterations))  # Clamp to 5-100
+        except ValueError:
+            additional_iterations = 10
+
+        # Return a command result that instructs the frontend to send a continuation message
+        # The message will be handled as a regular chat message by the supervisor
+        return {
+            "type": "command_result",
+            "command": "continue",
+            "action": "send_message",
+            "content": f"Continue the current step with {additional_iterations} additional iterations. Pick up exactly where you left off.",
+            "metadata": {
+                "continuation": True,
+                "additional_iterations": additional_iterations,
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
 
     async def _cmd_unknown(self, args: str, context: dict[str, Any]) -> dict[str, Any]:
         """Handle unknown command."""

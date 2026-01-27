@@ -39,7 +39,9 @@ function groupByDate<T extends { id: string; updated_at: string }>(conversations
 
   conversations.forEach((conv) => {
     const convDate = new Date(conv.updated_at);
-    if (convDate >= today) {
+    if (isNaN(convDate.getTime())) {
+      groups.Earlier.push(conv);
+    } else if (convDate >= today) {
       groups.Today.push(conv);
     } else if (convDate >= yesterday) {
       groups.Yesterday.push(conv);

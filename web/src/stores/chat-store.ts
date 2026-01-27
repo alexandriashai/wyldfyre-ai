@@ -14,6 +14,18 @@ interface Message {
   status?: MessageStatus;
 }
 
+// Thinking panel types (narrative reasoning)
+export type ThoughtType = "reasoning" | "decision" | "analysis" | "observation";
+
+export interface ThinkingEntry {
+  id: string;
+  type: ThoughtType;
+  content: string;
+  context?: Record<string, any>;
+  agent: string;
+  timestamp: string;
+}
+
 // Supervisor thinking types
 export type ThinkingPhase = "evaluating" | "deciding" | "replanning" | "course_correcting";
 
@@ -74,6 +86,20 @@ export interface TodoProgress {
   progress: number; // 0-100
   statusMessage: string;
   timestamp: string;
+}
+
+// Continuation request types (when agent hits max iterations)
+export interface ContinuationRequest {
+  stepId: string;
+  stepTitle: string;
+  iterationsUsed: number;
+  progressEstimate: number; // 0-100
+  estimatedRemaining: number;
+  filesModified: string[];
+  message: string;
+  timestamp: string;
+  planId?: string;
+  conversationId?: string;
 }
 
 interface Conversation {
@@ -138,6 +164,9 @@ interface ChatState {
   confidenceUpdates: ConfidenceUpdate[];
   isSupervisorThinking: boolean;
 
+  // Thinking panel entries (narrative reasoning)
+  thinkingEntries: ThinkingEntry[];
+
   // Plan changes history
   planChanges: PlanChange[];
 
@@ -147,6 +176,9 @@ interface ChatState {
 
   // Todo progress tracking
   todoProgress: Record<string, TodoProgress[]>; // stepId -> TodoProgress[]
+
+  // Continuation request (when agent hits max iterations)
+  continuationRequest: ContinuationRequest | null;
 
   // Active agent for chat
   activeAgent: string | null;
@@ -199,6 +231,10 @@ interface ChatState {
   setSupervisorThinking: (isThinking: boolean) => void;
   clearSupervisorThoughts: () => void;
 
+  // Thinking panel actions (narrative reasoning)
+  addThinkingEntry: (entry: Omit<ThinkingEntry, "id">) => void;
+  clearThinkingEntries: () => void;
+
   // Plan changes actions
   addPlanChange: (change: Omit<PlanChange, "id">) => void;
   clearPlanChanges: () => void;
@@ -214,6 +250,10 @@ interface ChatState {
   // Todo progress actions
   updateTodoProgress: (progress: TodoProgress) => void;
   clearTodoProgress: (stepId?: string) => void;
+
+  // Continuation request actions
+  setContinuationRequest: (request: ContinuationRequest | null) => void;
+  clearContinuationRequest: () => void;
 
   // Agent selection actions
   setActiveAgent: (agent: string | null) => void;
@@ -254,10 +294,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   supervisorThoughts: [],
   confidenceUpdates: [],
   isSupervisorThinking: false,
+  thinkingEntries: [],
   planChanges: [],
   pendingFileChanges: [],
   showFileChangePreview: false,
   todoProgress: {},
+  continuationRequest: null,
   activeAgent: null,
   availableAgents: ["wyld", "code", "data", "infra", "research", "qa"],
   pinnedConversations: new Set<string>(),
@@ -654,6 +696,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       supervisorThoughts: [],
       confidenceUpdates: [],
       isSupervisorThinking: false,
+      thinkingEntries: [],
       planChanges: [],
       todoProgress: {},
     });
@@ -682,6 +725,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   clearSupervisorThoughts: () => {
     set({ supervisorThoughts: [], confidenceUpdates: [], isSupervisorThinking: false });
+  },
+
+  // Thinking panel actions
+  addThinkingEntry: (entry) => {
+    set((state) => ({
+      thinkingEntries: [
+        ...state.thinkingEntries,
+        { ...entry, id: crypto.randomUUID() },
+      ].slice(-100), // Keep last 100 entries
+    }));
+  },
+
+  clearThinkingEntries: () => {
+    set({ thinkingEntries: [] });
   },
 
   // Plan changes actions
@@ -765,6 +822,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } else {
       set({ todoProgress: {} });
     }
+  },
+
+  // Continuation request actions
+  setContinuationRequest: (request) => {
+    set({ continuationRequest: request });
+  },
+
+  clearContinuationRequest: () => {
+    set({ continuationRequest: null });
   },
 
   // Agent selection actions

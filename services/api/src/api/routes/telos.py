@@ -12,7 +12,7 @@ from typing import Any
 
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ai_core import LLMClient, get_logger
 
@@ -55,7 +55,7 @@ class TelosFileList(BaseModel):
 
 class UpdateTelosFileRequest(BaseModel):
     """Request to update a TELOS file."""
-    content: str
+    content: str = Field(..., max_length=20000, description="File content (max 20000 characters)")
     project_id: str | None = None
 
 

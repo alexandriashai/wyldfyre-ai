@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import ReactMarkdown from "react-markdown";
+import { MarkdownRenderer } from "./markdown-renderer";
 import {
   Collapsible,
   CollapsibleContent,
@@ -40,11 +40,20 @@ function formatDuration(ms: number): string {
 }
 
 function getStepDuration(step: PlanStep): number | null {
-  if (step.started_at && step.completed_at) {
-    return new Date(step.completed_at).getTime() - new Date(step.started_at).getTime();
-  }
-  if (step.started_at && step.status === "in_progress") {
-    return Date.now() - new Date(step.started_at).getTime();
+  try {
+    if (step.started_at && step.completed_at) {
+      const start = new Date(step.started_at);
+      const end = new Date(step.completed_at);
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) return null;
+      return end.getTime() - start.getTime();
+    }
+    if (step.started_at && step.status === "in_progress") {
+      const start = new Date(step.started_at);
+      if (isNaN(start.getTime())) return null;
+      return Date.now() - start.getTime();
+    }
+  } catch {
+    return null;
   }
   return null;
 }
@@ -193,7 +202,7 @@ function StepItem({ step, index, isLast, todoProgressMap }: StepItemProps) {
 
           {step.description && (
             <div className="text-xs text-muted-foreground mt-0.5 prose prose-xs dark:prose-invert max-w-none [&_p]:m-0 [&_ul]:m-0 [&_ol]:m-0 [&_li]:m-0 line-clamp-2 sm:line-clamp-none">
-              <ReactMarkdown>{step.description}</ReactMarkdown>
+              <MarkdownRenderer content={step.description} />
             </div>
           )}
 
@@ -285,7 +294,15 @@ function ProgressBar({ steps }: { steps: PlanStep[] }) {
   const completedSteps = steps.filter((s) => s.completed_at);
   const totalDuration = completedSteps.reduce((acc, step) => {
     if (step.started_at && step.completed_at) {
-      return acc + (new Date(step.completed_at).getTime() - new Date(step.started_at).getTime());
+      try {
+        const start = new Date(step.started_at);
+        const end = new Date(step.completed_at);
+        if (!isNaN(start.getTime()) && !isNaN(end.getTime())) {
+          return acc + (end.getTime() - start.getTime());
+        }
+      } catch {
+        // Skip invalid dates
+      }
     }
     return acc;
   }, 0);
@@ -467,7 +484,7 @@ export function PlanPanel({ className }: PlanPanelProps) {
               </div>
             ) : (
               <div className="prose prose-sm dark:prose-invert max-w-none">
-                <ReactMarkdown>{currentPlan}</ReactMarkdown>
+                <MarkdownRenderer content={currentPlan} />
               </div>
             )}
           </div>

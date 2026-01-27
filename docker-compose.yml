@@ -238,6 +238,7 @@ services:
       - /home/wyld-data/templates:/home/wyld-data/templates
       - /var/run/docker.sock:/var/run/docker.sock
       - /home/wyld-api:/home/wyld-api  # Claude Code credentials
+      - /home/wyld-core/pai/TELOS:/home/wyld-core/pai/TELOS  # TELOS files (writable)
       - /home/wyld-core:/home/wyld-core:ro  # Project container build context and CLI tools
     depends_on:
       postgres:

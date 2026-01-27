@@ -167,7 +167,9 @@ function ChangeItem({ change, isLatest }: { change: PlanChange; isLatest: boolea
 
 function formatTime(timestamp: string): string {
   try {
+    if (!timestamp) return "--:--";
     const date = new Date(timestamp);
+    if (isNaN(date.getTime())) return "--:--";
     return date.toLocaleTimeString("en-US", {
       hour12: false,
       hour: "2-digit",

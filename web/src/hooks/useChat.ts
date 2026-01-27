@@ -26,7 +26,7 @@ interface PlanStep {
 }
 
 interface ChatMessage {
-  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "plan_status" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress" | "usage_update" | "supervisor_thinking" | "step_confidence_update" | "plan_change" | "todo_progress" | "file_change_preview" | "available_agents";
+  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "plan_status" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress" | "usage_update" | "supervisor_thinking" | "step_confidence_update" | "plan_change" | "todo_progress" | "file_change_preview" | "available_agents" | "continuation_required" | "thinking_stream";
   title?: string;
   conversation_id?: string;
   message_id?: string;
@@ -64,6 +64,9 @@ interface ChatMessage {
   phase?: "evaluating" | "deciding" | "replanning" | "course_correcting";
   step_id?: string;
   confidence?: number;
+  // Thinking stream fields (narrative reasoning)
+  thought_type?: "reasoning" | "decision" | "analysis" | "observation";
+  context?: Record<string, any>;
   // Confidence update fields
   old_confidence?: number;
   new_confidence?: number;
@@ -83,6 +86,13 @@ interface ChatMessage {
   summary?: string;
   // Available agents
   agents?: string[];
+  // Continuation request fields
+  step_title?: string;
+  iterations_used?: number;
+  progress_estimate?: number;
+  estimated_remaining?: number;
+  files_modified?: string[];
+  message?: string;
 }
 
 export type ConnectionState = "connected" | "connecting" | "disconnected" | "reconnecting";
@@ -390,6 +400,38 @@ export function useChat() {
         case "available_agents":
           if (data.agents) {
             useChatStore.getState().setAvailableAgents(data.agents);
+          }
+          break;
+
+        case "continuation_required":
+          // Agent hit max iterations and needs user decision to continue
+          if (data.step_id) {
+            useChatStore.getState().setContinuationRequest({
+              stepId: data.step_id,
+              stepTitle: data.step_title || "Current step",
+              iterationsUsed: data.iterations_used || 0,
+              progressEstimate: data.progress_estimate || 0,
+              estimatedRemaining: data.estimated_remaining || 10,
+              filesModified: data.files_modified || [],
+              message: data.message || "Step reached maximum iterations.",
+              timestamp: data.timestamp || new Date().toISOString(),
+              planId: data.plan_id,
+              conversationId: data.conversation_id,
+            });
+            setIsSending(false);
+          }
+          break;
+
+        case "thinking_stream":
+          // Narrative thinking/reasoning for Thinking panel
+          if (data.content && data.thought_type) {
+            useChatStore.getState().addThinkingEntry({
+              type: data.thought_type,
+              content: data.content,
+              context: data.context,
+              agent: data.agent || "supervisor",
+              timestamp: data.timestamp || new Date().toISOString(),
+            });
           }
           break;
 

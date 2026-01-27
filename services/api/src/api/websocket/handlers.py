@@ -1352,6 +1352,29 @@ RESPONSE TO ANALYZE:
                 sent_count=sent_count,
             )
 
+        elif response_type == "thinking_stream":
+            # Narrative thinking/reasoning stream (Thinking panel)
+            sent_count = await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "thinking_stream",
+                    "thought_type": data.get("thought_type"),
+                    "content": data.get("content"),
+                    "context": data.get("context"),
+                    "agent": data.get("agent"),
+                    "conversation_id": data.get("conversation_id"),
+                    "timestamp": data.get("timestamp"),
+                },
+            )
+            logger.debug(
+                "Thinking stream sent to user",
+                user_id=user_id,
+                agent=data.get("agent"),
+                thought_type=data.get("thought_type"),
+                content_preview=data.get("content", "")[:50] if data.get("content") else None,
+                sent_count=sent_count,
+            )
+
         elif response_type == "error":
             # Error from agent
             await self.manager.send_personal(

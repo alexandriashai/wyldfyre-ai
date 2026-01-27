@@ -40,6 +40,7 @@ class StepStatus(str, Enum):
     COMPLETED = "completed"
     SKIPPED = "skipped"
     FAILED = "failed"
+    NEEDS_CONTINUATION = "needs_continuation"
 
 
 @dataclass

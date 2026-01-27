@@ -7,21 +7,12 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-# Export all variables from .env (handling KEY=VALUE format)
+# Export all variables from .env using set -a (more reliable than while read)
 if [ -f "$PROJECT_ROOT/.env" ]; then
     echo "Loading environment from $PROJECT_ROOT/.env"
-    while IFS='=' read -r key value; do
-        # Skip comments and empty lines
-        [[ "$key" =~ ^#.*$ ]] && continue
-        [[ -z "$key" ]] && continue
-        # Remove any surrounding quotes from value
-        value="${value%\"}"
-        value="${value#\"}"
-        value="${value%\'}"
-        value="${value#\'}"
-        # Export the variable
-        export "$key=$value"
-    done < "$PROJECT_ROOT/.env"
+    set -a  # Auto-export all variables
+    source "$PROJECT_ROOT/.env"
+    set +a  # Stop auto-exporting
 fi
 
 # Override hosts to use localhost (supervisor runs on host, not in Docker)

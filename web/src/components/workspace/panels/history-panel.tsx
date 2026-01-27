@@ -44,11 +44,15 @@ function CommitItem({ entry, isFirst, isLast }: CommitItemProps) {
   };
 
   const formattedDate = (() => {
-    if (!entry.date) return "unknown";
-    const date = new Date(entry.date);
-    // Check if date is valid
-    if (isNaN(date.getTime())) return "unknown";
-    return formatDistanceToNow(date, { addSuffix: true });
+    try {
+      if (!entry.date) return "unknown";
+      const date = new Date(entry.date);
+      // Check if date is valid
+      if (isNaN(date.getTime())) return "unknown";
+      return formatDistanceToNow(date, { addSuffix: true });
+    } catch {
+      return "unknown";
+    }
   })();
 
   // Split message into subject and body

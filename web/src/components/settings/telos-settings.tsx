@@ -403,7 +403,11 @@ export function TelosSettings() {
               placeholder={`# ${selectedFile.replace(".md", "")}\n\nDefine your ${selectedFile.replace(".md", "").toLowerCase()} here...`}
               className="min-h-[300px] font-mono text-sm"
               disabled={isLoading}
+              maxLength={20000}
             />
+            <p className="text-xs text-muted-foreground text-right">
+              {fileContent.length.toLocaleString()} / 20,000 characters
+            </p>
 
             <div className="flex items-center justify-between">
               <p className="text-xs text-muted-foreground">

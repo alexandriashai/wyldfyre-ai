@@ -54,6 +54,7 @@
     "react-resizable-panels": "^2.1.7",
     "react-syntax-highlighter": "^16.1.0",
     "recharts": "^3.7.0",
+    "remark-gfm": "^4.0.1",
     "socket.io-client": "^4.7.4",
     "tailwind-merge": "^2.2.1",
     "tailwindcss-animate": "^1.0.7",

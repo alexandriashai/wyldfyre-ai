@@ -805,6 +805,13 @@ class SupervisorAgent(BaseAgent):
             target_agent = AgentType(agent_type)
             agent_display_name = agent_type.capitalize() + " Agent"
 
+            # Publish thinking for delegation decision
+            await supervisor.publish_thinking(
+                "decision",
+                f"I'm delegating this task to the {agent_display_name} because it has specialized capabilities for this type of work.",
+                context={"target_agent": agent_type, "task_type": task_type},
+            )
+
             # Publish delegation action
             await supervisor.publish_action(
                 ACTION_DELEGATING,
@@ -1510,12 +1517,22 @@ class SupervisorAgent(BaseAgent):
                 conversation_id=conversation_id,
                 state_user_id=self._state.current_user_id,
             )
+            await self.publish_thinking(
+                "analysis",
+                f"I'm examining the codebase to understand its structure and find relevant files for: {description[:100]}...",
+                context={"phase": "exploration", "project": project_name or "codebase"},
+            )
             await self.publish_action("exploring", f"Exploring {project_name or 'codebase'}...")
             exploration = await self._explore_for_plan(description, base_path=root_path)
 
             # ========== MEMORY RECALL PHASE ==========
             past_learnings = ""
             if self._memory:
+                await self.publish_thinking(
+                    "reasoning",
+                    "Before creating the plan, I'll check what I've learned from previous similar tasks to avoid repeating mistakes and apply successful patterns.",
+                    context={"phase": "memory_recall"},
+                )
                 await self.publish_action("recalling", "Checking past learnings...")
                 past_learnings = await self._recall_relevant_memories(
                     task_description=description,
@@ -1524,9 +1541,19 @@ class SupervisorAgent(BaseAgent):
                     categories=["plan_creation", "plan_completion", "error_pattern", "file_pattern"],
                 )
                 if past_learnings:
+                    await self.publish_thinking(
+                        "observation",
+                        f"Found relevant learnings from past tasks that I'll apply to this plan.",
+                        context={"phase": "memory_recall", "learnings_found": True},
+                    )
                     logger.info("Retrieved past learnings for plan", learnings_length=len(past_learnings))
 
             # ========== PLAN PHASE ==========
+            await self.publish_thinking(
+                "decision",
+                "Based on my exploration of the codebase, I'm now designing a step-by-step implementation plan. I'll break down the task into manageable steps and identify the files that need to be modified.",
+                context={"phase": "planning", "has_learnings": bool(past_learnings)},
+            )
             await self.publish_action("planning", "Creating implementation plan...")
             steps = await self._generate_plan_from_exploration(
                 description, exploration, base_path=root_path, past_learnings=past_learnings
@@ -1744,6 +1771,11 @@ class SupervisorAgent(BaseAgent):
             await self._redis.set(plan_key, json.dumps(plan))
 
             # Send initial execution status
+            await self.publish_thinking(
+                "decision",
+                f"The plan has been approved. I'll now execute each step systematically, verifying the results as I go.",
+                context={"phase": "execution", "steps_count": len(steps)},
+            )
             await self.publish_action("executing", f"Starting plan execution: {plan.get('title', 'Plan')}")
 
             # Send step_update to frontend with all steps
@@ -1786,6 +1818,13 @@ class SupervisorAgent(BaseAgent):
                 step["started_at"] = datetime.now(timezone.utc).isoformat()
                 plan["current_step"] = i
                 await self._redis.set(plan_key, json.dumps(plan))
+
+                # Send thinking update for step start
+                await self.publish_thinking(
+                    "reasoning",
+                    f"Starting step {i + 1}: {step_title}. {step_description[:100]}..." if len(step_description) > 100 else f"Starting step {i + 1}: {step_title}. {step_description}",
+                    context={"phase": "step_execution", "step_number": i + 1, "step_id": step_id},
+                )
 
                 # Send step update
                 await self.publish_action("step_progress", f"Working on: {step_title}")
@@ -1832,6 +1871,48 @@ class SupervisorAgent(BaseAgent):
                         break
 
                     step_result = await self._execute_plan_step(step, plan)
+
+                    # Check if max iterations was reached (needs continuation)
+                    if isinstance(step_result, dict) and step_result.get("__max_iterations_reached__"):
+                        step["status"] = "needs_continuation"
+                        step["output"] = step_result["message"]
+                        step["continuation_data"] = {
+                            "iterations_used": step_result["iterations_used"],
+                            "progress_estimate": step_result["progress_estimate"],
+                            "estimated_remaining": step_result["estimated_remaining_iterations"],
+                            "files_modified": step_result["files_modified"],
+                            "actions_taken": step_result["actions_taken"],
+                        }
+
+                        # Publish continuation request to frontend
+                        if self._pubsub and user_id:
+                            await self._pubsub.publish(
+                                "agent:responses",
+                                {
+                                    "type": "continuation_required",
+                                    "user_id": user_id,
+                                    "conversation_id": conversation_id,
+                                    "plan_id": plan_id,
+                                    "step_id": step_id,
+                                    "step_title": step.get("title", "Current step"),
+                                    "iterations_used": step_result["iterations_used"],
+                                    "progress_estimate": step_result["progress_estimate"],
+                                    "estimated_remaining": step_result["estimated_remaining_iterations"],
+                                    "files_modified": step_result["files_modified"],
+                                    "message": step_result["message"],
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                },
+                            )
+
+                        # Wait for user decision (will be handled by continue message)
+                        logger.info(
+                            "Step needs continuation",
+                            step_id=step_id,
+                            iterations_used=step_result["iterations_used"],
+                            progress=step_result["progress_estimate"],
+                        )
+                        break  # Exit step loop, wait for user to continue
+
                     step["status"] = "completed"
                     step["completed_at"] = datetime.now(timezone.utc).isoformat()
                     step["output"] = step_result
@@ -2739,10 +2820,23 @@ Execute this step now. Make real file changes, not just descriptions."""
             except Exception:
                 pass
 
-        if files_modified:
-            modified_list = ", ".join([Path(f).name for f in files_modified])
-            return f"Step reached max iterations ({max_iterations}). Files modified: {modified_list}. Actions: {'; '.join(actions_taken[-5:])}"
-        return f"Step reached max iterations ({max_iterations}) with NO file changes. Actions: {'; '.join(actions_taken)}"
+        # Return structured result for max iterations - allows continuation
+        modified_list = ", ".join([Path(f).name for f in files_modified]) if files_modified else ""
+
+        # Estimate progress based on what was done
+        progress_estimate = min(90, len(files_modified) * 20 + len(actions_taken) * 3)
+        estimated_remaining = max(10, int((100 - progress_estimate) / 3))  # Rough estimate
+
+        return {
+            "__max_iterations_reached__": True,
+            "iterations_used": max_iterations,
+            "files_modified": files_modified,
+            "actions_taken": actions_taken[-10:],
+            "progress_estimate": progress_estimate,
+            "estimated_remaining_iterations": estimated_remaining,
+            "message": f"Step reached max iterations ({max_iterations}). {'Files modified: ' + modified_list if modified_list else 'No file changes yet'}.",
+            "can_continue": True,
+        }
 
     async def _run_step_tool(self, tool_name: str, tool_input: dict, root_path: str = "/home/wyld-core") -> tuple[str, bool]:
         """

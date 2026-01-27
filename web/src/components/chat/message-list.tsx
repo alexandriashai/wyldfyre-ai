@@ -7,10 +7,9 @@ import { useWorkspaceStore } from "@/stores/workspace-store";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Bot, User, Check, X, RefreshCw, Loader2, AlertCircle, WifiOff, Lightbulb } from "lucide-react";
-import ReactMarkdown from "react-markdown";
 import { useChat } from "@/hooks/useChat";
 import { SynthesizeModal } from "./synthesize-modal";
-import { CodeArtifact, InlineCode } from "./code-artifact";
+import { MarkdownRenderer, StreamingMarkdown } from "./markdown-renderer";
 
 interface Message {
   id: string;
@@ -51,6 +50,86 @@ function PlanActionButtons({ onApprove, onReject }: { onApprove: () => void; onR
         <X className="h-4 w-4 mr-1" />
         <span className="hidden sm:inline">Reject</span>
       </Button>
+    </div>
+  );
+}
+
+interface ContinuationButtonsProps {
+  stepTitle: string;
+  iterationsUsed: number;
+  progressEstimate: number;
+  estimatedRemaining: number;
+  filesModified: string[];
+  onContinue: (additionalIterations: number) => void;
+  onCancel: () => void;
+}
+
+function ContinuationButtons({
+  stepTitle,
+  iterationsUsed,
+  progressEstimate,
+  estimatedRemaining,
+  filesModified,
+  onContinue,
+  onCancel,
+}: ContinuationButtonsProps) {
+  return (
+    <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+      <div className="flex items-start gap-2 mb-2">
+        <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm font-medium text-amber-600 dark:text-amber-400">
+            Step reached maximum iterations
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            &quot;{stepTitle}&quot; used {iterationsUsed} iterations (~{progressEstimate}% complete)
+          </p>
+          {filesModified.length > 0 && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Files modified: {filesModified.slice(0, 3).join(", ")}
+              {filesModified.length > 3 && ` +${filesModified.length - 3} more`}
+            </p>
+          )}
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground mb-3">
+        Estimated ~{estimatedRemaining} more iterations needed. Continue?
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="default"
+          onClick={() => onContinue(10)}
+          className="bg-amber-600 hover:bg-amber-700 h-8"
+        >
+          <RefreshCw className="h-3.5 w-3.5 mr-1" />
+          +10 iterations
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => onContinue(25)}
+          className="h-8"
+        >
+          +25 iterations
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => onContinue(50)}
+          className="h-8"
+        >
+          +50 iterations
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onCancel}
+          className="h-8 text-muted-foreground"
+        >
+          Cancel
+        </Button>
+      </div>
     </div>
   );
 }
@@ -160,46 +239,10 @@ function MessageBubble({
               showPlanButtons ? "px-3 pt-2 pb-1 max-h-[50vh] overflow-y-auto" : ""
             )}
           >
-            <ReactMarkdown
-              components={{
-                code({ className, children, ...props }) {
-                  const match = /language-(\w+)/.exec(className || "");
-                  const codeString = String(children).replace(/\n$/, "");
-                  const isMultiline = codeString.includes("\n") || codeString.length > 80;
-
-                  // Inline code
-                  if (!match && !isMultiline) {
-                    return <InlineCode>{codeString}</InlineCode>;
-                  }
-
-                  // Code block - use CodeArtifact
-                  return (
-                    <CodeArtifact
-                      code={codeString}
-                      language={match?.[1]}
-                      onOpenInEditor={onOpenInEditor}
-                      className="my-2 -mx-1 sm:mx-0"
-                      maxHeight={250}
-                    />
-                  );
-                },
-                // Make links more touch-friendly on mobile
-                a({ href, children }) {
-                  return (
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary hover:underline inline-flex items-center gap-0.5"
-                    >
-                      {children}
-                    </a>
-                  );
-                },
-              }}
-            >
-              {message.content}
-            </ReactMarkdown>
+            <MarkdownRenderer
+              content={message.content}
+              onOpenInEditor={onOpenInEditor}
+            />
           </div>
 
           {/* Sticky buttons at bottom for plan messages */}
@@ -260,7 +303,7 @@ function StreamingMessage({ content, agent }: { content: string; agent?: string 
 
         <div className="bg-muted rounded-lg px-3 py-2 max-w-full overflow-hidden">
           <div className="prose prose-sm dark:prose-invert max-w-full break-words">
-            <ReactMarkdown>{content}</ReactMarkdown>
+            <StreamingMarkdown content={content} />
             <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1 rounded-sm" />
           </div>
         </div>
@@ -296,7 +339,7 @@ function ConnectionBanner({ state }: { state: string }) {
 }
 
 export function MessageList() {
-  const { messages, streamingMessage, connectionState, currentConversation } = useChatStore();
+  const { messages, streamingMessage, connectionState, currentConversation, continuationRequest, clearContinuationRequest } = useChatStore();
   const { sendMessage, retryMessage } = useChat();
   const { activeProjectId, openFile, setActiveFile } = useWorkspaceStore();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -312,7 +355,7 @@ export function MessageList() {
     };
     const timer = setTimeout(scrollToBottom, 50);
     return () => clearTimeout(timer);
-  }, [messages, streamingMessage]);
+  }, [messages, streamingMessage, continuationRequest]);
 
   // Scroll to bottom on initial load
   useEffect(() => {
@@ -325,6 +368,17 @@ export function MessageList() {
   const handlePlanAction = useCallback((action: string) => {
     sendMessage(`/plan ${action}`);
   }, [sendMessage]);
+
+  // Handle continuation request
+  const handleContinue = useCallback((additionalIterations: number) => {
+    sendMessage(`Continue the current step. You have ${additionalIterations} more iterations. Pick up exactly where you left off and complete the task.`);
+    clearContinuationRequest();
+  }, [sendMessage, clearContinuationRequest]);
+
+  const handleCancelContinuation = useCallback(() => {
+    sendMessage("Skip this step and move on to the next one. Mark the current step as incomplete.");
+    clearContinuationRequest();
+  }, [sendMessage, clearContinuationRequest]);
 
   // Handle retry
   const handleRetry = useCallback((messageId: string) => {
@@ -388,6 +442,19 @@ export function MessageList() {
             />
           ))}
           {streamingMessage && <StreamingMessage content={streamingMessage} />}
+          {continuationRequest && (
+            <div className="px-3 sm:px-4 py-2">
+              <ContinuationButtons
+                stepTitle={continuationRequest.stepTitle}
+                iterationsUsed={continuationRequest.iterationsUsed}
+                progressEstimate={continuationRequest.progressEstimate}
+                estimatedRemaining={continuationRequest.estimatedRemaining}
+                filesModified={continuationRequest.filesModified}
+                onContinue={handleContinue}
+                onCancel={handleCancelContinuation}
+              />
+            </div>
+          )}
           <div ref={scrollRef} />
         </div>
       </div>

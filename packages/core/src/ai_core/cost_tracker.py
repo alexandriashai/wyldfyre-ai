@@ -168,6 +168,17 @@ class CostTracker:
         }
 
         async def _do_insert(db_session: "AsyncSession") -> None:
+            # Verify task_id exists before using it (foreign key constraint)
+            validated_task_id = None
+            if task_id:
+                from sqlalchemy import select, text
+                result = await db_session.execute(
+                    text("SELECT 1 FROM tasks WHERE id = :tid LIMIT 1"),
+                    {"tid": task_id}
+                )
+                if result.scalar() is not None:
+                    validated_task_id = task_id
+
             usage_record = APIUsage(
                 provider=provider_map.get(usage_cost.provider, APIProvider.ANTHROPIC),
                 model=usage_cost.model,
@@ -181,7 +192,7 @@ class CostTracker:
                 cost_total=usage_cost.total_cost,
                 agent_type=agent_type,
                 agent_name=agent_name,
-                task_id=task_id,
+                task_id=validated_task_id,
                 user_id=user_id,
                 project_id=project_id,
                 correlation_id=correlation_id,
@@ -240,6 +251,17 @@ class CostTracker:
             }
 
             async def _do_insert(db_session: "AsyncSession") -> None:
+                # Verify task_id exists before using it (foreign key constraint)
+                validated_task_id = None
+                if task_id:
+                    from sqlalchemy import text
+                    result = await db_session.execute(
+                        text("SELECT 1 FROM tasks WHERE id = :tid LIMIT 1"),
+                        {"tid": task_id}
+                    )
+                    if result.scalar() is not None:
+                        validated_task_id = task_id
+
                 usage_record = APIUsage(
                     provider=provider_map.get(usage_cost.provider, APIProvider.OPENAI),
                     model=model,
@@ -252,7 +274,7 @@ class CostTracker:
                     cost_cached=Decimal("0"),
                     cost_total=usage_cost.total_cost,
                     agent_type=agent_type,
-                    task_id=task_id,
+                    task_id=validated_task_id,
                     user_id=user_id,
                 )
                 db_session.add(usage_record)

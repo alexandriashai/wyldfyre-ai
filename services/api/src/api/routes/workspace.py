@@ -726,13 +726,20 @@ async def git_status(
     staged = []
 
     for line in status_result.stdout.strip().split("\n"):
-        if not line:
+        if not line or len(line) < 4:
             continue
+        # Git porcelain format: XY <space> <path>
+        # X = index status, Y = worktree status, position 2 = space, position 3+ = path
         index_status = line[0]
         work_status = line[1]
-        filepath = line[3:].strip()
+        # Find the path - it starts after "XY " (positions 0, 1, 2)
+        # But handle edge cases where there might be extra spaces
+        filepath = line[3:].lstrip() if len(line) > 3 else ""
 
-        # Handle renames
+        if not filepath:
+            continue
+
+        # Handle renames (format: "old -> new")
         if " -> " in filepath:
             filepath = filepath.split(" -> ")[1]
 
@@ -918,12 +925,16 @@ async def git_log(
 
         parts = line.split("|", 4)
         if len(parts) >= 5:
+            # Validate date format - parts[4] could be corrupted if message has |
+            date_str = parts[4].split("|")[0] if "|" in parts[4] else parts[4]
+            # Strip any trailing content from the date
+            date_str = date_str.strip()
             entry = GitLogEntry(
                 hash=parts[0],
                 short_hash=parts[1],
                 message=parts[2],
                 author=parts[3],
-                date=parts[4],
+                date=date_str if date_str else "",
             )
             # Check next line for stat
             if i + 1 < len(lines) and "file" in lines[i + 1]:

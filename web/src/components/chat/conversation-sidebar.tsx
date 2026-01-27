@@ -54,7 +54,9 @@ interface ConversationSidebarProps {
 type DateGroup = "Pinned" | "Today" | "Yesterday" | "Last 7 Days" | "Last 30 Days" | "Older";
 
 function getDateGroup(dateString: string): DateGroup {
+  if (!dateString) return "Older";
   const date = new Date(dateString);
+  if (isNaN(date.getTime())) return "Older";
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
@@ -67,7 +69,9 @@ function getDateGroup(dateString: string): DateGroup {
 }
 
 function formatRelativeTime(dateString: string): string {
+  if (!dateString) return "";
   const date = new Date(dateString);
+  if (isNaN(date.getTime())) return "";
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));

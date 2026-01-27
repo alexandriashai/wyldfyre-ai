@@ -77,10 +77,10 @@ class OpenAIUsageClient(BaseUsageClient):
                 response = await client.get(
                     f"{self.BASE_URL}/v1/organization/costs",
                     headers=self._get_headers(),
-                    params={
-                        "start_time": start_time,
-                        "limit": 1,
-                    },
+                    params=[
+                        ("start_time", start_time),
+                        ("limit", 1),
+                    ],
                     timeout=30.0,
                 )
                 if response.status_code == 200:
@@ -124,15 +124,17 @@ class OpenAIUsageClient(BaseUsageClient):
                 # Fetch all pages
                 page = None
                 while True:
-                    params = {
-                        "start_time": start_time,
-                        "end_time": end_time,
-                        "bucket_width": "1d",  # Daily buckets
-                        "group_by": ["model"],
-                        "limit": 100,
-                    }
+                    # Use list of tuples for params to support array-style group_by[]
+                    # OpenAI max limit is 31 for daily buckets
+                    params = [
+                        ("start_time", start_time),
+                        ("end_time", end_time),
+                        ("bucket_width", "1d"),
+                        ("group_by[]", "model"),
+                        ("limit", 31),
+                    ]
                     if page:
-                        params["page"] = page
+                        params.append(("page", page))
 
                     response = await client.get(
                         f"{self.BASE_URL}/v1/organization/usage/completions",
@@ -175,6 +177,7 @@ class OpenAIUsageClient(BaseUsageClient):
                 "OpenAI usage API error",
                 status_code=e.response.status_code,
                 error=str(e),
+                response_text=e.response.text,
             )
         except httpx.RequestError as e:
             logger.error("OpenAI usage API connection error", error=str(e))
@@ -213,14 +216,16 @@ class OpenAIUsageClient(BaseUsageClient):
                 # Fetch all pages
                 page = None
                 while True:
-                    params = {
-                        "start_time": start_time,
-                        "end_time": end_time,
-                        "group_by": ["line_item"],  # Group by model/feature
-                        "limit": 100,
-                    }
+                    # Use list of tuples for params to support array-style group_by[]
+                    # OpenAI max limit is 31 for daily buckets
+                    params = [
+                        ("start_time", start_time),
+                        ("end_time", end_time),
+                        ("group_by[]", "line_item"),
+                        ("limit", 31),
+                    ]
                     if page:
-                        params["page"] = page
+                        params.append(("page", page))
 
                     response = await client.get(
                         f"{self.BASE_URL}/v1/organization/costs",
@@ -245,7 +250,12 @@ class OpenAIUsageClient(BaseUsageClient):
                             cost_usd = Decimal(str(cost_value))
 
                             # Extract model from line_item or object
-                            model = result.get("line_item", result.get("object", "unknown"))
+                            # OpenAI line_item format: "model-name, token_type"
+                            # e.g., "gpt-4o-mini-2024-07-18, input"
+                            # We need just the model name for merging with usage
+                            line_item = result.get("line_item", result.get("object", "unknown"))
+                            # Remove token type suffix if present (", input", ", output", ", cached input")
+                            model = line_item.split(", ")[0] if ", " in line_item else line_item
 
                             record = CostRecord(
                                 provider="openai",
@@ -268,6 +278,7 @@ class OpenAIUsageClient(BaseUsageClient):
                 "OpenAI cost API error",
                 status_code=e.response.status_code,
                 error=str(e),
+                response_text=e.response.text,
             )
         except httpx.RequestError as e:
             logger.error("OpenAI cost API connection error", error=str(e))
