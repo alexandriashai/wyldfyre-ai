@@ -12,7 +12,7 @@ from uuid import uuid4
 from ai_core import get_logger
 from ai_messaging import PubSubManager, RedisClient
 
-from .plan_mode import Plan, PlanManager, PlanStatus, format_plan_for_display
+from .plan_mode import Plan, PlanManager, PlanStatus, StepStatus, format_plan_for_display
 
 logger = get_logger(__name__)
 
@@ -41,6 +41,7 @@ COMMANDS = {
             "history": "View plan history: /plan history <plan_id>",
             "clone": "Clone plan: /plan clone <plan_id> [new_title]",
             "follow-up": "Resume stuck plan: /plan follow-up <plan_id> [context]",
+            "restart": "Restart plan from beginning or specific step: /plan restart <plan_id> [step_number]",
             "modify": "AI modify plan: /plan modify <plan_id> <request>",
             "approve": "Approve current plan",
             "reject": "Reject/cancel current plan",
@@ -257,6 +258,7 @@ class CommandHandler:
             "clone": self._plan_clone,
             "follow-up": self._plan_follow_up,
             "followup": self._plan_follow_up,  # alias
+            "restart": self._plan_restart,
             "modify": self._plan_modify,
         }
 
@@ -479,6 +481,7 @@ class CommandHandler:
 - `/plan delete <id>` - Delete a plan
 - `/plan history <id>` - View modification history
 - `/plan clone <id> [title]` - Clone plan as new draft
+- `/plan restart <id> [step]` - Restart plan from beginning or specific step
 
 **AI Assistance:**
 - `/plan follow-up <id> [context]` - Resume stuck/paused plan with AI analysis
@@ -952,6 +955,88 @@ class CommandHandler:
             "content": f"🔍 Analyzing plan for resumption: **{plan.title}**\n\n*The supervisor will analyze what went wrong and suggest how to proceed...*",
             "action": "plan_follow_up",
             "plan_id": plan_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async def _plan_restart(self, args: str, context: dict[str, Any]) -> dict[str, Any]:
+        """Restart a plan from the beginning or a specific step."""
+        parts = args.strip().split()
+        plan_id = parts[0] if parts else ""
+        start_step = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+
+        if not plan_id:
+            return {
+                "type": "command_error",
+                "command": "plan",
+                "error": "Please provide a plan ID. Usage: `/plan restart <plan_id> [step_number]`",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        plan = await self.plan_manager.get_plan(plan_id)
+        if not plan:
+            return {
+                "type": "command_error",
+                "command": "plan",
+                "error": f"Plan not found: {plan_id}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        if plan.user_id != context.get("user_id"):
+            return {
+                "type": "command_error",
+                "command": "plan",
+                "error": "Access denied",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        # Reset step statuses from start_step onwards
+        for i, step in enumerate(plan.steps):
+            if i >= start_step:
+                step.status = StepStatus.PENDING
+                step.result = None
+                step.error = None
+
+        # Set plan back to executing
+        plan.status = PlanStatus.EXECUTING
+
+        # Save updated plan
+        await self.plan_manager.save_plan(plan)
+
+        # Publish execution task to supervisor
+        pubsub = PubSubManager(self.redis)
+        await pubsub.start()
+
+        try:
+            conversation_id = context.get("conversation_id") or plan.conversation_id
+            user_id = context.get("user_id")
+
+            await pubsub.publish(
+                "agent:supervisor:tasks",
+                {
+                    "type": "task_request",
+                    "task_type": "execute_plan",
+                    "user_id": user_id,
+                    "payload": {
+                        "plan_id": plan.id,
+                        "conversation_id": conversation_id,
+                        "user_id": user_id,
+                        "project_id": context.get("project_id"),
+                        "root_path": context.get("root_path"),
+                        "start_step": start_step,
+                    },
+                },
+            )
+        finally:
+            await pubsub.stop()
+
+        step_info = f" from step {start_step + 1}" if start_step > 0 else ""
+        return {
+            "type": "command_result",
+            "command": "plan",
+            "content": f"🔄 Restarting plan{step_info}: **{plan.title}**\n\n*Execution starting...*",
+            "action": "plan_restarted",
+            "plan_id": plan.id,
+            "plan_status": "APPROVED",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
