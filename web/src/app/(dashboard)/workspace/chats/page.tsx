@@ -10,6 +10,7 @@ import { MessageInput } from "@/components/chat/message-input";
 import { AgentStatus } from "@/components/chat/agent-status";
 import { TaskControls } from "@/components/chat/task-controls";
 import { PlanPanel } from "@/components/chat/plan-panel";
+import { RollbackControls } from "@/components/chat/rollback-controls";
 import { ConversationSidebar } from "@/components/chat/conversation-sidebar";
 import { UsageMeter } from "@/components/chat/usage-meter";
 import { AgentSelector } from "@/components/chat/agent-selector";
@@ -26,10 +27,12 @@ export default function WorkspaceChatsPage() {
     createConversation,
     conversations,
     currentPlan,
+    currentPlanId,
     pendingFileChanges,
     acceptFileChange,
     rejectFileChange,
     clearFileChangePreviews,
+    lastRollbackResult,
   } = useChatStore();
   const { selectedProject } = useProjectStore();
   const { isChatSidebarCollapsed, setChatSidebarCollapsed, openFile, setActiveFile } = useWorkspaceStore();
@@ -177,6 +180,15 @@ export default function WorkspaceChatsPage() {
         <AgentStatus />
         <TaskControls />
         {currentPlan && <PlanPanel />}
+        {/* Rollback controls - show when there's rollback data available */}
+        {(currentPlanId || lastRollbackResult) && !currentPlan && (
+          <div className="px-4 py-2 border-b bg-muted/30">
+            <RollbackControls
+              planId={currentPlanId || lastRollbackResult?.planId}
+              className="w-full"
+            />
+          </div>
+        )}
 
         {/* Main content area - either chat or diff panel */}
         {showDiffPanel && pendingFileChanges.length > 0 ? (

@@ -528,6 +528,7 @@ export function useChat() {
       socket.onclose = (event) => {
         setIsConnected(false);
         setIsConnecting(false);
+        setIsSending(false); // Clear sending state on disconnect
         stopPingInterval();
 
         // Don't reconnect if closed normally (code 1000) or auth failed (4001)
@@ -548,6 +549,7 @@ export function useChat() {
 
       socket.onerror = () => {
         setIsConnecting(false);
+        setIsSending(false); // Clear sending state on error
       };
 
       socket.onmessage = handleMessage;
