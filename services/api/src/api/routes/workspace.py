@@ -838,6 +838,72 @@ async def git_commit(
     )
 
 
+class GitRevertRequest(BaseModel):
+    """Request to revert file changes."""
+    files: list[str] | None = None  # None = revert all
+
+
+class GitRevertResponse(BaseModel):
+    """Response from git revert operation."""
+    reverted_files: int
+    message: str
+
+
+@router.post("/git/revert-files", response_model=GitRevertResponse)
+async def git_revert_files(
+    project_id: str,
+    request: GitRevertRequest,
+    current_user: CurrentUserDep,
+    db: AsyncSession = Depends(get_db_session),
+) -> GitRevertResponse:
+    """Revert modified files to their last committed state (discard changes)."""
+    project = await get_project_with_root(project_id, current_user, db)
+
+    reverted_count = 0
+
+    if request.files:
+        # Revert specific files
+        for f in request.files:
+            validate_path(project.root_path, f)
+            try:
+                await run_git_command(project.root_path, "checkout", "--", f)
+                reverted_count += 1
+            except subprocess.CalledProcessError:
+                # File might be untracked, try to remove it
+                file_path = Path(project.root_path) / f
+                if file_path.exists():
+                    file_path.unlink()
+                    reverted_count += 1
+    else:
+        # Revert all modified files (git checkout .)
+        try:
+            # First get count of modified files
+            status_result = await run_git_command(
+                project.root_path, "status", "--porcelain"
+            )
+            modified_files = [
+                line[3:] for line in status_result.stdout.strip().split("\n")
+                if line and line[:2].strip() in ("M", "MM", "AM", "A", "D", "")
+            ]
+            reverted_count = len([f for f in modified_files if f])
+
+            # Revert all tracked changes
+            await run_git_command(project.root_path, "checkout", ".")
+
+            # Also clean untracked files if any were selected
+            # (only if explicitly requested - for safety we don't auto-clean untracked)
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Git revert failed: {e.stderr}",
+            )
+
+    return GitRevertResponse(
+        reverted_files=reverted_count,
+        message=f"Reverted {reverted_count} file(s) to last committed state",
+    )
+
+
 @router.post("/git/push")
 async def git_push(
     project_id: str,

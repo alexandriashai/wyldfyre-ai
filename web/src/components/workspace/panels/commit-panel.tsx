@@ -30,7 +30,19 @@ import {
   AlertCircle,
   Check,
   Square,
+  Undo2,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/useToast";
 
 interface FileItemProps {
@@ -142,6 +154,7 @@ export function CommitPanel() {
   const [commitMessage, setCommitMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
+  const [isReverting, setIsReverting] = useState(false);
   const [stagedOpen, setStagedOpen] = useState(true);
   const [unstagedOpen, setUnstagedOpen] = useState(true);
   const [untrackedOpen, setUntrackedOpen] = useState(true);
@@ -243,6 +256,29 @@ export function CommitPanel() {
   const handleUnstageAll = () => {
     setSelectedUnstaged(new Set());
     setSelectedUntracked(new Set());
+  };
+
+  const handleRevertAll = async () => {
+    if (!token || !activeProjectId) return;
+
+    setIsReverting(true);
+    try {
+      const result = await workspaceApi.gitRevertFiles(token, activeProjectId);
+      toast({
+        title: "Changes reverted",
+        description: `${result.reverted_files} file(s) restored to last commit`,
+      });
+      await refreshStatus();
+    } catch (err) {
+      console.error("Revert failed:", err);
+      toast({
+        title: "Revert failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setIsReverting(false);
+    }
   };
 
   const toggleSelectUnstaged = (path: string) => {
@@ -353,6 +389,40 @@ export function CommitPanel() {
                 <Plus className="h-3.5 w-3.5 mr-1" />
                 All
               </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={modifiedCount === 0 || isReverting}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    {isReverting ? (
+                      <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                    ) : (
+                      <Undo2 className="h-3.5 w-3.5 mr-1" />
+                    )}
+                    Revert
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Revert all changes?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will discard all {modifiedCount} modified file(s) and restore them to their last committed state. This action cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={handleRevertAll}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      Revert All
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           </div>
 
