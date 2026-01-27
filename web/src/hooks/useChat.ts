@@ -26,7 +26,7 @@ interface PlanStep {
 }
 
 interface ChatMessage {
-  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "plan_status" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress" | "usage_update" | "supervisor_thinking" | "step_confidence_update" | "plan_change" | "todo_progress" | "file_change_preview" | "available_agents" | "continuation_required" | "thinking_stream";
+  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "plan_status" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress" | "usage_update" | "supervisor_thinking" | "step_confidence_update" | "plan_change" | "todo_progress" | "file_change_preview" | "available_agents" | "continuation_required" | "thinking_stream" | "rollback_complete" | "redo_complete";
   title?: string;
   conversation_id?: string;
   message_id?: string;
@@ -93,6 +93,11 @@ interface ChatMessage {
   estimated_remaining?: number;
   files_modified?: string[];
   message?: string;
+  // Rollback/redo fields
+  files_restored?: string[];
+  files_deleted?: string[];
+  files_reapplied?: string[];
+  files_created?: string[];
 }
 
 export type ConnectionState = "connected" | "connecting" | "disconnected" | "reconnecting";
