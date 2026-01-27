@@ -336,12 +336,26 @@ class CommandHandler:
 
             # Show current plan status
             if subcommand == "status":
+                plan_dict = existing_plan.to_dict()
                 return {
                     "type": "command_result",
                     "command": "plan",
                     "content": format_plan_for_display(existing_plan),
                     "action": "plan_status",
-                    "plan": existing_plan.to_dict(),
+                    "plan": plan_dict,
+                    "plan_content": plan_dict.get("content", ""),
+                    "plan_status": existing_plan.status.value.upper(),
+                    "plan_id": existing_plan.id,
+                    "steps": [
+                        {
+                            "id": step.id,
+                            "title": step.title,
+                            "description": step.description,
+                            "status": step.status.value,
+                            "order_index": step.order_index,
+                        }
+                        for step in existing_plan.steps
+                    ],
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
