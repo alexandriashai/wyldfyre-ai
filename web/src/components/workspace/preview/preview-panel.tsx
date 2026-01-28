@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useProjectStore } from "@/stores/project-store";
 import { domainsApi, projectsApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, ExternalLink, Globe } from "lucide-react";
+import { RefreshCw, ExternalLink, Globe, Copy, Check, Trash2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export function PreviewPanel() {
   const { token } = useAuthStore();
@@ -16,6 +17,9 @@ export function PreviewPanel() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const fetchDomainUrl = useCallback(async () => {
     if (!token || !activeProjectId) return;
@@ -79,6 +83,45 @@ export function PreviewPanel() {
     setRefreshKey((k) => k + 1);
   };
 
+  const handleCopyUrl = async () => {
+    if (!previewUrl) return;
+    try {
+      await navigator.clipboard.writeText(previewUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy URL:", err);
+    }
+  };
+
+  const handleClearCacheAndCookies = async () => {
+    if (!previewUrl) return;
+    setClearing(true);
+
+    // Send a message to the iframe to clear its storage (if it listens)
+    try {
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: "clear-site-data" },
+        new URL(previewUrl).origin
+      );
+    } catch (err) {
+      // Cross-origin, can't send message - that's okay
+    }
+
+    // Force a fresh reload by:
+    // 1. Setting iframe src to about:blank briefly
+    // 2. Then reloading with a new cache-busting key
+    if (iframeRef.current) {
+      iframeRef.current.src = "about:blank";
+    }
+
+    // Wait a moment, then reload with cache-busting
+    setTimeout(() => {
+      setRefreshKey((k) => k + 1);
+      setClearing(false);
+    }, 100);
+  };
+
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-2">
@@ -112,34 +155,70 @@ export function PreviewPanel() {
   return (
     <div className="flex flex-col h-full">
       {/* URL bar */}
-      <div className="flex items-center gap-1 px-2 py-1 border-b shrink-0">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 shrink-0"
-          onClick={handleRefresh}
-          title="Refresh preview"
-        >
-          <RefreshCw className="h-3 w-3" />
-        </Button>
-        <div className="flex-1 min-w-0">
-          <p className="text-[10px] text-muted-foreground truncate">{previewUrl}</p>
-        </div>
-        <a
-          href={previewUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="shrink-0"
-        >
-          <Button variant="ghost" size="icon" className="h-6 w-6">
-            <ExternalLink className="h-3 w-3" />
+      <div className="flex flex-col gap-1 px-2 py-1.5 border-b shrink-0 bg-muted/30">
+        {/* URL display row */}
+        <div className="flex items-center gap-1">
+          <div className="flex-1 min-w-0 flex items-center gap-1 px-2 py-1 bg-background rounded border text-xs">
+            <Globe className="h-3 w-3 text-muted-foreground shrink-0" />
+            <span className="truncate text-foreground font-mono">{previewUrl}</span>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={handleCopyUrl}
+            title="Copy URL"
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-green-500" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
           </Button>
-        </a>
+        </div>
+
+        {/* Action buttons row */}
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs gap-1"
+            onClick={handleRefresh}
+            title="Refresh preview"
+          >
+            <RefreshCw className={cn("h-3 w-3", isLoading && "animate-spin")} />
+            Refresh
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs gap-1"
+            onClick={handleClearCacheAndCookies}
+            disabled={clearing}
+            title="Clear cache and cookies, then refresh"
+          >
+            <Trash2 className={cn("h-3 w-3", clearing && "animate-pulse")} />
+            Clear & Reload
+          </Button>
+          <div className="flex-1" />
+          <a
+            href={previewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0"
+          >
+            <Button variant="ghost" size="sm" className="h-6 text-xs gap-1">
+              <ExternalLink className="h-3 w-3" />
+              Open
+            </Button>
+          </a>
+        </div>
       </div>
 
       {/* iframe */}
       <div className="flex-1 min-h-0">
         <iframe
+          ref={iframeRef}
           key={refreshKey}
           src={iframeUrl}
           className="w-full h-full border-0"
