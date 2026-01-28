@@ -272,6 +272,10 @@ class BaseAgent(ABC):
             process_list,
             process_kill,
             service_manage,
+            # Task tracking tools
+            track_task,
+            update_todo,
+            complete_todo,
         )
 
         # Register memory tools (access Tool object via _tool attribute from decorator)
@@ -304,10 +308,15 @@ class BaseAgent(ABC):
         self._tool_registry.register(process_kill._tool)  # type: ignore[attr-defined]
         self._tool_registry.register(service_manage._tool)  # type: ignore[attr-defined]
 
+        # Register task tracking tools
+        self._tool_registry.register(track_task._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(update_todo._tool)  # type: ignore[attr-defined]
+        self._tool_registry.register(complete_todo._tool)  # type: ignore[attr-defined]
+
         logger.debug(
             "Registered shared tools",
             agent=self.config.name,
-            tool_count=19,  # Updated to include explore/plan tools
+            tool_count=22,  # Updated to include task tracking tools
         )
 
     @property
@@ -1844,6 +1853,13 @@ class BaseAgent(ABC):
 
             # Check if targeted to this agent
             if request.target_agent and request.target_agent != self.agent_type:
+                logger.debug(
+                    "Skipping task - not targeted to this agent",
+                    task_id=request.id,
+                    task_type=request.task_type,
+                    target_agent=request.target_agent.value if request.target_agent else None,
+                    my_agent_type=self.agent_type.value,
+                )
                 return
 
             # Process task
@@ -2178,6 +2194,131 @@ class BaseAgent(ABC):
                 "conversation_id": resolved_conversation_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
+        )
+
+    async def create_task_todos(
+        self,
+        task_description: str,
+        todos: list[str],
+        user_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> str:
+        """
+        Create a tracked task with TODO items that appear in the UI.
+
+        This enables real-time progress tracking for multi-step tasks,
+        similar to how plan steps show progress but for ad-hoc tasks.
+
+        Args:
+            task_description: Brief description of the overall task
+            todos: List of todo items to track (order matters)
+            user_id: Optional user ID (uses current context if not provided)
+            conversation_id: Optional conversation ID (uses current context if not provided)
+
+        Returns:
+            Task ID for tracking progress updates
+        """
+        import uuid
+        from datetime import datetime, timezone
+
+        task_id = str(uuid.uuid4())
+
+        if not self._pubsub:
+            return task_id
+
+        # Use provided IDs or fall back to current context
+        resolved_user_id = user_id or self._state.current_user_id
+        resolved_conversation_id = conversation_id or self._state.current_conversation_id
+
+        # Don't publish if we don't have a user to send to
+        if not resolved_user_id:
+            return task_id
+
+        await self._pubsub.publish(
+            channel="agent:responses",
+            message={
+                "type": "task_todos",
+                "task_id": task_id,
+                "task_description": task_description,
+                "todos": todos,
+                "agent": self.agent_type.value,
+                "user_id": resolved_user_id,
+                "conversation_id": resolved_conversation_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        return task_id
+
+    async def update_todo_status(
+        self,
+        task_id: str,
+        todo_index: int,
+        status: str = "in_progress",
+        progress: int = 0,
+        status_message: str = "",
+        user_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> None:
+        """
+        Update a specific TODO item's status.
+
+        Args:
+            task_id: ID returned from create_task_todos
+            todo_index: 0-based index of the todo item
+            status: "pending" | "in_progress" | "completed" | "failed"
+            progress: 0-100 percentage completion
+            status_message: Optional message about current status
+            user_id: Optional user ID (uses current context if not provided)
+            conversation_id: Optional conversation ID (uses current context if not provided)
+        """
+        if not self._pubsub:
+            return
+
+        from datetime import datetime, timezone
+
+        # Use provided IDs or fall back to current context
+        resolved_user_id = user_id or self._state.current_user_id
+        resolved_conversation_id = conversation_id or self._state.current_conversation_id
+
+        # Don't publish if we don't have a user to send to
+        if not resolved_user_id:
+            return
+
+        await self._pubsub.publish(
+            channel="agent:responses",
+            message={
+                "type": "todo_progress",
+                "task_id": task_id,
+                "step_id": task_id,  # Reuse for compatibility with existing frontend
+                "todo_index": todo_index,
+                "progress": progress,
+                "status": status,
+                "status_message": status_message,
+                "agent": self.agent_type.value,
+                "user_id": resolved_user_id,
+                "conversation_id": resolved_conversation_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    async def complete_todo(
+        self,
+        task_id: str,
+        todo_index: int,
+        status_message: str = "",
+        user_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> None:
+        """Mark a TODO item as completed (100% progress)."""
+        await self.update_todo_status(
+            task_id=task_id,
+            todo_index=todo_index,
+            status="completed",
+            progress=100,
+            status_message=status_message,
+            user_id=user_id,
+            conversation_id=conversation_id,
         )
 
     # Hooks for subclasses

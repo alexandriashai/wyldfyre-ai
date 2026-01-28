@@ -11,6 +11,8 @@ import { AgentStatus } from "@/components/chat/agent-status";
 import { TaskControls } from "@/components/chat/task-controls";
 import { PlanPanel } from "@/components/chat/plan-panel";
 import { RollbackControls } from "@/components/chat/rollback-controls";
+import { ActiveTasksPanel } from "@/components/chat/active-tasks-panel";
+import { PlanSuggestionBanner } from "@/components/chat/plan-suggestion-banner";
 import { ConversationSidebar } from "@/components/chat/conversation-sidebar";
 import { UsageMeter } from "@/components/chat/usage-meter";
 import { AgentSelector } from "@/components/chat/agent-selector";
@@ -266,6 +268,10 @@ export default function WorkspaceChatsPage() {
         <AgentStatus />
         <TaskControls />
         {currentPlan && <PlanPanel />}
+        {/* Active task tracking - show when there are tracked tasks (non-plan mode) */}
+        {!currentPlan && <ActiveTasksPanel />}
+        {/* Plan suggestion banner - show when supervisor suggests entering plan mode */}
+        <PlanSuggestionBanner />
         {/* Rollback controls - show when there's rollback data available */}
         {(currentPlanId || lastRollbackResult) && !currentPlan && (
           <div className="px-4 py-2 border-b bg-muted/30">

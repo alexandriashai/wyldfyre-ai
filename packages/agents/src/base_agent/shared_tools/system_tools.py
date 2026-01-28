@@ -94,11 +94,22 @@ async def _run_command(
         if not cwd_path.is_dir():
             raise ValueError(f"Working directory is not a directory: {cwd}")
 
+    # Ensure proper PATH for command execution
+    env = os.environ.copy()
+    # Add common paths that might be missing
+    extra_paths = ["/usr/local/bin", "/usr/bin", "/bin", "/opt/venv/bin"]
+    existing_path = env.get("PATH", "")
+    for p in extra_paths:
+        if p not in existing_path:
+            existing_path = f"{p}:{existing_path}"
+    env["PATH"] = existing_path
+
     process = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=env,
     )
 
     try:
@@ -956,3 +967,249 @@ async def check_service_health(
     except Exception as e:
         logger.error("Check service health failed", error=str(e))
         return ToolResult.fail(f"Check service health failed: {e}")
+
+
+# ============================================================
+# Task Tracking Tools
+# ============================================================
+# These tools allow agents to create and track TODO items
+# that appear in the UI, enabling real-time progress visibility
+
+
+@tool(
+    name="track_task",
+    description="""Create a tracked task with TODO items that appear in the UI.
+    Use this at the start of any multi-step operation to show users what you'll do.
+
+    Example:
+    - task_id = track_task("Build web project", ["Install dependencies", "Run build", "Run tests"])
+    - Then use update_todo to show progress on each item""",
+    parameters={
+        "type": "object",
+        "properties": {
+            "description": {
+                "type": "string",
+                "description": "Brief description of the overall task",
+            },
+            "todos": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of TODO items to track (in order of execution)",
+            },
+        },
+        "required": ["description", "todos"],
+    },
+    permission_level=0,  # READ_ONLY - just displays info
+    capability_category=CapabilityCategory.SYSTEM,
+    side_effects=False,
+)
+async def track_task(
+    description: str,
+    todos: list[str],
+    context: dict | None = None,
+) -> ToolResult:
+    """Create a tracked task with TODO items."""
+    try:
+        # Validate inputs
+        if not description or not description.strip():
+            return ToolResult.fail("Task description is required")
+        if not todos or len(todos) == 0:
+            return ToolResult.fail("At least one TODO item is required")
+
+        # Get agent from context (injected by BaseAgent._execute_tool)
+        agent = context.get("_agent") if context else None
+        if not agent:
+            return ToolResult.fail("Agent context not available")
+
+        # Create the tracked task
+        task_id = await agent.create_task_todos(
+            task_description=description.strip(),
+            todos=[t.strip() for t in todos if t.strip()],
+        )
+
+        return ToolResult.ok({
+            "task_id": task_id,
+            "description": description,
+            "todo_count": len(todos),
+            "message": f"Created task with {len(todos)} TODOs. Use update_todo to show progress.",
+        })
+
+    except Exception as e:
+        logger.error("track_task failed", error=str(e))
+        return ToolResult.fail(f"Failed to create tracked task: {e}")
+
+
+@tool(
+    name="update_todo",
+    description="""Update a TODO item's status and progress.
+    Call this as you work through each step of a tracked task.
+
+    Status values:
+    - "in_progress": Currently working on this item
+    - "completed": Finished successfully
+    - "failed": Failed with error
+
+    Progress: 0-100 percentage (use 100 for completed)""",
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task ID returned from track_task",
+            },
+            "todo_index": {
+                "type": "integer",
+                "description": "0-based index of the TODO item to update",
+            },
+            "status": {
+                "type": "string",
+                "enum": ["pending", "in_progress", "completed", "failed"],
+                "description": "New status for the TODO item",
+                "default": "in_progress",
+            },
+            "progress": {
+                "type": "integer",
+                "description": "Progress percentage (0-100)",
+                "default": 0,
+            },
+            "message": {
+                "type": "string",
+                "description": "Optional status message to display",
+            },
+        },
+        "required": ["task_id", "todo_index"],
+    },
+    permission_level=0,  # READ_ONLY - just displays info
+    capability_category=CapabilityCategory.SYSTEM,
+    side_effects=False,
+)
+async def update_todo(
+    task_id: str,
+    todo_index: int,
+    status: str = "in_progress",
+    progress: int = 0,
+    message: str = "",
+    context: dict | None = None,
+) -> ToolResult:
+    """Update a TODO item's status."""
+    try:
+        # Validate inputs
+        if not task_id:
+            return ToolResult.fail("task_id is required")
+
+        # Type coercion for todo_index
+        if isinstance(todo_index, str):
+            try:
+                todo_index = int(todo_index)
+            except ValueError:
+                return ToolResult.fail(f"Invalid todo_index: {todo_index}")
+
+        if todo_index < 0:
+            return ToolResult.fail("todo_index must be >= 0")
+
+        # Validate status
+        valid_statuses = ["pending", "in_progress", "completed", "failed"]
+        if status not in valid_statuses:
+            return ToolResult.fail(f"Invalid status. Must be one of: {valid_statuses}")
+
+        # Clamp progress to valid range
+        progress = max(0, min(100, progress))
+
+        # Get agent from context
+        agent = context.get("_agent") if context else None
+        if not agent:
+            return ToolResult.fail("Agent context not available")
+
+        # Update the todo
+        await agent.update_todo_status(
+            task_id=task_id,
+            todo_index=todo_index,
+            status=status,
+            progress=progress,
+            status_message=message or "",
+        )
+
+        return ToolResult.ok({
+            "task_id": task_id,
+            "todo_index": todo_index,
+            "status": status,
+            "progress": progress,
+            "message": message or f"TODO #{todo_index} updated to {status} ({progress}%)",
+        })
+
+    except Exception as e:
+        logger.error("update_todo failed", error=str(e))
+        return ToolResult.fail(f"Failed to update TODO: {e}")
+
+
+@tool(
+    name="complete_todo",
+    description="""Mark a TODO item as completed (100% progress).
+    Shorthand for update_todo with status='completed' and progress=100.""",
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task ID returned from track_task",
+            },
+            "todo_index": {
+                "type": "integer",
+                "description": "0-based index of the TODO item to complete",
+            },
+            "message": {
+                "type": "string",
+                "description": "Optional completion message",
+            },
+        },
+        "required": ["task_id", "todo_index"],
+    },
+    permission_level=0,  # READ_ONLY - just displays info
+    capability_category=CapabilityCategory.SYSTEM,
+    side_effects=False,
+)
+async def complete_todo(
+    task_id: str,
+    todo_index: int,
+    message: str = "",
+    context: dict | None = None,
+) -> ToolResult:
+    """Mark a TODO item as completed."""
+    try:
+        # Validate inputs
+        if not task_id:
+            return ToolResult.fail("task_id is required")
+
+        # Type coercion for todo_index
+        if isinstance(todo_index, str):
+            try:
+                todo_index = int(todo_index)
+            except ValueError:
+                return ToolResult.fail(f"Invalid todo_index: {todo_index}")
+
+        if todo_index < 0:
+            return ToolResult.fail("todo_index must be >= 0")
+
+        # Get agent from context
+        agent = context.get("_agent") if context else None
+        if not agent:
+            return ToolResult.fail("Agent context not available")
+
+        # Complete the todo
+        await agent.complete_todo(
+            task_id=task_id,
+            todo_index=todo_index,
+            status_message=message or "Completed",
+        )
+
+        return ToolResult.ok({
+            "task_id": task_id,
+            "todo_index": todo_index,
+            "status": "completed",
+            "progress": 100,
+            "message": message or f"TODO #{todo_index} completed",
+        })
+
+    except Exception as e:
+        logger.error("complete_todo failed", error=str(e))
+        return ToolResult.fail(f"Failed to complete TODO: {e}")

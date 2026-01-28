@@ -32,7 +32,7 @@ interface PlanStep {
 }
 
 interface ChatMessage {
-  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "plan_status" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress" | "usage_update" | "supervisor_thinking" | "step_confidence_update" | "plan_change" | "todo_progress" | "file_change_preview" | "available_agents" | "continuation_required" | "thinking_stream" | "rollback_complete" | "redo_complete" | "branch_mismatch_warning" | "quality_check_result";
+  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "plan_status" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress" | "usage_update" | "supervisor_thinking" | "step_confidence_update" | "plan_change" | "todo_progress" | "file_change_preview" | "available_agents" | "continuation_required" | "thinking_stream" | "rollback_complete" | "redo_complete" | "branch_mismatch_warning" | "quality_check_result" | "task_todos" | "plan_suggestion";
   title?: string;
   conversation_id?: string;
   message_id?: string;
@@ -113,6 +113,9 @@ interface ChatMessage {
   passed?: boolean;
   errors?: Array<{ file?: string; line?: number; message: string; severity: string; type?: string }>;
   checks_run?: Array<{ name: string; passed: boolean; message?: string; type?: string; command?: string; output?: string }>;
+  // Task todos fields (for non-plan mode task tracking)
+  task_description?: string;
+  todos?: string[];
 }
 
 export type ConnectionState = "connected" | "connecting" | "disconnected" | "reconnecting";
@@ -453,6 +456,7 @@ export function useChat() {
 
         case "todo_progress":
           if (data.step_id && data.todo_index !== undefined) {
+            // Update plan step todos
             useChatStore.getState().updateTodoProgress({
               stepId: data.step_id,
               todoIndex: data.todo_index,
@@ -460,6 +464,18 @@ export function useChat() {
               statusMessage: data.status_message || "",
               timestamp: data.timestamp || new Date().toISOString(),
             });
+
+            // Also update active task todos (task_id and step_id are both used as key)
+            if (data.task_id || data.step_id) {
+              const taskId = data.task_id || data.step_id;
+              useChatStore.getState().updateActiveTaskTodo(
+                taskId,
+                data.todo_index,
+                data.status || (data.progress >= 100 ? "completed" : "in_progress"),
+                data.progress || 0,
+                data.status_message
+              );
+            }
           }
           break;
 
@@ -550,6 +566,29 @@ export function useChat() {
             agent: data.agent,
             timestamp: data.timestamp || new Date().toISOString(),
           });
+          break;
+
+        case "task_todos":
+          // Non-plan mode task tracking - agent created a tracked task with TODOs
+          if (data.task_id && data.task_description && data.todos) {
+            useChatStore.getState().addActiveTask(
+              data.task_id,
+              data.task_description,
+              data.todos,
+              data.agent || "agent"
+            );
+          }
+          break;
+
+        case "plan_suggestion":
+          // Supervisor suggests entering plan mode for a complex task
+          if (data.message) {
+            useChatStore.getState().setPlanSuggestion({
+              message: data.message,
+              reason: data.reason || "",
+              timestamp: data.timestamp || new Date().toISOString(),
+            });
+          }
           break;
 
         default:

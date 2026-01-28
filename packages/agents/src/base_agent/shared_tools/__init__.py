@@ -41,6 +41,10 @@ from .system_tools import (
     service_manage,
     resource_monitor,
     system_info,
+    # Task tracking tools
+    track_task,
+    update_todo,
+    complete_todo,
 )
 
 from .subagent_tools import (
@@ -83,6 +87,10 @@ __all__ = [
     "service_manage",
     "resource_monitor",
     "system_info",
+    # Task tracking tools
+    "track_task",
+    "update_todo",
+    "complete_todo",
     # Subagent tools
     "spawn_subagent",
     # Exploration and planning tools

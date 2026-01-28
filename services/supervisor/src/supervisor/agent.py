@@ -17,11 +17,13 @@ from ai_core import (
     AgentStatus,
     AgentType,
     ElevationReason,
+    ExecutionMode,
     HookEvent,
     ModelTier,
     PermissionLevel,
     get_elevation_manager,
     get_logger,
+    get_task_classifier,
 )
 from ai_memory import PAIMemory
 from ai_messaging import (
@@ -492,6 +494,40 @@ In addition to delegation tools, you have these shared capabilities:
 - `store_memory(content, scope?, category?, tags?)` - Save important discoveries and corrections.
 - `list_memory_collections()` / `get_memory_stats()` - Memory management.
 
+### Task Classification (Auto-Routed)
+
+The system automatically classifies tasks using ML-based routing (like LLMRouter):
+- `classify_task(description)` - Explicitly check task complexity before deciding approach
+- Tasks are auto-classified when delegated, but you can check first for complex decisions
+
+**Classification Results:**
+- `"direct"` - Execute immediately (builds, restarts, git ops)
+- `"complex"` - Explore first, then execute (features, debugging)
+- `"plan"` - Suggest entering plan mode first (large features, migrations)
+
+**When `suggest_plan: true` is returned:**
+The task is large enough to benefit from formal planning. Use `spawn_plan_agent` to create
+a structured plan before delegation. This helps with:
+- Multi-component features (frontend + backend + database)
+- System-wide refactoring or migrations
+- Security-critical implementations (auth, payments)
+- Tasks the user phrased as questions ("how should I...")
+
+**Direct Execution Tasks (NO exploration needed):**
+Auto-classified as `"direct"`:
+- Build commands: "npm run build", "make", "cargo build", "go build"
+- Service commands: "restart X", "stop X", "start X"
+- Git operations: "git push", "git pull", "commit changes"
+- Simple file operations: "create file X", "delete file Y"
+- Status checks: "check if X is running", "show logs"
+
+**Complex Tasks (exploration recommended):**
+Auto-classified as `"complex"` or `"plan"`:
+- Feature implementation: "add login feature", "implement caching"
+- Refactoring: "refactor module X", "improve performance of Y"
+- Debugging: "fix bug in X", "investigate why Y fails"
+- Architecture changes: "migrate from X to Y"
+
 ### Exploration Tools (USE BEFORE COMPLEX TASKS)
 - `spawn_explore_agent(query, path?, thoroughness?)` - Launch READ-ONLY codebase exploration. Use this to understand before changing.
 - `spawn_plan_agent(task, context?)` - Design implementation approach. Returns structured plan.
@@ -506,7 +542,11 @@ In addition to delegation tools, you have these shared capabilities:
 
 ## Delegation Protocol
 
-**Before delegating complex tasks:**
+**For DIRECT execution tasks** (builds, restarts, simple commands):
+- Delegate immediately with `"execution_mode": "direct"` in payload
+- Do NOT use spawn_explore_agent or spawn_plan_agent
+
+**For COMPLEX tasks** (features, refactoring, debugging):
 1. Use `search_memory` to check for relevant learnings
 2. Use `spawn_explore_agent` to understand the codebase
 3. Use `spawn_plan_agent` to design the approach
@@ -600,6 +640,7 @@ class SupervisorAgent(BaseAgent):
         # Supervisor-specific tools
         self.register_tool(self._create_route_task_tool())
         self.register_tool(self._create_delegate_task_tool())
+        self.register_tool(self._create_classify_task_tool())
         self.register_tool(self._create_check_agent_status_tool())
         self.register_tool(self._create_escalate_tool())
         self.register_tool(self._create_list_pending_elevations_tool())
@@ -900,6 +941,65 @@ class SupervisorAgent(BaseAgent):
                     "task_id": rollback_ctx.get("task_id"),
                 }
 
+            # Auto-classify task complexity if not explicitly set
+            # Uses ML-based classification similar to ContentRouter
+            if "execution_mode" not in task_payload:
+                task_classifier = get_task_classifier()
+                # Build task description from task_type and payload
+                task_desc = task_type
+                if payload:
+                    if "instruction" in payload:
+                        task_desc = payload["instruction"]
+                    elif "command" in payload:
+                        task_desc = payload["command"]
+                    elif "message" in payload:
+                        task_desc = payload["message"]
+
+                # Get full classification with plan suggestions
+                classification = await task_classifier.classify_full(task_desc)
+                task_payload["execution_mode"] = classification.execution_mode.value
+                task_payload["_classification_confidence"] = classification.confidence
+                task_payload["_classification_reason"] = classification.reason
+
+                logger.debug(
+                    "Classified task complexity",
+                    task_type=task_type,
+                    execution_mode=classification.execution_mode.value,
+                    suggest_plan=classification.suggest_plan,
+                    confidence=classification.confidence,
+                    reason=classification.reason,
+                    task_description=task_desc[:100],
+                )
+
+                # If plan mode is suggested, notify the LLM to consider it
+                if classification.suggest_plan:
+                    task_payload["_suggest_plan"] = True
+                    task_payload["_plan_suggestion_reason"] = classification.reason
+                    # Publish thinking about plan suggestion
+                    await supervisor.publish_thinking(
+                        "observation",
+                        f"This task may benefit from planning first: {classification.reason}. "
+                        "Consider using spawn_plan_agent before delegation.",
+                        context={"classification": classification.reason}
+                    )
+
+                    # Publish plan suggestion to frontend for user notification
+                    from datetime import datetime, timezone
+                    user_id = context.get("user_id") if context else supervisor._state.current_user_id
+                    conv_id = context.get("conversation_id") if context else supervisor._state.current_conversation_id
+                    if user_id and supervisor._pubsub:
+                        await supervisor._pubsub.publish(
+                            "agent:responses",
+                            {
+                                "type": "plan_suggestion",
+                                "message": "This task appears complex. Would you like me to create a plan first?",
+                                "reason": classification.reason,
+                                "user_id": user_id,
+                                "conversation_id": conv_id,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+
             # Create task request
             request = TaskRequest(
                 task_type=task_type,
@@ -970,6 +1070,68 @@ class SupervisorAgent(BaseAgent):
                 )
 
         return delegate_task._tool
+
+    def _create_classify_task_tool(self) -> Tool:
+        """Create the classify_task tool for checking task complexity."""
+        supervisor = self
+
+        @tool(
+            name="classify_task",
+            description=(
+                "Classify a task's complexity to determine execution approach. "
+                "Returns whether to execute directly, explore first, or suggest planning. "
+                "Use this before delegating complex tasks to understand the best approach."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_description": {
+                        "type": "string",
+                        "description": "The task description to classify",
+                    },
+                },
+                "required": ["task_description"],
+            },
+        )
+        async def classify_task(
+            task_description: str,
+            context: dict | None = None,
+        ) -> ToolResult:
+            task_classifier = get_task_classifier()
+            classification = await task_classifier.classify_full(task_description)
+
+            result = {
+                "execution_mode": classification.execution_mode.value,
+                "suggest_plan": classification.suggest_plan,
+                "confidence": classification.confidence,
+                "reason": classification.reason,
+                "recommendation": self._get_classification_recommendation(classification),
+            }
+
+            logger.debug(
+                "Task classified via tool",
+                task_description=task_description[:100],
+                result=result,
+            )
+
+            return ToolResult.ok(result)
+
+        return classify_task._tool
+
+    def _get_classification_recommendation(self, classification) -> str:
+        """Get a human-readable recommendation based on classification."""
+        if classification.execution_mode.value == "direct":
+            return "Execute immediately without exploration. Delegate directly to the appropriate agent."
+        elif classification.execution_mode.value == "plan":
+            return (
+                f"Consider entering plan mode first. {classification.reason}. "
+                "Use spawn_plan_agent to design the approach before implementation."
+            )
+        else:  # complex
+            return (
+                "Use spawn_explore_agent to understand the codebase, "
+                "then spawn_plan_agent to design the approach before delegation."
+            )
 
     def _create_restart_agent_tool(self) -> Tool:
         """Create the restart_agent tool."""

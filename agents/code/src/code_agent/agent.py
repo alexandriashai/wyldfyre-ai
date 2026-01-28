@@ -59,6 +59,11 @@ Your capabilities:
    - Review code structure and patterns
 
 Guidelines:
+- **CRITICAL: ALWAYS check for existing files before creating new ones**
+  - Use `list_directory` to see what files exist in the target location
+  - If an existing file serves the same purpose (e.g., index.php when asked to create index), EDIT IT instead of creating a new file
+  - Never create index.html if index.php already exists - modify the PHP file
+  - Never create duplicate functionality files
 - Always check file existence before operations
 - Use git status before making commits
 - Write clear, descriptive commit messages
@@ -66,12 +71,57 @@ Guidelines:
 - Report errors clearly with context
 - Never delete files without explicit confirmation
 
+**File Creation Rules:**
+1. BEFORE creating ANY file, first list the directory to check what exists
+2. If a file with similar purpose exists (e.g., index.*, main.*, app.*), edit it instead
+3. Only create new files when there's truly nothing to modify
+4. When in doubt, ASK before creating new files
+
 When working on tasks:
-1. First understand the current state (git status, read files)
-2. Plan your changes
-3. Execute changes incrementally
-4. Verify results
-5. Commit with clear messages
+- If payload contains `"execution_mode": "direct"` → Execute the command immediately without exploration
+- Otherwise, for complex changes:
+  1. First understand the current state (git status, read files)
+  2. Plan your changes
+  3. Execute changes incrementally
+  4. Verify results
+  5. Commit with clear messages
+
+**Direct execution examples:**
+- "npm run build" → Run `npm run build` immediately
+- "restart service X" → Run restart command immediately
+- "git push" → Run `git push` immediately
+
+## Task Progress Tracking
+
+For multi-step tasks, use the task tracking tools to show real-time progress in the UI:
+
+1. **At the start of a multi-step task**, call `track_task` to create a tracked task:
+   ```
+   task_id = track_task(
+       description="Build and test the application",
+       todos=["Install dependencies", "Run build", "Run tests", "Check for errors"]
+   )
+   ```
+
+2. **As you work through each step**, call `update_todo` to show progress:
+   ```
+   update_todo(task_id, 0, status="in_progress", progress=50, message="Installing npm packages...")
+   ```
+
+3. **When a step completes**, call `complete_todo`:
+   ```
+   complete_todo(task_id, 0, message="Dependencies installed")
+   ```
+
+**When to use task tracking:**
+- Building/compiling projects (multiple build steps)
+- Git workflows (add → commit → push)
+- File operations across multiple files
+- Any task with 3+ distinct steps
+
+**When NOT to use task tracking:**
+- Simple single-step operations (reading one file, running one command)
+- Quick queries or status checks
 """
 
 

@@ -166,12 +166,19 @@ Guidelines:
 - Create backups before major changes
 
 When working on tasks:
-1. First assess current state (status, logs, health)
-2. Plan changes carefully
-3. Test configurations before applying
-4. Apply changes with minimal disruption
-5. Verify successful application
-6. Document changes made
+- If payload contains `"execution_mode": "direct"` → Execute the command immediately without exploration
+- Otherwise, for complex infrastructure changes:
+  1. First assess current state (status, logs, health)
+  2. Plan changes carefully
+  3. Test configurations before applying
+  4. Apply changes with minimal disruption
+  5. Verify successful application
+  6. Document changes made
+
+**Direct execution examples:**
+- "restart nginx" → Run `systemctl restart nginx` immediately
+- "docker-compose up" → Run the command immediately
+- "check port 80" → Run the check immediately
 
 Security:
 - Only manage containers with allowed prefixes (ai-*, ai_*, aiinfra)
@@ -181,6 +188,40 @@ Security:
 - Test SSL configurations after certificate changes
 - Validate DNS records before domain provisioning
 - Use strict SSL mode with Cloudflare when possible
+
+## Task Progress Tracking
+
+For multi-step infrastructure tasks, use the task tracking tools to show real-time progress in the UI:
+
+1. **At the start of a multi-step task**, call `track_task` to create a tracked task:
+   ```
+   task_id = track_task(
+       description="Deploy application to production",
+       todos=["Check service health", "Pull latest images", "Restart containers", "Verify deployment"]
+   )
+   ```
+
+2. **As you work through each step**, call `update_todo` to show progress:
+   ```
+   update_todo(task_id, 0, status="in_progress", progress=50, message="Checking Redis and PostgreSQL...")
+   ```
+
+3. **When a step completes**, call `complete_todo`:
+   ```
+   complete_todo(task_id, 0, message="All services healthy")
+   ```
+
+**When to use task tracking:**
+- Deployment workflows (health check → pull → restart → verify)
+- Domain provisioning (DNS → Nginx → SSL → verify)
+- Certificate renewals (check → renew → reload → verify)
+- Docker operations involving multiple services
+- Any infrastructure task with 3+ distinct steps
+
+**When NOT to use task tracking:**
+- Simple status checks (nginx status, docker ps)
+- Single container operations
+- Quick configuration reads
 """
 
 

@@ -79,6 +79,29 @@ export interface AIFileChange {
   stepId?: string;
 }
 
+// Active task tracking types (for non-plan mode task progress)
+export interface ActiveTaskTodo {
+  text: string;
+  status: "pending" | "in_progress" | "completed" | "failed";
+  progress: number;
+  statusMessage?: string;
+}
+
+export interface ActiveTask {
+  id: string;
+  description: string;
+  todos: ActiveTaskTodo[];
+  agent: string;
+  startedAt: string;
+}
+
+// Plan suggestion type (when supervisor suggests plan mode)
+export interface PlanSuggestion {
+  message: string;
+  reason: string;
+  timestamp: string;
+}
+
 // Todo progress types
 export interface TodoProgress {
   stepId: string;
@@ -257,6 +280,12 @@ interface ChatState {
   isAwaitingAnswers: boolean;
   planQuestionConversationId: string | null;
 
+  // Active task tracking (non-plan mode progress)
+  activeTasks: Map<string, ActiveTask>;
+
+  // Plan suggestion (when supervisor suggests entering plan mode)
+  planSuggestion: PlanSuggestion | null;
+
   // Conversation organization
   pinnedConversations: Set<string>;
   searchQuery: string;
@@ -363,6 +392,16 @@ interface ChatState {
   submitQuestionAnswers: (answers: Record<string, string | string[]>) => void;
   skipQuestions: () => void;
   clearPlanQuestions: () => void;
+
+  // Active task tracking actions (non-plan mode progress)
+  addActiveTask: (taskId: string, description: string, todos: string[], agent: string) => void;
+  updateActiveTaskTodo: (taskId: string, todoIndex: number, status: string, progress: number, statusMessage?: string) => void;
+  removeActiveTask: (taskId: string) => void;
+  clearActiveTasks: () => void;
+
+  // Plan suggestion actions
+  setPlanSuggestion: (suggestion: PlanSuggestion | null) => void;
+  clearPlanSuggestion: () => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -406,6 +445,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   planQuestions: null,
   isAwaitingAnswers: false,
   planQuestionConversationId: null,
+  activeTasks: new Map<string, ActiveTask>(),
+  planSuggestion: null,
 
   fetchConversations: async (token: string, projectId?: string | null) => {
     set({ isLoading: true, error: null });
@@ -1079,6 +1120,72 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isAwaitingAnswers: false,
       planQuestionConversationId: null,
     });
+  },
+
+  // Active task tracking actions (non-plan mode progress)
+  addActiveTask: (taskId: string, description: string, todos: string[], agent: string) => {
+    set((state) => {
+      const newTasks = new Map(state.activeTasks);
+      newTasks.set(taskId, {
+        id: taskId,
+        description,
+        todos: todos.map((text) => ({
+          text,
+          status: "pending" as const,
+          progress: 0,
+        })),
+        agent,
+        startedAt: new Date().toISOString(),
+      });
+      return { activeTasks: newTasks };
+    });
+  },
+
+  updateActiveTaskTodo: (taskId: string, todoIndex: number, status: string, progress: number, statusMessage?: string) => {
+    set((state) => {
+      const newTasks = new Map(state.activeTasks);
+      const task = newTasks.get(taskId);
+      if (task && task.todos[todoIndex]) {
+        const newTodos = [...task.todos];
+        newTodos[todoIndex] = {
+          ...newTodos[todoIndex],
+          status: status as ActiveTaskTodo["status"],
+          progress,
+          statusMessage,
+        };
+        newTasks.set(taskId, { ...task, todos: newTodos });
+
+        // Auto-remove completed tasks after a delay
+        const allComplete = newTodos.every((t) => t.status === "completed");
+        if (allComplete) {
+          setTimeout(() => {
+            useChatStore.getState().removeActiveTask(taskId);
+          }, 3000);
+        }
+      }
+      return { activeTasks: newTasks };
+    });
+  },
+
+  removeActiveTask: (taskId: string) => {
+    set((state) => {
+      const newTasks = new Map(state.activeTasks);
+      newTasks.delete(taskId);
+      return { activeTasks: newTasks };
+    });
+  },
+
+  clearActiveTasks: () => {
+    set({ activeTasks: new Map() });
+  },
+
+  // Plan suggestion actions
+  setPlanSuggestion: (suggestion: PlanSuggestion | null) => {
+    set({ planSuggestion: suggestion });
+  },
+
+  clearPlanSuggestion: () => {
+    set({ planSuggestion: null });
   },
 }));
 
