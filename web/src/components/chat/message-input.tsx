@@ -18,7 +18,19 @@ export function MessageInput() {
   const [showHelpModal, setShowHelpModal] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const { isSending, currentConversation } = useChatStore();
+  const { isSending, currentConversation, prefillMessage, setPrefillMessage } = useChatStore();
+
+  // Handle prefill message from external sources (e.g., "Fix with AI" button)
+  useEffect(() => {
+    if (prefillMessage && prefillMessage.length > 0) {
+      setMessage(prefillMessage);
+      setPrefillMessage(null);
+      // Focus the textarea
+      setTimeout(() => {
+        textareaRef.current?.focus();
+      }, 100);
+    }
+  }, [prefillMessage, setPrefillMessage]);
   const { sendMessage, isConnected } = useChat();
   const { isRecording, isProcessing, audioLevel, startRecording, stopRecording } = useVoice({
     onTranscription: (text) => {

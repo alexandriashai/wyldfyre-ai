@@ -54,10 +54,18 @@ class PlanStep:
     agent: Optional[str] = None  # Which agent will handle this
     estimated_duration: Optional[str] = None
     dependencies: list[str] = field(default_factory=list)  # Step IDs this depends on
+    files: list[str] = field(default_factory=list)  # Files to create/modify
+    todos: list[str] = field(default_factory=list)  # Sub-tasks for this step
+    changes: list[dict[str, Any]] = field(default_factory=list)  # File change details
     output: Optional[str] = None
     error: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+    # Alias for frontend compatibility
+    @property
+    def order_index(self) -> int:
+        return self.order
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +77,9 @@ class PlanStep:
             "agent": self.agent,
             "estimated_duration": self.estimated_duration,
             "dependencies": self.dependencies,
+            "files": self.files,
+            "todos": self.todos,
+            "changes": self.changes,
             "output": self.output,
             "error": self.error,
             "started_at": self.started_at.isoformat() if self.started_at else None,
@@ -94,6 +105,7 @@ class Plan:
     exploration_notes: list[str] = field(default_factory=list)
     files_explored: list[str] = field(default_factory=list)
     project_id: Optional[str] = None  # Scope plan to a project
+    branch: Optional[str] = None  # Git branch the plan was created on
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +125,7 @@ class Plan:
             "metadata": self.metadata,
             "exploration_notes": self.exploration_notes,
             "files_explored": self.files_explored,
+            "branch": self.branch,
         }
 
     @property
@@ -142,6 +155,7 @@ class PlanManager:
         title: str,
         description: str,
         project_id: str,
+        branch: Optional[str] = None,
     ) -> Plan:
         """Create a new plan (starts in EXPLORING phase)."""
         plan = Plan(
@@ -152,6 +166,7 @@ class PlanManager:
             description=description,
             status=PlanStatus.EXPLORING,
             project_id=project_id,
+            branch=branch,
         )
 
         self._active_plans[plan.id] = plan
@@ -213,6 +228,9 @@ class PlanManager:
         agent: Optional[str] = None,
         estimated_duration: Optional[str] = None,
         dependencies: Optional[list[str]] = None,
+        files: Optional[list[str]] = None,
+        todos: Optional[list[str]] = None,
+        changes: Optional[list[dict[str, Any]]] = None,
     ) -> Optional[PlanStep]:
         """Add a step to a plan."""
         plan = await self.get_plan(plan_id)
@@ -227,6 +245,9 @@ class PlanManager:
             agent=agent,
             estimated_duration=estimated_duration,
             dependencies=dependencies or [],
+            files=files or [],
+            todos=todos or [],
+            changes=changes or [],
         )
 
         plan.steps.append(step)
@@ -247,13 +268,16 @@ class PlanManager:
 
         plan.steps = [
             PlanStep(
-                id=str(uuid4()),
+                id=s.get("id") or str(uuid4()),
                 order=i + 1,
                 title=s.get("title", f"Step {i + 1}"),
                 description=s.get("description", ""),
                 agent=s.get("agent"),
                 estimated_duration=s.get("estimated_duration"),
                 dependencies=s.get("dependencies", []),
+                files=s.get("files", []),
+                todos=s.get("todos", []),
+                changes=s.get("changes", []),
             )
             for i, s in enumerate(steps)
         ]
@@ -403,7 +427,11 @@ class PlanManager:
     async def pause_execution(self, plan_id: str) -> bool:
         """Pause plan execution."""
         plan = await self.get_plan(plan_id)
-        if not plan or plan.status != PlanStatus.EXECUTING:
+        if not plan:
+            return False
+
+        # Allow pausing from either APPROVED or EXECUTING status
+        if plan.status not in (PlanStatus.EXECUTING, PlanStatus.APPROVED):
             return False
 
         plan.status = PlanStatus.PAUSED
@@ -462,6 +490,7 @@ class PlanManager:
                 exploration_notes=plan_data.get("exploration_notes", []),
                 files_explored=plan_data.get("files_explored", []),
                 project_id=plan_data.get("project_id"),
+                branch=plan_data.get("branch"),
             )
 
             if plan_data.get("approved_at"):
@@ -480,6 +509,9 @@ class PlanManager:
                     agent=step_data.get("agent"),
                     estimated_duration=step_data.get("estimated_duration"),
                     dependencies=step_data.get("dependencies", []),
+                    files=step_data.get("files", []),
+                    todos=step_data.get("todos", []),
+                    changes=step_data.get("changes", []),
                     output=step_data.get("output"),
                     error=step_data.get("error"),
                 )

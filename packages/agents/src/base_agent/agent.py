@@ -184,6 +184,13 @@ class BaseAgent(ABC):
         self._running = False
         self._plan_exploring = False  # Read-only mode during plan exploration
 
+        # Current project root path (REQUIRED for file operations)
+        self._current_root_path: str | None = None
+
+        # Current project quality settings (for post-task checks)
+        self._current_quality_settings: dict[str, Any] | None = None
+        self._task_files_changed: list[str] = []
+
         # Initialize RollbackManager for file change tracking
         from .rollback import RollbackManager
         self._rollback_manager = RollbackManager(redis_client)
@@ -732,6 +739,34 @@ class BaseAgent(ABC):
         conversation_id = request.payload.get("conversation_id")
         self._state.current_user_id = user_id
         self._state.current_conversation_id = conversation_id
+
+        # Extract and validate root_path (REQUIRED for file operations)
+        root_path = request.payload.get("root_path")
+        self._current_root_path = root_path
+        if root_path:
+            logger.info(
+                "Task root_path set",
+                task_id=task_id,
+                root_path=root_path,
+                agent=self.name,
+            )
+        else:
+            logger.warning(
+                "Task has no root_path - file operations may fail",
+                task_id=task_id,
+                agent=self.name,
+            )
+
+        # Extract quality settings for post-task checks
+        quality_settings = request.payload.get("quality_settings")
+        if isinstance(quality_settings, str):
+            import json as _json
+            try:
+                quality_settings = _json.loads(quality_settings)
+            except _json.JSONDecodeError:
+                quality_settings = None
+        self._current_quality_settings = quality_settings
+        self._task_files_changed = []  # Reset for new task
 
         # Extract and set rollback context from delegated task
         rollback_ctx = request.payload.get("_rollback_context")
@@ -2165,6 +2200,47 @@ class BaseAgent(ABC):
         self, request: TaskRequest, result: dict[str, Any]
     ) -> None:
         """Called when a task completes. Override in subclasses."""
+        # Run quality checks if configured and files were changed
+        quality_result = None
+        if self._current_root_path and self._current_quality_settings:
+            # Get files changed from rollback manager if available
+            files_changed = self._task_files_changed.copy()
+            if not files_changed and self._rollback_context.get("task_id"):
+                try:
+                    rollback_info = await self._rollback_manager.get_task_rollback_info(
+                        self._rollback_context["task_id"]
+                    )
+                    if rollback_info:
+                        files_changed = rollback_info.get("file_paths", [])
+                except Exception as e:
+                    logger.debug(f"Could not get rollback info for quality check: {e}")
+
+            if files_changed:
+                quality_result = await self.run_quality_check(
+                    root_path=self._current_root_path,
+                    files_changed=files_changed,
+                    quality_settings=self._current_quality_settings,
+                )
+
+                # Publish quality check results
+                if self._pubsub and self._state.current_user_id:
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "quality_check_result",
+                            "user_id": self._state.current_user_id,
+                            "conversation_id": self._state.current_conversation_id,
+                            "task_id": request.id,
+                            "passed": quality_result.get("passed", True),
+                            "errors": quality_result.get("errors", []),
+                            "checks_run": quality_result.get("checks_run", []),
+                            "agent": self.agent_type.value,
+                        },
+                    )
+
+                # Add quality results to task result
+                result["quality_check"] = quality_result
+
         # Trigger plugin hooks
         if self._plugin_integration:
             await self._plugin_integration.trigger_hook(
@@ -2176,6 +2252,7 @@ class BaseAgent(ABC):
                     "agent_name": self.config.name,
                     "result": result,
                     "changes": result.get("changes", []),
+                    "quality_result": quality_result,
                 },
             )
 
@@ -2239,3 +2316,172 @@ class BaseAgent(ABC):
                 "agent_name": self.config.name,
             },
         )
+
+    async def validate_file_path(
+        self,
+        path: str,
+        operation: str,
+        root_path: str | None = None,
+    ) -> tuple[bool, str | None]:
+        """
+        Validate that a file path is within the allowed project directory.
+
+        Args:
+            path: The file path to validate
+            operation: The operation type ('read', 'write', 'edit')
+            root_path: The project root path (required for validation)
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        from pathlib import Path as PathLib
+
+        if not root_path:
+            return False, "No root_path provided - cannot validate file path"
+
+        try:
+            # Resolve both paths to canonical form
+            root_resolved = str(PathLib(root_path).resolve())
+            path_resolved = str(PathLib(path).resolve()) if PathLib(path).exists() else None
+
+            # For new files, check if parent exists and is within root
+            if not path_resolved:
+                parent = PathLib(path).parent
+                if parent.exists():
+                    parent_resolved = str(parent.resolve())
+                    if not parent_resolved.startswith(root_resolved):
+                        return False, f"Path parent escapes project root: {parent_resolved}"
+                # Simple prefix check for new files
+                if not path.startswith(root_path):
+                    return False, f"Path outside project root: {path}"
+            else:
+                # Existing file - check resolved path
+                if not path_resolved.startswith(root_resolved):
+                    return False, f"Path escapes project root via symlink: {path} -> {path_resolved}"
+
+            # Trigger plugin hook for additional validation
+            if self._plugin_integration:
+                hook_event = {
+                    "read": HookEvent.PRE_FILE_READ,
+                    "write": HookEvent.PRE_FILE_WRITE,
+                    "edit": HookEvent.PRE_FILE_EDIT,
+                }.get(operation, HookEvent.PRE_FILE_READ)
+
+                context = await self._plugin_integration.trigger_hook(
+                    hook_event,
+                    {
+                        "path": path,
+                        "root_path": root_path,
+                        "operation": operation,
+                        "agent_type": self.agent_type.value,
+                    },
+                )
+                if context.get("blocked"):
+                    return False, context.get("reason", "File operation blocked by plugin")
+
+            return True, None
+
+        except Exception as e:
+            return False, f"Path validation error: {e}"
+
+    async def run_quality_check(
+        self,
+        root_path: str,
+        files_changed: list[str] | None = None,
+        quality_settings: dict[str, Any] | None = None,
+        auto_fix: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Run code quality checks after task completion.
+
+        Args:
+            root_path: The project root path
+            files_changed: Optional list of specific files to check
+            quality_settings: Project quality settings dict
+            auto_fix: Whether to auto-fix issues
+
+        Returns:
+            Dict with check results: {'passed': bool, 'errors': list, 'warnings': list}
+        """
+        result = {
+            "passed": True,
+            "errors": [],
+            "warnings": [],
+            "checks_run": [],
+        }
+
+        # Use provided or current quality settings
+        settings = quality_settings or self._current_quality_settings
+        if not settings:
+            result["skipped"] = "No quality settings configured"
+            return result
+
+        # Check if enabled
+        if not settings.get("enabled", True):
+            result["skipped"] = "Quality checks disabled"
+            return result
+
+        # Trigger plugin hook for quality checks
+        if self._plugin_integration:
+            context = await self._plugin_integration.trigger_hook(
+                HookEvent.POST_TASK_QUALITY_CHECK,
+                {
+                    "root_path": root_path,
+                    "files_changed": files_changed or self._task_files_changed,
+                    "quality_settings": settings,
+                    "auto_fix": auto_fix or settings.get("auto_fix_lint_errors", False),
+                    "agent_type": self.agent_type.value,
+                },
+            )
+            if context.get("quality_results"):
+                result.update(context["quality_results"])
+            if "quality_passed" in context:
+                result["passed"] = context["quality_passed"]
+            if context.get("quality_errors"):
+                result["errors"] = context["quality_errors"]
+
+        return result
+
+    def get_root_path(self, required: bool = True) -> str | None:
+        """
+        Get the current project root path.
+
+        Args:
+            required: If True, raises ValueError when root_path is not set
+
+        Returns:
+            The root path string or None if not set and not required
+
+        Raises:
+            ValueError: If required=True and root_path is not set
+        """
+        if required and not self._current_root_path:
+            raise ValueError(
+                "No root_path set for this task. All file operations require an explicit project directory. "
+                "Ensure the task payload includes 'root_path'."
+            )
+        return self._current_root_path
+
+    def set_root_path(self, root_path: str) -> None:
+        """
+        Set the current project root path.
+
+        Args:
+            root_path: The project root directory path
+        """
+        self._current_root_path = root_path
+        logger.info("Root path set", root_path=root_path, agent=self.name)
+
+    def track_file_change(self, file_path: str) -> None:
+        """
+        Track a file that was changed during the current task.
+
+        Args:
+            file_path: The path to the file that was modified
+        """
+        if file_path and file_path not in self._task_files_changed:
+            self._task_files_changed.append(file_path)
+
+    def get_changed_files(self) -> list[str]:
+        """Get list of files changed during the current task."""
+        return self._task_files_changed.copy()

@@ -47,6 +47,14 @@ class HookEvent(str, Enum):
     MESSAGE_SENT = "message_sent"
     # New hook for user prompt processing (Phase 2 Enhancement)
     USER_PROMPT_SUBMIT = "user_prompt_submit"
+    # File operation hooks for workspace scoping validation
+    PRE_FILE_READ = "pre_file_read"
+    PRE_FILE_WRITE = "pre_file_write"
+    PRE_FILE_EDIT = "pre_file_edit"
+    # Code quality hooks for post-task validation
+    POST_TASK_QUALITY_CHECK = "post_task_quality_check"
+    # Git hook failure detection
+    GIT_HOOK_FAILED = "git_hook_failed"
 
 
 @dataclass

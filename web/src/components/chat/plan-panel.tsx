@@ -30,6 +30,8 @@ import {
   RefreshCw,
   Info,
   Link2,
+  GitBranch,
+  AlertTriangle,
 } from "lucide-react";
 import { PlanChangelog } from "./plan-changelog";
 import { StepRollbackButton } from "./rollback-controls";
@@ -372,6 +374,8 @@ export function PlanPanel({ className }: PlanPanelProps) {
     currentConversation,
     planChanges,
     todoProgress,
+    planBranch,
+    branchMismatchWarning,
   } = useChatStore();
 
   const [isOpen, setIsOpen] = useState(true);
@@ -408,17 +412,17 @@ export function PlanPanel({ className }: PlanPanelProps) {
   };
 
   const isExecuting = planSteps.some((s) => s.status === "in_progress");
-  const isPaused = planStatus === "APPROVED" && planSteps.length > 0 &&
-    !isExecuting && planSteps.some((s) => s.status === "pending");
+  const isPaused = planStatus === "PAUSED";
 
   const statusConfig = {
     DRAFT: { label: "Draft", variant: "secondary" as const, icon: Pencil },
     PENDING: { label: "Pending", variant: "outline" as const, icon: Clock },
     APPROVED: {
-      label: isExecuting ? "Running" : isPaused ? "Paused" : "Approved",
+      label: isExecuting ? "Running" : "Approved",
       variant: "default" as const,
-      icon: isExecuting ? Loader2 : isPaused ? Clock : Check,
+      icon: isExecuting ? Loader2 : Check,
     },
+    PAUSED: { label: "Paused", variant: "outline" as const, icon: Clock },
     REJECTED: { label: "Rejected", variant: "destructive" as const, icon: X },
     COMPLETED: { label: "Done", variant: "default" as const, icon: Check },
   };
@@ -451,6 +455,12 @@ export function PlanPanel({ className }: PlanPanelProps) {
               <StatusIcon className={cn("h-3 w-3 mr-0.5 sm:mr-1", isExecuting && "animate-spin")} />
               <span className="hidden xs:inline">{status.label}</span>
             </Badge>
+            {planBranch && (
+              <Badge variant="outline" className="h-5 text-[10px] sm:text-xs shrink-0 gap-0.5">
+                <GitBranch className="h-3 w-3" />
+                <span className="hidden sm:inline max-w-[60px] truncate">{planBranch}</span>
+              </Badge>
+            )}
             {planSteps.length > 0 && (
               <span className="text-[10px] text-muted-foreground shrink-0">
                 {planSteps.filter((s) => s.status === "completed").length}/{planSteps.length}
@@ -474,6 +484,17 @@ export function PlanPanel({ className }: PlanPanelProps) {
         </Button>
       </div>
       <CollapsibleContent>
+        {branchMismatchWarning && (
+          <div className="mx-3 sm:mx-4 mb-2 mt-2 p-2 rounded-md bg-amber-500/10 border border-amber-500/30 flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              <span className="font-medium">Branch mismatch:</span> Plan was created on{" "}
+              <code className="bg-amber-500/20 px-1 rounded">{branchMismatchWarning.planBranch}</code>{" "}
+              but you&apos;re now on{" "}
+              <code className="bg-amber-500/20 px-1 rounded">{branchMismatchWarning.currentBranch}</code>
+            </p>
+          </div>
+        )}
         <div className="px-3 sm:px-4 pb-3">
           <div className="max-h-[50vh] sm:max-h-80 overflow-y-auto overscroll-contain touch-pan-y">
             {planSteps.length > 0 ? (

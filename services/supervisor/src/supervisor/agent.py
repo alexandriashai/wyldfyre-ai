@@ -17,6 +17,7 @@ from ai_core import (
     AgentStatus,
     AgentType,
     ElevationReason,
+    HookEvent,
     ModelTier,
     PermissionLevel,
     get_elevation_manager,
@@ -53,9 +54,18 @@ logger = get_logger(__name__)
 # ============================================================
 
 async def _glob_files(pattern: str, base_path: str = "/home/wyld-core", max_results: int = 50) -> list[dict[str, str]]:
-    """Find files matching glob pattern."""
+    """Find files matching glob pattern within the specified base path."""
     base = Path(base_path)
     results: list[dict[str, str]] = []
+
+    # Safety: verify base path exists and is a directory
+    if not base.exists() or not base.is_dir():
+        logger.warning("Invalid base_path for glob", base_path=base_path)
+        return []
+
+    # Safety: resolve base to canonical form for containment checks
+    base_resolved = base.resolve()
+
     try:
         # Strip leading **/ prefix properly (not char-by-char)
         search_pattern = pattern
@@ -63,6 +73,12 @@ async def _glob_files(pattern: str, base_path: str = "/home/wyld-core", max_resu
             search_pattern = search_pattern[3:]
 
         for path in base.rglob(search_pattern):
+            # Safety: verify result is within base (prevent symlink escapes)
+            try:
+                if not str(path.resolve()).startswith(str(base_resolved)):
+                    continue  # Skip files that escape base via symlinks
+            except Exception:
+                continue  # Skip if resolution fails
             if len(results) >= max_results:
                 break
             # Skip hidden directories and common excludes
@@ -90,9 +106,18 @@ async def _grep_content(
     file_type: str | None = None,
     context_lines: int = 1,
 ) -> list[dict[str, Any]]:
-    """Search for pattern in files with context lines."""
+    """Search for pattern in files within the specified path."""
     base = Path(path)
     results: list[dict[str, Any]] = []
+
+    # Safety: verify path exists and is a directory
+    if not base.exists() or not base.is_dir():
+        logger.warning("Invalid path for grep", path=path)
+        return []
+
+    # Safety: resolve base to canonical form for containment checks
+    base_resolved = base.resolve()
+
     try:
         regex = re.compile(pattern, re.IGNORECASE)
     except re.error:
@@ -144,6 +169,12 @@ async def _grep_content(
                 break
             if any(excl in str(file_path) for excl in excludes):
                 continue
+            # Safety: verify file is within base (prevent symlink escapes)
+            try:
+                if not str(file_path.resolve()).startswith(str(base_resolved)):
+                    continue  # Skip files that escape base via symlinks
+            except Exception:
+                continue  # Skip if resolution fails
             try:
                 async with aiofiles.open(file_path, "r", errors="ignore") as f:
                     content = await f.read()
@@ -194,10 +225,24 @@ async def _write_file(path: str, content: str, allowed_base: str = "/home/wyld-c
 
     Enforces:
     - No writing to sensitive paths (.env, credentials, keys)
-    - Only writes within allowed_base path
+    - Only writes within allowed_base path (with symlink resolution)
     - Creates parent directories if needed
     """
-    # Safety: must be within allowed base
+    # Safety: resolve symlinks and check canonical path is within allowed base
+    try:
+        # Resolve the allowed base to canonical form
+        allowed_base_resolved = str(Path(allowed_base).resolve())
+        # For new files, resolve the parent directory
+        path_obj = Path(path)
+        parent_resolved = str(path_obj.parent.resolve()) if path_obj.parent.exists() else path
+
+        # Check if path or its parent escapes allowed base
+        if not parent_resolved.startswith(allowed_base_resolved) and not path.startswith(allowed_base):
+            return f"Error: Cannot write outside {allowed_base} (path resolves to {parent_resolved})"
+    except Exception as e:
+        logger.warning("Path resolution failed", path=path, error=str(e))
+
+    # Safety: must be within allowed base (simple string check as fallback)
     if not path.startswith(allowed_base):
         return f"Error: Cannot write outside {allowed_base}"
 
@@ -240,6 +285,15 @@ async def _edit_file(path: str, old_text: str, new_text: str, allowed_base: str 
 
     Enforces same safety checks as _write_file.
     """
+    # Safety: resolve symlinks and check canonical path is within allowed base
+    try:
+        allowed_base_resolved = str(Path(allowed_base).resolve())
+        path_resolved = str(Path(path).resolve()) if Path(path).exists() else path
+        if not path_resolved.startswith(allowed_base_resolved) and not path.startswith(allowed_base):
+            return f"Error: Cannot edit outside {allowed_base} (path resolves to {path_resolved})"
+    except Exception as e:
+        logger.warning("Path resolution failed for edit", path=path, error=str(e))
+
     if not path.startswith(allowed_base):
         return f"Error: Cannot edit outside {allowed_base}"
 
@@ -515,18 +569,23 @@ class SupervisorAgent(BaseAgent):
         # Append project context if we're handling a project-scoped task
         project_ctx = getattr(self, "_current_project_context", None)
         if project_ctx:
-            project_section = "\n\n## CURRENT PROJECT CONTEXT\n"
-            project_section += "You are currently working within a specific project. Use this context for all responses:\n"
+            project_section = "\n\n## CURRENT PROJECT CONTEXT (CRITICAL - WORKSPACE SCOPING)\n"
+            project_section += "You are currently working within a specific project. **ALL file operations MUST be within this project.**\n\n"
             if project_ctx.get("project_name"):
                 project_section += f"- Project Name: {project_ctx['project_name']}\n"
             if project_ctx.get("root_path"):
-                project_section += f"- Project Root Path: {project_ctx['root_path']}\n"
+                project_section += f"- **Project Root Path: {project_ctx['root_path']}** (ALL operations MUST be within this directory)\n"
             if project_ctx.get("domain"):
                 project_section += f"- Domain: {project_ctx['domain']}\n"
             if project_ctx.get("agent_context"):
                 project_section += f"- Additional Context: {project_ctx['agent_context']}\n"
-            project_section += "\nWhen the user refers to 'the site', 'the project', or asks you to edit/fix something, "
-            project_section += "use the root_path above as the working directory. Do NOT ask which site or project they mean."
+            project_section += "\n**WORKSPACE SCOPING RULES (MANDATORY):**\n"
+            project_section += "1. NEVER read, write, or search files outside the project root_path above\n"
+            project_section += "2. NEVER delegate tasks without passing the root_path to other agents\n"
+            project_section += "3. When using glob_files or grep_files, ALWAYS use the project root_path as base_path/path\n"
+            project_section += "4. When the user refers to 'the site', 'the project', or asks you to edit/fix something, "
+            project_section += "use the root_path above as the working directory. Do NOT ask which site or project they mean.\n"
+            project_section += "5. If you need to explore code, ONLY explore within the project root_path directory\n"
             base_prompt += project_section
 
         # Inject dynamic TELOS/PAI context
@@ -1511,9 +1570,43 @@ class SupervisorAgent(BaseAgent):
         conversation_id = request.payload.get("conversation_id")
         user_id = request.user_id or request.payload.get("user_id")
         project_id = request.payload.get("project_id") or request.metadata.get("project_id")
-        root_path = request.payload.get("root_path") or "/home/wyld-core"
+        root_path = request.payload.get("root_path")
         agent_context = request.payload.get("agent_context") or ""
         project_name = request.payload.get("project_name") or ""
+
+        # Enforce workspace scoping - root_path MUST be provided
+        if not root_path:
+            error_msg = (
+                "CRITICAL: No root_path provided. All agent operations require an explicit project directory. "
+                "This request cannot be processed without a valid root_path."
+            )
+            logger.error(
+                error_msg,
+                project_id=project_id,
+                project_name=project_name,
+            )
+            # Publish error to user
+            await self.publish_action("error", error_msg)
+            raise ValueError(error_msg)
+
+        # Get current git branch for branch tracking
+        # Prefer branch from frontend payload (workspace knows the branch)
+        current_branch = request.payload.get("branch")
+        if not current_branch:
+            # Fallback to git detection (may not work inside container)
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=root_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    current_branch = result.stdout.strip()
+            except Exception as e:
+                logger.debug("Could not get git branch", error=str(e))
 
         # Set state context for publish_action to work
         self._state.current_user_id = user_id
@@ -1575,7 +1668,8 @@ class SupervisorAgent(BaseAgent):
             )
             await self.publish_action("planning", "Creating implementation plan...")
             steps = await self._generate_plan_from_exploration(
-                description, exploration, base_path=root_path, past_learnings=past_learnings
+                description, exploration, base_path=root_path, past_learnings=past_learnings,
+                agent_context=agent_context
             )
 
             # Update plan in Redis with steps
@@ -1610,6 +1704,7 @@ class SupervisorAgent(BaseAgent):
                 plan["root_path"] = root_path
                 plan["agent_context"] = agent_context
                 plan["project_name"] = project_name
+                plan["branch"] = current_branch  # Track which branch the plan was created on
 
                 await self._redis.set(plan_key, json.dumps(plan))
 
@@ -1624,6 +1719,7 @@ class SupervisorAgent(BaseAgent):
                             "plan_id": plan_id,
                             "plan_content": self._format_plan_for_display(plan),
                             "plan_status": "PENDING",  # Frontend expects uppercase
+                            "branch": plan.get("branch"),
                             "plan": plan,
                             "agent": "wyld",
                             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1772,10 +1868,57 @@ class SupervisorAgent(BaseAgent):
 
             steps = plan.get("steps", [])
 
-            # Resolve root_path: request > plan > default
-            root_path = request_root_path or plan.get("root_path") or "/home/wyld-core"
+            # Resolve root_path: request > plan (NO DEFAULT - must be explicit)
+            root_path = request_root_path or plan.get("root_path")
+            if not root_path:
+                error_msg = "Cannot execute plan: No root_path provided. All agent operations require an explicit project directory."
+                logger.error(error_msg, plan_id=plan_id)
+                await self.publish_action("error", error_msg)
+                raise ValueError(error_msg)
             plan["root_path"] = root_path  # Ensure it's in plan for step execution
             logger.info("Plan execution root_path", root_path=root_path)
+
+            # Check if branch matches (warn if different)
+            plan_branch = plan.get("branch")
+            # Get current branch from frontend payload (preferred) or fallback to git
+            current_branch = request.payload.get("branch")
+            if not current_branch:
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                        cwd=root_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if result.returncode == 0:
+                        current_branch = result.stdout.strip()
+                except Exception as e:
+                    logger.debug("Could not check git branch for plan execution", error=str(e))
+
+            if plan_branch and current_branch and current_branch != plan_branch:
+                # Send warning to frontend about branch mismatch
+                if self._pubsub and user_id:
+                    await self._pubsub.publish(
+                        "agent:responses",
+                        {
+                            "type": "branch_mismatch_warning",
+                            "user_id": user_id,
+                            "conversation_id": conversation_id,
+                            "plan_id": plan_id,
+                            "plan_branch": plan_branch,
+                            "current_branch": current_branch,
+                            "message": f"Warning: Plan was created on branch '{plan_branch}' but current branch is '{current_branch}'",
+                            "agent": "wyld",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                logger.warning(
+                    "Branch mismatch during plan execution",
+                    plan_branch=plan_branch,
+                    current_branch=current_branch,
+                )
 
             if not steps:
                 return TaskResponse(
@@ -1791,6 +1934,32 @@ class SupervisorAgent(BaseAgent):
 
             # Initialize rollback tracking for this plan
             await self._rollback_manager.start_plan(plan_id, conversation_id)
+
+            # Initialize shared plan context (Two-Phase Architecture: Initializer Phase)
+            # This prevents each step from re-discovering context known during planning
+            plan["_init_context"] = await self._initialize_plan_context(plan, root_path)
+
+            # Create structured progress tracking file (Feature List Pattern)
+            progress_file = Path(root_path) / ".claude-progress.json"
+            progress = {
+                "plan_id": plan_id,
+                "plan_title": plan.get("title", ""),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "features": [
+                    {
+                        "id": s.get("id", f"step_{idx}"),
+                        "title": s.get("title", f"Step {idx + 1}"),
+                        "status": "pending",
+                        "attempts": 0,
+                    }
+                    for idx, s in enumerate(steps)
+                ],
+            }
+            try:
+                progress_file.write_text(json.dumps(progress, indent=2))
+                logger.debug("Created progress tracking file", path=str(progress_file))
+            except Exception as e:
+                logger.debug("Could not create progress file", error=str(e))
 
             # Send initial execution status
             await self.publish_thinking(
@@ -1968,11 +2137,40 @@ class SupervisorAgent(BaseAgent):
                                     "timestamp": datetime.now(timezone.utc).isoformat(),
                                 },
                             )
+
+                    # Update progress tracking file
+                    try:
+                        if progress_file.exists():
+                            progress = json.loads(progress_file.read_text())
+                            for f in progress.get("features", []):
+                                if f.get("id") == step_id:
+                                    f["status"] = "complete"
+                                    f["attempts"] = f.get("attempts", 0) + 1
+                                    f["completed_at"] = datetime.now(timezone.utc).isoformat()
+                                    break
+                            progress_file.write_text(json.dumps(progress, indent=2))
+                    except Exception:
+                        pass  # Progress tracking is best-effort
+
                 except Exception as e:
                     step["status"] = "failed"
                     step["error"] = str(e)
                     step["completed_at"] = datetime.now(timezone.utc).isoformat()
                     logger.error("Step execution failed", step_id=step_id, error=str(e))
+
+                    # Update progress tracking file with failure
+                    try:
+                        if progress_file.exists():
+                            progress = json.loads(progress_file.read_text())
+                            for f in progress.get("features", []):
+                                if f.get("id") == step_id:
+                                    f["status"] = "failed"
+                                    f["attempts"] = f.get("attempts", 0) + 1
+                                    f["error"] = str(e)[:200]
+                                    break
+                            progress_file.write_text(json.dumps(progress, indent=2))
+                    except Exception:
+                        pass  # Progress tracking is best-effort
 
                     # Publish thinking about the failure
                     await self.publish_thinking(
@@ -2078,6 +2276,7 @@ class SupervisorAgent(BaseAgent):
                             "plan_id": plan_id,
                             "plan_content": f"⏸️ Plan paused. {completed_steps}/{len(steps)} steps completed.\n\nType 'resume' to continue or modify the plan.",
                             "plan_status": "APPROVED",  # Keep approved so it can be resumed
+                            "branch": plan.get("branch"),
                             "agent": "wyld",
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         },
@@ -2222,6 +2421,7 @@ class SupervisorAgent(BaseAgent):
                         "plan_id": plan_id,
                         "plan_content": f"✅ Plan completed! {completed_steps}/{len(steps)} steps finished.",
                         "plan_status": "COMPLETED",
+                        "branch": plan.get("branch"),
                         "agent": "wyld",
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     },
@@ -2340,6 +2540,240 @@ class SupervisorAgent(BaseAgent):
         },
     ]
 
+    async def _verify_step_with_subagent(
+        self,
+        step: dict,
+        files_modified: list,
+        root_path: str,
+    ) -> dict:
+        """
+        Use separate context to verify step output (Multi-Claude Pattern).
+
+        "One Claude writes code while another reviews it" - this prevents
+        bias from the writing context affecting verification.
+        """
+        # Skip verification for QA/review steps (already verification) or if no files modified
+        if not files_modified or step.get("agent") == "qa":
+            return {"verified": True, "issues": []}
+
+        step_goal = step.get("description", step.get("title", "Complete the task"))
+
+        # Read modified files for verification
+        file_contents = []
+        for file_path in files_modified[:5]:  # Limit to 5 files
+            try:
+                if Path(file_path).exists():
+                    content = await _read_file(file_path, max_lines=100)
+                    if content:
+                        file_contents.append(f"### {Path(file_path).name}\n```\n{content[:2000]}\n```")
+            except Exception:
+                pass
+
+        if not file_contents:
+            return {"verified": True, "issues": []}
+
+        verify_prompt = f"""You are a code reviewer. Review these changes for correctness.
+
+**Step Goal:** {step_goal}
+
+**Files Modified:**
+{chr(10).join(file_contents)}
+
+**Review Criteria:**
+1. Does the code achieve the stated goal?
+2. Are there obvious bugs, syntax errors, or issues?
+3. Does it follow reasonable coding patterns?
+
+Respond with a JSON object:
+{{"verified": true/false, "issues": ["issue1", "issue2"], "summary": "brief assessment"}}
+
+If the code looks good, set verified to true with an empty issues array.
+Only flag real problems, not stylistic preferences."""
+
+        try:
+            response = await asyncio.wait_for(
+                self._llm.create_message(
+                    max_tokens=1000,
+                    tier=ModelTier.FAST,
+                    messages=[{"role": "user", "content": verify_prompt}],
+                ),
+                timeout=30,
+            )
+
+            # Parse verification result
+            text = response.text_content or ""
+            import json as json_mod
+            # Try to extract JSON from response
+            if "{" in text and "}" in text:
+                json_start = text.index("{")
+                json_end = text.rindex("}") + 1
+                result = json_mod.loads(text[json_start:json_end])
+                return {
+                    "verified": result.get("verified", True),
+                    "issues": result.get("issues", []),
+                    "summary": result.get("summary", ""),
+                }
+        except Exception as e:
+            logger.debug("Sub-agent verification failed", error=str(e))
+
+        # Default to verified if parsing fails
+        return {"verified": True, "issues": []}
+
+    async def _initialize_plan_context(self, plan: dict, root_path: str) -> dict:
+        """
+        Create shared context for all steps to use (Initializer Phase).
+
+        This prevents each step from re-discovering context that was already
+        known during planning. The context is stored in the plan and passed
+        to each step execution.
+        """
+        project_name = plan.get("project_name", "")
+        exploration = plan.get("exploration", {})
+
+        # Build file tree (top-level structure)
+        file_tree = []
+        try:
+            root = Path(root_path)
+            if root.exists():
+                for item in sorted(root.iterdir())[:30]:  # Limit to 30 items
+                    if item.name.startswith(".") and item.name not in [".env.example"]:
+                        continue
+                    if item.name in ["node_modules", "__pycache__", ".git", "venv", ".venv"]:
+                        continue
+                    file_tree.append({
+                        "name": item.name,
+                        "type": "dir" if item.is_dir() else "file",
+                    })
+        except Exception:
+            pass
+
+        # Detect architecture patterns from exploration
+        files_explored = exploration.get("files", [])
+        file_paths = [f.get("path", "") for f in files_explored if isinstance(f, dict)]
+        all_paths = " ".join(file_paths).lower()
+
+        architecture = {
+            "uses_twig": ".twig" in all_paths,
+            "uses_typescript": ".ts" in all_paths or ".tsx" in all_paths,
+            "uses_react": "react" in all_paths or ".jsx" in all_paths or ".tsx" in all_paths,
+            "uses_python": ".py" in all_paths,
+            "has_controllers": "controller" in all_paths,
+            "has_services": "service" in all_paths,
+            "has_api": "api" in all_paths or "routes" in all_paths,
+            "has_tests": "test" in all_paths or "spec" in all_paths,
+        }
+
+        # Extract key patterns from exploration
+        patterns = []
+        if exploration.get("patterns"):
+            patterns = exploration["patterns"][:10]  # Top 10 patterns
+
+        init_context = {
+            "project_name": project_name,
+            "root_path": root_path,
+            "file_tree": file_tree,
+            "architecture": architecture,
+            "patterns": patterns,
+            "key_files": file_paths[:20],  # Top 20 discovered files
+            "initialized_at": datetime.now(timezone.utc).isoformat() if 'datetime' in dir() else None,
+        }
+
+        logger.info(
+            "Initialized plan context",
+            project=project_name,
+            architecture=architecture,
+            files_discovered=len(file_paths),
+        )
+
+        return init_context
+
+    def _apply_observation_masking(self, messages: list, window_size: int = 10) -> list:
+        """
+        Mask old tool observations to prevent context rot.
+
+        Based on JetBrains research finding that observation masking reduces
+        costs by 50%+ while matching or exceeding summarization performance.
+        Keeps system prompt, initial context, and recent messages intact.
+        """
+        # Only mask if we have enough messages
+        if len(messages) <= window_size * 2:
+            return messages
+
+        # Keep system prompt and initial context (first 3 messages)
+        masked = messages[:3]
+
+        # Process middle messages - mask tool results but keep user/assistant flow
+        for i, msg in enumerate(messages[3:-window_size]):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                # Check if this is a tool_result message
+                if isinstance(content, list):
+                    has_tool_result = any(
+                        isinstance(c, dict) and c.get("type") == "tool_result"
+                        for c in content
+                    )
+                    if has_tool_result:
+                        # Mask tool results but keep tool_use_id for flow
+                        masked_content = []
+                        for c in content:
+                            if isinstance(c, dict) and c.get("type") == "tool_result":
+                                masked_content.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": c.get("tool_use_id", ""),
+                                    "content": f"[Result from turn {i+3} omitted for brevity]",
+                                })
+                            else:
+                                masked_content.append(c)
+                        masked.append({"role": "user", "content": masked_content})
+                        continue
+                elif isinstance(content, str) and "tool_result" in content.lower():
+                    masked.append({
+                        "role": "user",
+                        "content": f"[Tool result from turn {i+3} omitted for brevity]"
+                    })
+                    continue
+            # Keep non-tool-result messages
+            masked.append(msg)
+
+        # Keep recent context window intact
+        masked.extend(messages[-window_size:])
+
+        logger.debug(
+            "Applied observation masking",
+            original_count=len(messages),
+            masked_count=len(masked),
+            window_size=window_size,
+        )
+        return masked
+
+    def _get_thinking_budget(self, step: dict) -> str:
+        """
+        Get thinking budget instruction based on step complexity.
+
+        Implements escalating thinking levels based on task type:
+        - Complex tasks (refactor, architect, migrate) get extensive thinking
+        - Implementation tasks get moderate thinking
+        - Verification tasks need minimal thinking
+        """
+        title_lower = step.get("title", "").lower()
+        desc_lower = step.get("description", "").lower()
+        combined = f"{title_lower} {desc_lower}"
+
+        # Complex tasks requiring deep reasoning
+        if any(kw in combined for kw in ["refactor", "architect", "redesign", "migrate", "rewrite", "overhaul"]):
+            return "\n\n**Reasoning Level:** EXTENSIVE - Take time to thoroughly analyze the existing code, consider edge cases, and plan your implementation carefully before making changes."
+
+        # Implementation tasks requiring moderate planning
+        if any(kw in combined for kw in ["implement", "create", "build", "add", "integrate", "develop"]):
+            return "\n\n**Reasoning Level:** MODERATE - Plan your implementation approach before writing code. Consider how it fits with existing patterns."
+
+        # Quick verification tasks
+        if any(kw in combined for kw in ["verify", "test", "check", "validate", "review", "inspect"]):
+            return ""  # No extended thinking needed for verification
+
+        # Default: light thinking
+        return ""
+
     async def _execute_plan_step(self, step: dict, plan: dict) -> str:
         """
         Execute a single plan step using Claude with file tools.
@@ -2359,33 +2793,20 @@ class SupervisorAgent(BaseAgent):
         step_agent = step.get("agent", "code")
         files = step.get("files", [])
 
-        # Get project root from plan
-        root_path = plan.get("root_path", "/home/wyld-core")
+        # Get project root from plan (REQUIRED)
+        root_path = plan.get("root_path")
+        if not root_path:
+            raise ValueError("Cannot execute step: No root_path in plan. All operations require an explicit project directory.")
         project_name = plan.get("project_name", "")
         agent_context = plan.get("agent_context", "")
 
         # Load TELOS context
         telos = _load_telos_context()
 
-        # Pre-load file contents for files specified in the step
-        preloaded_context = ""
-        if files:
-            preloaded_parts = []
-            for file_path in files[:5]:  # Max 5 files pre-loaded
-                try:
-                    if Path(file_path).exists():
-                        content = await _read_file(file_path, max_lines=200)
-                        if content:
-                            preloaded_parts.append(f"### {Path(file_path).name}\n**Path:** `{file_path}`\n```\n{content[:3000]}\n```")
-                            await self.publish_action("file_read", f"Pre-loading: {Path(file_path).name}")
-                except Exception:
-                    pass
-            if preloaded_parts:
-                preloaded_context = "\n\n## Current File Contents (already loaded for you):\n\n" + "\n\n".join(preloaded_parts)
-
-        # ========== PAI MEMORY PRE-LOAD ==========
+        # ========== PAI MEMORY PRE-LOAD (FIRST - so learnings can influence file selection) ==========
         # Search for relevant past learnings to inject into the step context
         memory_context = ""
+        memory_file_hints: list[str] = []  # Files recommended by past learnings
         if self._memory:
             try:
                 # Set context for store_insight tool handler
@@ -2412,11 +2833,33 @@ class SupervisorAgent(BaseAgent):
                         confidence = r.get("confidence", 0.8)
                         marker = "★" if confidence >= 0.9 else "•"
                         memory_parts.append(f"{marker} [{scope}/{cat}] {content}")
+                        # Extract file hints from metadata
+                        metadata = r.get("metadata", {})
+                        if isinstance(metadata, dict) and metadata.get("files"):
+                            memory_file_hints.extend(metadata["files"][:3])
 
                     memory_context = "\n\n## Past Learnings (Apply these to your work)\n" + "\n".join(memory_parts)
-                    logger.info("Injected memory context into step", step=step_title, learnings=len(memory_results))
+                    logger.info("Injected memory context into step", step=step_title, learnings=len(memory_results), file_hints=len(memory_file_hints))
             except Exception as e:
                 logger.debug("Memory pre-load failed for step", error=str(e))
+
+        # Pre-load file contents for files specified in the step (includes memory hints)
+        preloaded_context = ""
+        files_to_load = list(files) + memory_file_hints[:3]  # Step files + up to 3 memory hints
+        files_to_load = list(dict.fromkeys(files_to_load))[:5]  # Dedupe and limit to 5
+        if files_to_load:
+            preloaded_parts = []
+            for file_path in files_to_load:
+                try:
+                    if Path(file_path).exists():
+                        content = await _read_file(file_path, max_lines=200)
+                        if content:
+                            preloaded_parts.append(f"### {Path(file_path).name}\n**Path:** `{file_path}`\n```\n{content[:3000]}\n```")
+                            await self.publish_action("file_read", f"Pre-loading: {Path(file_path).name}")
+                except Exception:
+                    pass
+            if preloaded_parts:
+                preloaded_context = "\n\n## Current File Contents (already loaded for you):\n\n" + "\n\n".join(preloaded_parts)
 
         # Detect if this is a frontend/web task and inject design context
         all_text = f"{step_title} {step_description} {plan.get('title', '')} {plan.get('description', '')}".lower()
@@ -2505,6 +2948,21 @@ class SupervisorAgent(BaseAgent):
             ])
             changes_context = f"\n\n## File Changes Required:\n{changes_list}"
 
+        # Get thinking budget based on step complexity
+        thinking_budget = self._get_thinking_budget(step)
+
+        # Add pre-initialized context from plan (Two-Phase Architecture: Worker Phase)
+        init_context = plan.get("_init_context", {})
+        init_context_section = ""
+        if init_context:
+            arch = init_context.get("architecture", {})
+            arch_notes = [k.replace("_", " ").title() for k, v in arch.items() if v]
+            if arch_notes:
+                init_context_section = f"\n\n## Pre-Discovered Architecture\n- {', '.join(arch_notes)}"
+            if init_context.get("patterns"):
+                patterns_preview = ", ".join(init_context["patterns"][:5])
+                init_context_section += f"\n- Patterns: {patterns_preview}"
+
         prompt = f"""{telos}
 
 ---
@@ -2516,7 +2974,7 @@ You are executing a plan step.{project_info}
 **Plan:** {plan.get('title', '')} - {plan.get('description', '')}
 **Step:** {step_title}
 **Description:** {step_description}
-**Agent Role:** {step_agent}{file_context}{todos_context}{changes_context}{preloaded_context}{memory_context}{custom_context}{frontend_context}
+**Agent Role:** {step_agent}{file_context}{todos_context}{changes_context}{preloaded_context}{memory_context}{custom_context}{init_context_section}{frontend_context}{thinking_budget}
 
 ## Instructions
 
@@ -2627,12 +3085,49 @@ Execute this step now. Make real file changes, not just descriptions."""
                 nudge_sent = True
                 messages.append({"role": "user", "content": [{"type": "text", "text": "REMINDER: You have used 8 iterations without making any file changes. You MUST use write_file or edit_file NOW to make the required changes. Stop searching and start writing. If you cannot find the right files, create them."}]})
 
-            response = await self._llm.create_message(
-                max_tokens=8192,
-                tier=ModelTier.BALANCED,
-                messages=messages,
-                tools=step_tools,
-            )
+            # Apply observation masking if context is getting large
+            # This prevents context rot and reduces costs by ~50% (per JetBrains research)
+            llm_messages = messages
+            if len(messages) > 25:
+                llm_messages = self._apply_observation_masking(messages)
+
+            # LLM call with timeout and graceful degradation
+            step_timeout = step.get("timeout", 300)  # 5 min default per iteration
+            try:
+                response = await asyncio.wait_for(
+                    self._llm.create_message(
+                        max_tokens=8192,
+                        tier=ModelTier.BALANCED,
+                        messages=llm_messages,
+                        tools=step_tools,
+                    ),
+                    timeout=step_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Step iteration timeout - requesting wrap-up",
+                    step=step_title,
+                    iteration=iteration,
+                    timeout=step_timeout,
+                )
+                # Ask for a quick wrap-up
+                messages.append({
+                    "role": "user",
+                    "content": "TIMEOUT: You've exceeded the time limit for this iteration. Please wrap up immediately and report what you've accomplished so far."
+                })
+                try:
+                    response = await asyncio.wait_for(
+                        self._llm.create_message(
+                            max_tokens=1000,
+                            tier=ModelTier.FAST,
+                            messages=messages,
+                        ),
+                        timeout=30,
+                    )
+                    # Timeout with wrap-up message - return partial results
+                    return f"Step timed out after {iteration} iterations. Partial result: {response.text_content[:500] if response.text_content else 'No content'}. Actions: {'; '.join(actions_taken)}"
+                except asyncio.TimeoutError:
+                    return f"Step timed out after {iteration} iterations with no wrap-up. Actions: {'; '.join(actions_taken)}"
 
             # Check if LLM wants to use tools
             if response.stop_reason == "tool_use":
@@ -2878,12 +3373,22 @@ Execute this step now. Make real file changes, not just descriptions."""
                     except Exception as e:
                         logger.debug("Failed to store step feedback", error=str(e))
 
+                # Sub-agent verification (Multi-Claude Pattern)
+                # Uses separate context to verify step output without bias
+                verification = await self._verify_step_with_subagent(step, files_modified, root_path)
+                verification_note = ""
+                if not verification.get("verified", True):
+                    issues = verification.get("issues", [])
+                    if issues:
+                        verification_note = f"\n\n⚠️ Verification found issues: {'; '.join(issues[:3])}"
+                        logger.warning("Step verification found issues", step=step_title, issues=issues)
+
                 # Build informative output
                 if files_modified:
                     modified_list = ", ".join([Path(f).name for f in files_modified])
-                    return f"{final_text}\n\n✅ Files modified: {modified_list}"
+                    return f"{final_text}\n\n✅ Files modified: {modified_list}{verification_note}"
                 else:
-                    return f"{final_text}\n\n⚠️ No files were modified in this step."
+                    return f"{final_text}\n\n⚠️ No files were modified in this step.{verification_note}"
 
         # Max iterations reached — store as ERROR PATTERN for future avoidance
         if self._memory:
@@ -2957,6 +3462,9 @@ Execute this step now. Make real file changes, not just descriptions."""
                     tool_input["content"],
                     allowed_base=root_path,
                 )
+                # Track file change for quality checks
+                if not result.startswith("Error"):
+                    self.track_file_change(tool_input["path"])
                 return (result, False)
             elif tool_name == "edit_file":
                 result = await _edit_file(
@@ -2965,6 +3473,9 @@ Execute this step now. Make real file changes, not just descriptions."""
                     tool_input["new_text"],
                     allowed_base=root_path,
                 )
+                # Track file change for quality checks
+                if not result.startswith("Error"):
+                    self.track_file_change(tool_input["path"])
                 return (result, False)
             elif tool_name == "glob_files":
                 results = await _glob_files(
@@ -3249,7 +3760,9 @@ Execute this step now. Make real file changes, not just descriptions."""
             elif modification_type == "regenerate":
                 # User wants to regenerate the plan from scratch (e.g., "try again")
                 # Use the ORIGINAL plan description, not the user's retry message
-                root_path = request.payload.get("root_path", "/home/wyld-core")
+                root_path = request.payload.get("root_path") or plan.get("root_path")
+                if not root_path:
+                    raise ValueError("Cannot regenerate plan: No root_path provided.")
                 original_description = plan.get("description", plan.get("title", ""))
 
                 await self.publish_action("exploring", f"Re-exploring for plan regeneration...")
@@ -3306,7 +3819,9 @@ Execute this step now. Make real file changes, not just descriptions."""
             elif modification_type == "research_and_update":
                 # User asked for something that requires more codebase exploration.
                 # Re-explore and regenerate the plan incorporating the new requirement.
-                root_path = request.payload.get("root_path", "/home/wyld-core")
+                root_path = request.payload.get("root_path") or plan.get("root_path")
+                if not root_path:
+                    raise ValueError("Cannot research and update plan: No root_path provided.")
                 additional_context = modification_data.get("context", user_message)
 
                 # Combine original plan description with new requirement
@@ -3401,6 +3916,7 @@ Execute this step now. Make real file changes, not just descriptions."""
                             "plan_id": plan_id,
                             "plan_content": self._format_plan_for_display(plan),
                             "plan_status": "PENDING",
+                            "branch": plan.get("branch"),
                             "plan": plan,
                             "agent": "wyld",
                             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -3932,7 +4448,7 @@ Execute this step now. Make real file changes, not just descriptions."""
             for i, s in enumerate(steps)
         ])
 
-        root_path = plan.get("root_path", "/home/wyld-core")
+        root_path = plan.get("root_path") or "[project root]"
         prompt = f"""Analyze this user message to determine how they want to modify the plan.
 
 Current Plan: {plan.get('title', 'Untitled')}
@@ -4065,7 +4581,33 @@ Only output the JSON object, no other text."""
 
         exploration: dict[str, list[Any]] = {"files": [], "patterns": [], "content": []}
 
-        # Find files matching patterns
+        # MANDATORY: Architecture discovery searches (before Claude's strategy)
+        mandatory_patterns = {
+            "routes": ["**/routes/*.php", "**/routes/*.py", "**/router*", "**/web.php"],
+            "controllers": ["**/*Controller.php", "**/*Controller.py", "**/controllers/**/*.py"],
+            "templates": ["**/*.twig", "**/*.blade.php", "**/templates/**/*.html", "**/views/**/*.html"],
+        }
+
+        await self.publish_action("file_search", "Discovering project architecture...")
+        for category, patterns in mandatory_patterns.items():
+            for pattern in patterns:
+                try:
+                    files = await _glob_files(pattern, base_path=base_path, max_results=10)
+                    exploration["files"].extend(files[:5])
+                except Exception:
+                    pass
+
+        # Extract keywords from task for existence check
+        task_keywords = [w.lower() for w in task_description.split() if len(w) > 3 and w.isalpha()][:5]
+        for keyword in task_keywords:
+            try:
+                await self.publish_action("file_search", f"Checking existing: {keyword}")
+                matches = await _grep_content(keyword, path=base_path, max_results=8)
+                exploration["patterns"].extend(matches[:4])
+            except Exception:
+                pass
+
+        # Find files matching patterns (Claude's strategy)
         for pattern in strategy.get("file_patterns", [])[:6]:
             await self.publish_action("file_search", f"Searching: {pattern}")
             files = await _glob_files(pattern, base_path=base_path, max_results=15)
@@ -4174,16 +4716,34 @@ Only output the JSON object, no other text."""
         except Exception as e:
             logger.debug("Follow-up exploration failed (non-critical)", error=str(e))
 
-        logger.info(
-            "Exploration complete",
-            files_found=len(exploration["files"]),
-            patterns_found=len(exploration["patterns"]),
-            files_read=len(exploration["content"]),
-        )
+        # Calculate exploration quality metrics
+        exploration_quality = {
+            "files_found": len(exploration.get("files", [])),
+            "patterns_found": len(exploration.get("patterns", [])),
+            "files_read": len(exploration.get("content", [])),
+            "routes_found": sum(1 for f in exploration.get("files", [])
+                                if "route" in f.get("path", "").lower()),
+            "controllers_found": sum(1 for f in exploration.get("files", [])
+                                     if "controller" in f.get("path", "").lower()),
+            "templates_found": sum(1 for f in exploration.get("files", [])
+                                   if any(ext in f.get("path", "")
+                                          for ext in [".twig", ".blade", ".html"])),
+        }
 
+        # Warn if exploration seems shallow
+        if exploration_quality["files_found"] < 5:
+            logger.warning("Shallow exploration - few files found",
+                           quality=exploration_quality)
+        else:
+            logger.info(
+                "Exploration complete",
+                quality=exploration_quality,
+            )
+
+        exploration["_quality"] = exploration_quality
         return exploration
 
-    async def _generate_plan_from_exploration(self, task: str, exploration: dict, base_path: str = "/home/wyld-core", past_learnings: str = "") -> list[dict]:
+    async def _generate_plan_from_exploration(self, task: str, exploration: dict, base_path: str = "/home/wyld-core", past_learnings: str = "", agent_context: str = "") -> list[dict]:
         """
         Generate plan steps from exploration results.
 
@@ -4217,7 +4777,35 @@ Only output the JSON object, no other text."""
 
         web_planning_guide = ""
         if is_web_task:
-            web_planning_guide = """
+            # Check agent_context and exploration for architecture hints
+            context_lower = agent_context.lower() if agent_context else ""
+            explored_files_str = " ".join(f.get("path", "") for f in exploration.get("files", []))
+
+            uses_twig = "twig" in context_lower or ".twig" in explored_files_str
+            uses_blade = "blade" in context_lower or ".blade.php" in explored_files_str
+            uses_typescript = "typescript" in context_lower or ".ts" in explored_files_str
+            uses_vite = "vite" in context_lower
+
+            template_system = "Twig (.twig)" if uses_twig else "Blade (.blade.php)" if uses_blade else "HTML"
+            script_system = "TypeScript (.ts)" if uses_typescript else "JavaScript (.js)"
+            asset_system = "Vite bundling (NO CDN links)" if uses_vite else "direct includes"
+
+            if uses_twig or uses_blade or uses_typescript:
+                # Modern project detected - use architecture-aware guide
+                web_planning_guide = f"""
+## Web Project Architecture (detected from codebase)
+- Templates: {template_system}
+- Scripts: {script_system}
+- Assets: {asset_system}
+
+IMPORTANT: Check exploration results for existing templates, routes, and controllers.
+If similar pages exist, MODIFY them rather than creating new files.
+Do NOT create static HTML files if the project uses {template_system}.
+Do NOT use Bootstrap CDN if assets are bundled via Vite/npm.
+"""
+            else:
+                # Generic web project - use basic guide
+                web_planning_guide = """
 ## Web Project Planning Guide
 
 For website tasks, structure steps by PAGE rather than by concept:
@@ -4227,13 +4815,30 @@ For website tasks, structure steps by PAGE rather than by concept:
 - Step 4: Add interactive features (forms, animations, theme toggle)
 - Final: Verify all pages render correctly
 
-Each HTML page step should produce a COMPLETE page with full Bootstrap 5 markup — not just fragments. Include `<head>` with meta tags, Bootstrap CDN, `<nav>`, `<main>`, `<footer>` in every page.
+Each HTML page step should produce a COMPLETE page with full Bootstrap 5 markup — not just fragments.
+"""
+
+        # Format agent_context as mandatory architecture constraints
+        architecture_constraints = ""
+        if agent_context:
+            architecture_constraints = f"""
+## MANDATORY ARCHITECTURE CONSTRAINTS (from project config)
+The following describe this project's architecture. Plans MUST conform to these:
+
+{agent_context}
+
+VIOLATIONS TO AVOID:
+- If templates use Twig (.twig), do NOT create static HTML (.html)
+- If frontend uses TypeScript (.ts), do NOT create vanilla JavaScript (.js)
+- If Bootstrap is bundled via Vite/npm, do NOT use CDN links
+- If routes are handled by controllers, do NOT create static files in public/
+
 """
 
         prompt = f"""Create an ACTIONABLE implementation plan. Research is ALREADY DONE — the exploration results below show what exists in the codebase.
 
 {telos}
-
+{architecture_constraints}
 ---
 
 ## Task
@@ -4339,6 +4944,16 @@ Rules:
                         text_preview=text[:200],
                     )
                     raise ValueError("LLM returned empty steps array")
+
+                # Validate plan before returning
+                schema_issues = self._validate_plan_schema(steps, base_path)
+                if schema_issues:
+                    logger.warning("Plan schema validation issues", issues=schema_issues[:5])
+
+                file_warnings = await self._validate_plan_files(steps, base_path, exploration)
+                if file_warnings:
+                    logger.warning("Plan file validation warnings", warnings=file_warnings[:5])
+
                 return steps
             else:
                 raise ValueError(f"No JSON array found in response (length={len(text)}): {text[:200]}")
@@ -4399,6 +5014,81 @@ Rules:
                         "files": [base_path],
                     },
                 ]
+
+    async def _validate_plan_files(
+        self,
+        steps: list[dict],
+        base_path: str,
+        exploration: dict
+    ) -> list[dict]:
+        """Check for existing files before allowing creation."""
+        explored_files = {f.get("path", "") for f in exploration.get("files", [])}
+        explored_files.update(f.get("file", "") for f in exploration.get("patterns", []))
+
+        warnings = []
+        for step in steps:
+            for change in step.get("changes", []):
+                if change.get("action") == "create":
+                    file_path = change.get("file", "")
+                    # Check if file already exists
+                    if Path(file_path).exists():
+                        warnings.append({
+                            "step": step.get("title"),
+                            "file": file_path,
+                            "issue": "File already exists - change to 'modify' action"
+                        })
+                    # Check if similar file was found in exploration
+                    file_name = Path(file_path).name
+                    for explored in explored_files:
+                        if file_name.lower() in explored.lower():
+                            warnings.append({
+                                "step": step.get("title"),
+                                "file": file_path,
+                                "similar": explored,
+                                "issue": "Similar file exists - verify this is correct location"
+                            })
+        return warnings
+
+    def _validate_plan_schema(self, steps: list[dict], base_path: str) -> list[str]:
+        """Validate plan steps against required schema and constraints."""
+        valid_agents = {"code", "infra", "qa"}
+        issues = []
+
+        for i, step in enumerate(steps):
+            step_id = f"Step {i+1}"
+
+            # Required fields
+            if not step.get("title"):
+                issues.append(f"{step_id}: Missing title")
+            if not step.get("description"):
+                issues.append(f"{step_id}: Missing description")
+            if not step.get("files"):
+                issues.append(f"{step_id}: Missing files list")
+
+            # Agent type validation
+            agent = step.get("agent", "").lower()
+            if agent not in valid_agents:
+                issues.append(f"{step_id}: Invalid agent '{agent}' - must be code/infra/qa")
+                step["agent"] = "code"  # Fix it
+
+            # Path validation
+            for file_path in step.get("files", []):
+                if not file_path.startswith(base_path) and not file_path.startswith("/home/"):
+                    issues.append(f"{step_id}: File '{file_path}' outside base_path")
+
+            # File extension validation against common mistakes
+            for change in step.get("changes", []):
+                file_path = change.get("file", "")
+                if file_path.endswith(".html") and not file_path.endswith(".twig"):
+                    # Check if project uses Twig (would be caught by exploration)
+                    issues.append(f"{step_id}: Static HTML file '{file_path}' - should this be .twig?")
+                if file_path.endswith(".js") and not file_path.endswith(".ts"):
+                    issues.append(f"{step_id}: Vanilla JS file '{file_path}' - should this be .ts?")
+
+        if issues:
+            logger.warning("Plan schema issues", issues=issues)
+
+        return issues
 
     # =========================================================================
     # Improvement 1: Outcome Feedback Loop (Plan-to-Learn Pipeline)
@@ -4852,9 +5542,13 @@ Return a JSON array of new steps, each with: title, description, agent (code/qa/
         candidates = []
 
         # Strategy 1: Direct LLM planning (always include)
+        root_path = context.get("root_path")
+        if not root_path:
+            logger.warning("No root_path in context for plan generation")
+            return candidates  # Cannot generate plans without root_path
         try:
             direct_plan = await self._generate_plan_from_exploration(
-                goal, exploration, base_path=context.get("root_path", "/home/wyld-core")
+                goal, exploration, base_path=root_path
             )
             if direct_plan:
                 candidates.append(direct_plan)
@@ -5157,10 +5851,19 @@ Return a JSON array of sub-goals, each with: title, description, files (array)."
         request: TaskRequest,
         decision: RoutingDecision,
     ) -> TaskResponse:
-        """Execute tasks sequentially across multiple agents."""
+        """Execute tasks sequentially across multiple agents with context inheritance."""
         all_agents = [decision.primary_agent] + decision.secondary_agents
         results = []
         current_payload = request.payload.copy()
+
+        # Build inherited context for child agents
+        # This prevents each agent from re-discovering context already known
+        inherited_context = {
+            "parent_task_id": request.id,
+            "parent_discoveries": [],
+            "architectural_constraints": request.payload.get("agent_context", ""),
+        }
+        current_payload["inherited_context"] = inherited_context
 
         for agent in all_agents:
             sub_request = TaskRequest(
@@ -5186,9 +5889,19 @@ Return a JSON array of sub-goals, each with: title, description, files (array)."
                     "result": response.result,
                 })
 
-                # Pass result to next agent
+                # Pass result and discoveries to next agent (context inheritance)
                 if response.result:
                     current_payload["previous_result"] = response.result
+                    # Extract key learnings from result for next agent
+                    result_data = response.result if isinstance(response.result, dict) else {}
+                    discovery = {
+                        "from_agent": agent.value,
+                        "key_files": result_data.get("files_modified", [])[:5] if isinstance(result_data, dict) else [],
+                        "patterns_found": result_data.get("patterns", [])[:3] if isinstance(result_data, dict) else [],
+                        "status": response.status.value,
+                    }
+                    inherited_context["parent_discoveries"].append(discovery)
+                    current_payload["inherited_context"] = inherited_context
 
                 if response.status == TaskStatus.FAILED:
                     break

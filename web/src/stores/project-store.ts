@@ -31,6 +31,22 @@ interface ProjectState {
     docker_cpu_limit?: string;
     docker_expose_ports?: string;
     docker_env_vars?: string;
+    quality_settings?: {
+      enabled?: boolean;
+      lint_on_save?: boolean;
+      lint_on_commit?: boolean;
+      lint_command?: string | null;
+      format_on_save?: boolean;
+      format_on_commit?: boolean;
+      format_command?: string | null;
+      type_check_enabled?: boolean;
+      type_check_command?: string | null;
+      run_tests_on_commit?: boolean;
+      test_command?: string | null;
+      auto_fix_lint_errors?: boolean;
+      block_on_errors?: boolean;
+      custom_checks?: Record<string, string>;
+    };
   }) => Promise<void>;
   deleteProject: (token: string, id: string, archive?: boolean) => Promise<void>;
   getProjectById: (id: string) => Project | undefined;

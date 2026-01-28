@@ -71,7 +71,7 @@ export function BranchSwitcher({ projectId, onBranchChange }: BranchSwitcherProp
 
   // Create branch form
   const [newBranchName, setNewBranchName] = useState("");
-  const [startPoint, setStartPoint] = useState("");
+  const [startPoint, setStartPoint] = useState("HEAD");
   const [checkoutAfterCreate, setCheckoutAfterCreate] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
 
@@ -132,7 +132,7 @@ export function BranchSwitcher({ projectId, onBranchChange }: BranchSwitcherProp
     try {
       await branchApi.createBranch(token, projectId, {
         name: newBranchName.trim(),
-        start_point: startPoint || undefined,
+        start_point: startPoint === "HEAD" ? undefined : startPoint,
         checkout: checkoutAfterCreate,
       });
       await fetchBranches();
@@ -141,7 +141,7 @@ export function BranchSwitcher({ projectId, onBranchChange }: BranchSwitcherProp
       }
       setShowCreateDialog(false);
       setNewBranchName("");
-      setStartPoint("");
+      setStartPoint("HEAD");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create branch");
     } finally {
@@ -381,7 +381,7 @@ export function BranchSwitcher({ projectId, onBranchChange }: BranchSwitcherProp
                   <SelectValue placeholder="Current HEAD" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Current HEAD</SelectItem>
+                  <SelectItem value="HEAD">Current HEAD</SelectItem>
                   {localBranches.map((branch) => (
                     <SelectItem key={branch.name} value={branch.name}>
                       {branch.name}

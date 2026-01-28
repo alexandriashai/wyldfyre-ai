@@ -33,17 +33,25 @@ NEGATIVE_FEEDBACK_PATTERNS = [
     re.compile(r"(?i)try again", re.IGNORECASE),
 ]
 
-# Patterns for detecting ideas
+# Patterns for detecting ideas (tightened to require more context)
+# Must have at least 20 chars of content to be a valid idea
 IDEA_PATTERNS = [
-    re.compile(r"(?i)I should\s+(.+)", re.IGNORECASE),
-    re.compile(r"(?i)what if\s+(.+)", re.IGNORECASE),
-    re.compile(r"(?i)maybe we could\s+(.+)", re.IGNORECASE),
-    re.compile(r"(?i)it would be cool to\s+(.+)", re.IGNORECASE),
-    re.compile(r"(?i)TODO:\s*(.+)", re.IGNORECASE),
-    re.compile(r"(?i)idea:\s*(.+)", re.IGNORECASE),
-    re.compile(r"(?i)we should\s+(.+)", re.IGNORECASE),
-    re.compile(r"(?i)let's try\s+(.+)", re.IGNORECASE),
+    # Future intentions with concrete actions
+    re.compile(r"(?i)(?:we|I)\s+should\s+(?:probably\s+)?(\w{3,}\s+.{15,})", re.IGNORECASE),
+    # Hypotheticals with explanation
+    re.compile(r"(?i)what\s+if\s+we\s+(\w{3,}\s+.{15,})", re.IGNORECASE),
+    # Suggestions with reasoning
+    re.compile(r"(?i)maybe\s+we\s+could\s+(\w{3,}\s+.{15,})", re.IGNORECASE),
+    # Explicit idea markers (these are reliable signals)
+    re.compile(r"(?i)TODO:\s*(\w{3,}\s+.{15,})", re.IGNORECASE),
+    re.compile(r"(?i)IDEA:\s*(\w{3,}\s+.{15,})", re.IGNORECASE),
+    re.compile(r"(?i)FEATURE:\s*(\w{3,}\s+.{15,})", re.IGNORECASE),
+    # Cool/nice to have with substance
+    re.compile(r"(?i)it\s+would\s+be\s+(?:cool|nice|great)\s+(?:if\s+we\s+|to\s+)(\w{3,}\s+.{15,})", re.IGNORECASE),
 ]
+
+# Minimum length for captured idea content
+MIN_IDEA_LENGTH = 20
 
 
 async def user_prompt_submit_hook(
@@ -130,11 +138,17 @@ async def user_prompt_submit_hook(
         except Exception:
             pass
 
-    # Capture ideas from user input
+    # Capture ideas from user input (with quality filtering)
     if telos:
         try:
             captured = await telos.detect_ideas_in_message(user_input, project_id)
-            result["ideas_captured"] = [idea.content for idea in captured]
+            # Filter out short or low-quality ideas
+            quality_ideas = [
+                idea.content for idea in captured
+                if len(idea.content.strip()) >= MIN_IDEA_LENGTH
+                and sum(1 for c in idea.content if c.isalpha()) / max(len(idea.content), 1) > 0.5
+            ]
+            result["ideas_captured"] = quality_ideas
         except Exception as e:
             result["idea_capture_error"] = str(e)
 

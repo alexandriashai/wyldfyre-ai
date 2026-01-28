@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { useWorkspaceStore, GitStatus } from "@/stores/workspace-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { workspaceApi } from "@/lib/api";
+import { useChatStore } from "@/stores/chat-store";
+import { workspaceApi, ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -32,6 +33,8 @@ import {
   Square,
   Undo2,
   Sparkles,
+  Wand2,
+  X,
 } from "lucide-react";
 import {
   AlertDialog,
@@ -147,9 +150,24 @@ function FileItem({ path, status, isStaged, isSelected, onToggleSelect, onStage,
   );
 }
 
+interface HookFailure {
+  hook_name: string;
+  error_output: string;
+  files_affected: string[];
+}
+
+interface HookFailureInfo {
+  message: string;
+  hook_failed: boolean;
+  hook_failures: HookFailure[];
+  raw_error: string;
+  files_to_fix: string[];
+}
+
 export function CommitPanel() {
   const { token } = useAuthStore();
   const { activeProjectId, gitStatus, setGitStatus } = useWorkspaceStore();
+  const { createConversation, selectConversation, setPrefillMessage } = useChatStore();
   const { toast } = useToast();
 
   const [commitMessage, setCommitMessage] = useState("");
@@ -160,6 +178,10 @@ export function CommitPanel() {
   const [stagedOpen, setStagedOpen] = useState(true);
   const [unstagedOpen, setUnstagedOpen] = useState(true);
   const [untrackedOpen, setUntrackedOpen] = useState(true);
+
+  // Hook failure state
+  const [hookFailure, setHookFailure] = useState<HookFailureInfo | null>(null);
+  const [isStartingFixChat, setIsStartingFixChat] = useState(false);
 
   // Selection state for batch operations
   const [selectedStaged, setSelectedStaged] = useState<Set<string>>(new Set());
@@ -215,7 +237,10 @@ export function CommitPanel() {
       return;
     }
 
+    // Clear any previous hook failure
+    setHookFailure(null);
     setIsCommitting(true);
+
     try {
       const result = await workspaceApi.gitCommit(
         token,
@@ -235,6 +260,21 @@ export function CommitPanel() {
       await refreshStatus();
     } catch (err) {
       console.error("Commit failed:", err);
+
+      // Check if this is a hook failure
+      if (err instanceof ApiError && err.status === 422 && err.details) {
+        const details = err.details as HookFailureInfo;
+        if (details.hook_failed) {
+          setHookFailure(details);
+          toast({
+            title: "Pre-commit hooks failed",
+            description: "Linting or formatting errors detected. Fix them or ask AI to help.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+
       toast({
         title: "Commit failed",
         description: err instanceof Error ? err.message : "Unknown error",
@@ -242,6 +282,48 @@ export function CommitPanel() {
       });
     } finally {
       setIsCommitting(false);
+    }
+  };
+
+  const handleFixWithAI = async () => {
+    if (!hookFailure || !activeProjectId || !token) return;
+
+    setIsStartingFixChat(true);
+    try {
+      // Build the error context message
+      const errorContext = hookFailure.hook_failures
+        .map((hf) => `### ${hf.hook_name} errors:\n\`\`\`\n${hf.error_output.slice(0, 1500)}\n\`\`\``)
+        .join("\n\n");
+
+      const filesToFix = hookFailure.files_to_fix.length > 0
+        ? `\n\nFiles to fix:\n${hookFailure.files_to_fix.map((f) => `- ${f}`).join("\n")}`
+        : "";
+
+      const message = `I tried to commit but the pre-commit hooks failed with linting/formatting errors. Please fix these errors so I can commit.\n\n${errorContext}${filesToFix}`;
+
+      // Create a new conversation with the error context
+      const conversation = await createConversation(token, activeProjectId, "Fix lint errors");
+      if (conversation?.id) {
+        // Select the conversation to make it current
+        await selectConversation(token, conversation.id);
+        // Set the prefill message so the chat input picks it up
+        setPrefillMessage(message);
+        // Clear the hook failure state
+        setHookFailure(null);
+        toast({
+          title: "Started fix conversation",
+          description: "Click send to have AI analyze the errors",
+        });
+      }
+    } catch (err) {
+      console.error("Failed to start fix chat:", err);
+      toast({
+        title: "Failed to start chat",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setIsStartingFixChat(false);
     }
   };
 
@@ -407,6 +489,67 @@ export function CommitPanel() {
                 )}
               </Button>
             </div>
+            {/* Hook failure alert */}
+            {hookFailure && (
+              <div className="mb-2 p-3 bg-destructive/10 border border-destructive/30 rounded-md">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 text-destructive mt-0.5 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-destructive">Pre-commit hooks failed</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {hookFailure.hook_failures.length} hook(s) failed
+                        {hookFailure.files_to_fix.length > 0 && ` • ${hookFailure.files_to_fix.length} file(s) need fixes`}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 flex-shrink-0"
+                    onClick={() => setHookFailure(null)}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="default"
+                    className="flex-1"
+                    onClick={handleFixWithAI}
+                    disabled={isStartingFixChat}
+                  >
+                    {isStartingFixChat ? (
+                      <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                    ) : (
+                      <Wand2 className="h-3.5 w-3.5 mr-1.5" />
+                    )}
+                    Fix with AI
+                  </Button>
+                </div>
+                {hookFailure.files_to_fix.length > 0 && (
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    <details>
+                      <summary className="cursor-pointer hover:text-foreground">
+                        Show affected files ({hookFailure.files_to_fix.length})
+                      </summary>
+                      <ul className="mt-1 space-y-0.5 pl-2">
+                        {hookFailure.files_to_fix.slice(0, 10).map((file) => (
+                          <li key={file} className="truncate">{file}</li>
+                        ))}
+                        {hookFailure.files_to_fix.length > 10 && (
+                          <li className="text-muted-foreground">
+                            ...and {hookFailure.files_to_fix.length - 10} more
+                          </li>
+                        )}
+                      </ul>
+                    </details>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex items-center gap-2 mt-2">
               <Button
                 size="sm"

@@ -3,6 +3,7 @@ Project management routes.
 """
 
 import asyncio
+import json
 import os
 import subprocess
 from urllib.parse import urlparse
@@ -12,8 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ai_core import get_logger
-from ai_db import Task
-from database.models import APIUsage, Conversation, Domain, Project, ProjectStatus
+from database.models import APIUsage, Conversation, Domain, Project, ProjectStatus, Task
 
 from ..database import get_db_session
 from ..dependencies import CurrentUserDep
@@ -28,6 +28,7 @@ from ..schemas.project import (
     ProjectSpendResponse,
     ProjectUpdate,
     ProjectWithStatsResponse,
+    QualitySettings,
 )
 
 logger = get_logger(__name__)
@@ -133,6 +134,11 @@ async def create_project(
                 detail=f"Cannot create root_path directory: {e}",
             )
 
+    # Serialize quality_settings to JSON if provided
+    quality_settings_json = None
+    if request.quality_settings:
+        quality_settings_json = request.quality_settings.model_dump_json()
+
     project = Project(
         name=request.name,
         description=request.description,
@@ -153,6 +159,8 @@ async def create_project(
         docker_cpu_limit=request.docker_cpu_limit,
         docker_expose_ports=request.docker_expose_ports,
         docker_env_vars=request.docker_env_vars,
+        # Quality settings
+        quality_settings=quality_settings_json,
     )
 
     db.add(project)
@@ -267,6 +275,8 @@ async def get_project(
         docker_expose_ports=project.docker_expose_ports,
         docker_env_vars=project.docker_env_vars,
         docker_container_status=project.docker_container_status,
+        # Quality settings
+        quality_settings=project.quality_settings,
         # Stats
         conversation_count=conversation_count,
         task_count=task_count,
@@ -301,6 +311,11 @@ async def update_project(
 
     # Update fields
     update_data = request.model_dump(exclude_unset=True)
+
+    # Handle quality_settings serialization
+    if "quality_settings" in update_data and update_data["quality_settings"]:
+        update_data["quality_settings"] = update_data["quality_settings"].model_dump_json() if hasattr(update_data["quality_settings"], "model_dump_json") else json.dumps(update_data["quality_settings"])
+
     for field, value in update_data.items():
         setattr(project, field, value)
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useAuthStore } from "@/stores/auth-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useProjectStore } from "@/stores/project-store";
@@ -16,7 +16,13 @@ import { UsageMeter } from "@/components/chat/usage-meter";
 import { AgentSelector } from "@/components/chat/agent-selector";
 import { AIDiffEditor, AIChangesNotification } from "@/components/workspace/editor/ai-diff-editor";
 import { Button } from "@/components/ui/button";
-import { Loader2, PanelLeft, Sparkles } from "lucide-react";
+import { Loader2, PanelLeft, Sparkles, GripVertical } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+const SIDEBAR_MIN_WIDTH = 200;
+const SIDEBAR_MAX_WIDTH = 500;
+const SIDEBAR_DEFAULT_WIDTH = 280;
+const SIDEBAR_STORAGE_KEY = "chat-sidebar-width";
 
 export default function WorkspaceChatsPage() {
   const { token } = useAuthStore();
@@ -38,6 +44,53 @@ export default function WorkspaceChatsPage() {
   const { isChatSidebarCollapsed, setChatSidebarCollapsed, openFile, setActiveFile } = useWorkspaceStore();
   const [isInitializing, setIsInitializing] = useState(true);
   const [showDiffPanel, setShowDiffPanel] = useState(false);
+
+  // Resizable sidebar state
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeRef = useRef<HTMLDivElement>(null);
+
+  // Load saved width on mount
+  useEffect(() => {
+    const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (saved) {
+      const width = parseInt(saved, 10);
+      if (width >= SIDEBAR_MIN_WIDTH && width <= SIDEBAR_MAX_WIDTH) {
+        setSidebarWidth(width);
+      }
+    }
+  }, []);
+
+  // Handle resize
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = Math.min(
+        SIDEBAR_MAX_WIDTH,
+        Math.max(SIDEBAR_MIN_WIDTH, e.clientX)
+      );
+      setSidebarWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarWidth.toString());
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing, sidebarWidth]);
 
   // AI Diff handlers
   const handleAcceptChange = useCallback((changeId: string) => {
@@ -123,15 +176,48 @@ export default function WorkspaceChatsPage() {
   };
 
   return (
-    <div className="flex h-full w-full min-h-0 overflow-hidden">
+    <div className={cn(
+      "flex h-full w-full min-h-0 overflow-hidden",
+      isResizing && "select-none cursor-col-resize"
+    )}>
       {/* Left: Conversation sidebar with tag filtering */}
       {/* On mobile, completely hide when collapsed; on desktop, show narrow version */}
-      <div className={isChatSidebarCollapsed ? "hidden md:block" : ""}>
+      <div
+        className={cn(
+          "relative shrink-0",
+          isChatSidebarCollapsed ? "hidden md:block" : ""
+        )}
+        style={{ width: isChatSidebarCollapsed ? undefined : sidebarWidth }}
+      >
         <ConversationSidebar
           projectId={selectedProject?.id}
           isCollapsed={isChatSidebarCollapsed}
           onToggle={handleToggleSidebar}
+          width={sidebarWidth}
         />
+
+        {/* Resize handle */}
+        {!isChatSidebarCollapsed && (
+          <div
+            ref={resizeRef}
+            className={cn(
+              "absolute top-0 right-0 w-1 h-full cursor-col-resize group hidden md:flex items-center justify-center",
+              "hover:bg-primary/20 transition-colors",
+              isResizing && "bg-primary/30"
+            )}
+            onMouseDown={handleMouseDown}
+          >
+            <div className={cn(
+              "absolute right-0 w-3 h-full",
+              "flex items-center justify-center"
+            )}>
+              <GripVertical className={cn(
+                "h-4 w-4 text-muted-foreground/50 opacity-0 group-hover:opacity-100 transition-opacity",
+                isResizing && "opacity-100"
+              )} />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Right: Full chat experience */}

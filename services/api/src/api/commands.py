@@ -301,6 +301,7 @@ class CommandHandler:
                                 "project_id": context.get("project_id"),
                                 "root_path": context.get("root_path"),
                                 "agent_context": context.get("agent_context"),
+                                "branch": context.get("branch"),  # Git branch for mismatch detection
                             },
                         },
                     )
@@ -354,7 +355,15 @@ class CommandHandler:
                             "title": step.title,
                             "description": step.description,
                             "status": step.status.value,
-                            "order_index": step.order_index,
+                            "order": step.order_index,
+                            "agent": step.agent,
+                            "files": getattr(step, 'files', []),
+                            "todos": getattr(step, 'todos', []),
+                            "changes": getattr(step, 'changes', []),
+                            "output": step.output,
+                            "error": step.error,
+                            "started_at": step.started_at.isoformat() if step.started_at else None,
+                            "completed_at": step.completed_at.isoformat() if step.completed_at else None,
                         }
                         for step in existing_plan.steps
                     ],
@@ -363,25 +372,41 @@ class CommandHandler:
 
             # Pause execution
             if subcommand == "pause":
-                await self.plan_manager.pause_execution(existing_plan.id)
+                success = await self.plan_manager.pause_execution(existing_plan.id)
+                if not success:
+                    return {
+                        "type": "command_error",
+                        "command": "plan",
+                        "error": f"Cannot pause plan with status: {existing_plan.status.value}. Plan must be executing or approved.",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
                 return {
                     "type": "command_result",
                     "command": "plan",
                     "content": "⏸️ Plan execution paused. Use `/plan resume` to continue.",
                     "action": "plan_paused",
                     "plan_id": existing_plan.id,
+                    "plan_status": "PAUSED",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
             # Resume execution
             if subcommand == "resume":
-                await self.plan_manager.resume_execution(existing_plan.id)
+                success = await self.plan_manager.resume_execution(existing_plan.id)
+                if not success:
+                    return {
+                        "type": "command_error",
+                        "command": "plan",
+                        "error": f"Cannot resume plan with status: {existing_plan.status.value}. Plan must be paused.",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
                 return {
                     "type": "command_result",
                     "command": "plan",
                     "content": "▶️ Plan execution resumed.",
                     "action": "plan_resumed",
                     "plan_id": existing_plan.id,
+                    "plan_status": "APPROVED",  # APPROVED shows as "Executing" in UI
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
@@ -996,47 +1021,44 @@ class CommandHandler:
                 step.result = None
                 step.error = None
 
-        # Set plan back to executing
-        plan.status = PlanStatus.EXECUTING
+        # Set plan to PENDING so user can review/edit before approving
+        plan.status = PlanStatus.PENDING
 
         # Save updated plan
-        await self.plan_manager.save_plan(plan)
-
-        # Publish execution task to supervisor
-        pubsub = PubSubManager(self.redis)
-        await pubsub.start()
-
-        try:
-            conversation_id = context.get("conversation_id") or plan.conversation_id
-            user_id = context.get("user_id")
-
-            await pubsub.publish(
-                "agent:supervisor:tasks",
-                {
-                    "type": "task_request",
-                    "task_type": "execute_plan",
-                    "user_id": user_id,
-                    "payload": {
-                        "plan_id": plan.id,
-                        "conversation_id": conversation_id,
-                        "user_id": user_id,
-                        "project_id": context.get("project_id"),
-                        "root_path": context.get("root_path"),
-                        "start_step": start_step,
-                    },
-                },
-            )
-        finally:
-            await pubsub.stop()
+        await self.plan_manager._save_plan(plan)
 
         step_info = f" from step {start_step + 1}" if start_step > 0 else ""
+
+        # Build step list for frontend (include all fields to preserve todos)
+        steps_data = [
+            {
+                "id": step.id,
+                "title": step.title,
+                "description": step.description,
+                "status": step.status.value,
+                "order": step.order,
+                "agent": step.agent,
+                "files": getattr(step, 'files', []),
+                "todos": getattr(step, 'todos', []),
+                "changes": getattr(step, 'changes', []),
+                "output": step.output,
+                "error": step.error,
+                "started_at": step.started_at.isoformat() if step.started_at else None,
+                "completed_at": step.completed_at.isoformat() if step.completed_at else None,
+            }
+            for step in plan.steps
+        ]
+
         return {
             "type": "command_result",
             "command": "plan",
-            "content": f"🔄 Restarting plan{step_info}: **{plan.title}**\n\n*Execution starting...*",
+            "content": f"🔄 Plan reset{step_info}: **{plan.title}**\n\n*Review the plan and approve when ready to execute.*",
             "action": "plan_restarted",
             "plan_id": plan.id,
-            "plan_status": "APPROVED",
+            # These fields trigger the plan panel to open
+            "plan_content": format_plan_for_display(plan),
+            "plan_status": "PENDING",  # PENDING allows editing before approve
+            "steps": steps_data,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 

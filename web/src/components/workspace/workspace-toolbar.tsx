@@ -42,6 +42,7 @@ export function WorkspaceToolbar() {
     autoSave,
     setAutoSave,
     setSearchOpen,
+    markBranchChanged,
   } = useWorkspaceStore();
 
   const [isDeploying, setIsDeploying] = useState(false);
@@ -57,6 +58,14 @@ export function WorkspaceToolbar() {
       setGitStatus(null);
     }
   }, [token, activeProjectId, setGitStatus]);
+
+  // Handle branch change - refresh status and clear cached files
+  const handleBranchChange = useCallback(async (branchName: string) => {
+    // Mark branch changed to clear open files and trigger refresh
+    markBranchChanged();
+    // Refresh git status
+    await fetchGitStatus();
+  }, [markBranchChanged, fetchGitStatus]);
 
   // Fetch git status when project changes
   useEffect(() => {
@@ -126,7 +135,7 @@ export function WorkspaceToolbar() {
       {activeProjectId && (
         <BranchSwitcher
           projectId={activeProjectId}
-          onBranchChange={fetchGitStatus}
+          onBranchChange={handleBranchChange}
         />
       )}
 

@@ -102,6 +102,34 @@ export interface ContinuationRequest {
   conversationId?: string;
 }
 
+// Quality check result types
+export interface QualityCheckError {
+  file?: string;
+  line?: number;
+  message: string;
+  severity: string;
+  type?: string;
+}
+
+export interface QualityCheckRun {
+  name: string;
+  passed: boolean;
+  message?: string;
+  type?: string;
+  command?: string;
+  output?: string;
+}
+
+export interface QualityCheckResult {
+  taskId: string;
+  conversationId?: string;
+  passed: boolean;
+  errors: QualityCheckError[];
+  checksRun: QualityCheckRun[];
+  agent?: string;
+  timestamp: string;
+}
+
 // Rollback types
 export interface RollbackResult {
   success: boolean;
@@ -128,7 +156,7 @@ interface Conversation {
   tags?: string[];
 }
 
-type PlanStatus = "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null;
+type PlanStatus = "DRAFT" | "PENDING" | "APPROVED" | "PAUSED" | "REJECTED" | "COMPLETED" | null;
 
 export interface PlanStep {
   id: string;
@@ -170,6 +198,8 @@ interface ChatState {
   planStatus: PlanStatus;
   planSteps: PlanStep[];
   currentStepIndex: number;
+  planBranch: string | null;
+  branchMismatchWarning: { planBranch: string; currentBranch: string } | null;
 
   // Supervisor thinking state
   supervisorThoughts: SupervisorThought[];
@@ -178,6 +208,9 @@ interface ChatState {
 
   // Thinking panel entries (narrative reasoning)
   thinkingEntries: ThinkingEntry[];
+
+  // Prefill message for auto-starting chats with context
+  prefillMessage: string | null;
 
   // Plan changes history
   planChanges: PlanChange[];
@@ -195,6 +228,9 @@ interface ChatState {
   // Rollback state
   lastRollbackResult: RollbackResult | null;
   isRollingBack: boolean;
+
+  // Quality check state
+  lastQualityCheckResult: QualityCheckResult | null;
 
   // Active agent for chat
   activeAgent: string | null;
@@ -235,9 +271,11 @@ interface ChatState {
   setConnectionState: (state: "connected" | "connecting" | "disconnected" | "reconnecting") => void;
 
   // Plan actions
-  updatePlan: (content: string, status?: PlanStatus, planId?: string) => void;
+  updatePlan: (content: string, status?: PlanStatus, planId?: string, branch?: string | null) => void;
   updateSteps: (steps: PlanStep[], currentStep: number, planId?: string) => void;
   setCurrentPlanId: (planId: string | null) => void;
+  setPlanBranch: (branch: string | null) => void;
+  setBranchMismatchWarning: (warning: { planBranch: string; currentBranch: string } | null) => void;
   approvePlan: (token: string) => Promise<void>;
   rejectPlan: (token: string) => Promise<void>;
   clearPlan: () => void;
@@ -251,6 +289,9 @@ interface ChatState {
   // Thinking panel actions (narrative reasoning)
   addThinkingEntry: (entry: Omit<ThinkingEntry, "id">) => void;
   clearThinkingEntries: () => void;
+
+  // Prefill message for auto-starting chats with context
+  setPrefillMessage: (message: string | null) => void;
 
   // Plan changes actions
   addPlanChange: (change: Omit<PlanChange, "id">) => void;
@@ -274,6 +315,7 @@ interface ChatState {
 
   // Rollback actions
   setRollbackResult: (result: RollbackResult | null) => void;
+  setQualityCheckResult: (result: QualityCheckResult | null) => void;
   setIsRollingBack: (isRollingBack: boolean) => void;
 
   // Agent selection actions
@@ -313,10 +355,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   planStatus: null,
   planSteps: [],
   currentStepIndex: 0,
+  planBranch: null,
+  branchMismatchWarning: null,
   supervisorThoughts: [],
   confidenceUpdates: [],
   isSupervisorThinking: false,
   thinkingEntries: [],
+  prefillMessage: null,
   planChanges: [],
   pendingFileChanges: [],
   showFileChangePreview: false,
@@ -324,6 +369,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   continuationRequest: null,
   lastRollbackResult: null,
   isRollingBack: false,
+  lastQualityCheckResult: null,
   activeAgent: null,
   availableAgents: ["wyld", "code", "data", "infra", "research", "qa"],
   pinnedConversations: new Set<string>(),
@@ -407,7 +453,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
               description: s.description,
               status: s.status as PlanStep["status"],
               agent: s.agent,
+              files: s.files,
               todos: s.todos,
+              changes: s.changes,
               output: s.output,
               error: s.error,
               started_at: s.started_at,
@@ -645,7 +693,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   // Plan actions
-  updatePlan: (content: string, status?: PlanStatus, planId?: string) => {
+  updatePlan: (content: string, status?: PlanStatus, planId?: string, branch?: string | null) => {
     const currentStatus = status || "DRAFT";
     const state = get();
 
@@ -660,6 +708,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Preserve existing steps unless starting a new draft
       planSteps: shouldClearSteps ? [] : state.planSteps,
       currentStepIndex: shouldClearSteps ? 0 : state.currentStepIndex,
+      // Set branch if provided, otherwise preserve existing
+      planBranch: branch !== undefined ? branch : state.planBranch,
+      // Clear mismatch warning when plan is updated
+      branchMismatchWarning: null,
     });
   },
 
@@ -684,6 +736,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setCurrentPlanId: (planId: string | null) => {
     set({ currentPlanId: planId });
+  },
+
+  setPlanBranch: (branch: string | null) => {
+    set({ planBranch: branch });
+  },
+
+  setBranchMismatchWarning: (warning: { planBranch: string; currentBranch: string } | null) => {
+    set({ branchMismatchWarning: warning });
   },
 
   approvePlan: async (token: string) => {
@@ -725,6 +785,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       planStatus: null,
       planSteps: [],
       currentStepIndex: 0,
+      planBranch: null,
+      branchMismatchWarning: null,
       supervisorThoughts: [],
       confidenceUpdates: [],
       isSupervisorThinking: false,
@@ -771,6 +833,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   clearThinkingEntries: () => {
     set({ thinkingEntries: [] });
+  },
+
+  setPrefillMessage: (message) => {
+    set({ prefillMessage: message });
   },
 
   // Plan changes actions
@@ -872,6 +938,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setIsRollingBack: (isRollingBack) => {
     set({ isRollingBack });
+  },
+
+  // Quality check actions
+  setQualityCheckResult: (result) => {
+    set({ lastQualityCheckResult: result });
   },
 
   // Agent selection actions

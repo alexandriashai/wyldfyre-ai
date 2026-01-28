@@ -1,0 +1,136 @@
+name: quality-check
+version: 1.0.0
+description: Code quality checking plugin that runs linters, formatters, and type checkers based on project settings
+author: Wyld Fyre AI
+
+agents:
+  - "*"
+
+requires:
+  - ai_core >= 0.1.0
+
+permissions:
+  - files:read
+  - shell:execute
+
+config:
+  timeout_seconds:
+    type: integer
+    default: 60
+  max_output_lines:
+    type: integer
+    default: 100
+
+tools:
+  - name: run_lint
+    description: Run configured linter on project files
+    handler: tools:run_lint
+    parameters:
+      type: object
+      properties:
+        root_path:
+          type: string
+          description: Project root path
+        files:
+          type: array
+          items:
+            type: string
+          description: Specific files to lint (optional, defaults to all)
+        fix:
+          type: boolean
+          default: false
+          description: Auto-fix issues if supported
+      required:
+        - root_path
+
+  - name: run_format
+    description: Run configured formatter on project files
+    handler: tools:run_format
+    parameters:
+      type: object
+      properties:
+        root_path:
+          type: string
+          description: Project root path
+        files:
+          type: array
+          items:
+            type: string
+          description: Specific files to format (optional, defaults to all)
+        check_only:
+          type: boolean
+          default: false
+          description: Check formatting without making changes
+      required:
+        - root_path
+
+  - name: run_type_check
+    description: Run configured type checker on project files
+    handler: tools:run_type_check
+    parameters:
+      type: object
+      properties:
+        root_path:
+          type: string
+          description: Project root path
+      required:
+        - root_path
+
+  - name: run_tests
+    description: Run configured test command
+    handler: tools:run_tests
+    parameters:
+      type: object
+      properties:
+        root_path:
+          type: string
+          description: Project root path
+        test_filter:
+          type: string
+          description: Filter to run specific tests (optional)
+      required:
+        - root_path
+
+  - name: run_all_quality_checks
+    description: Run all configured quality checks for a project
+    handler: tools:run_all_quality_checks
+    parameters:
+      type: object
+      properties:
+        root_path:
+          type: string
+          description: Project root path
+        files_changed:
+          type: array
+          items:
+            type: string
+          description: List of changed files to check (optional)
+        fix_issues:
+          type: boolean
+          default: false
+          description: Auto-fix issues where possible
+      required:
+        - root_path
+
+  - name: detect_quality_tools
+    description: Auto-detect available quality tools in a project
+    handler: tools:detect_quality_tools
+    parameters:
+      type: object
+      properties:
+        root_path:
+          type: string
+          description: Project root path
+      required:
+        - root_path
+
+hooks:
+  - event: post_task_quality_check
+    handler: hooks:on_post_task_quality_check
+    priority: 50
+    description: Run quality checks after task completion
+
+  - event: git_hook_failed
+    handler: hooks:on_git_hook_failed
+    priority: 50
+    description: Parse and report git hook failures

@@ -131,6 +131,9 @@ interface WorkspaceState {
   refreshFileInTree: (path: string, node: FileNode) => void;
   removeFileFromTree: (path: string) => void;
   setLinkedFile: (path: string | null) => void;
+  clearOpenFiles: () => void;
+  markBranchChanged: () => void;
+  branchChangeCounter: number;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>()(
@@ -166,6 +169,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       recentFiles: [],
       linkedFile: null,
       activeFile: null,
+      branchChangeCounter: 0,
 
       // Actions
       setActiveProject: (id) => set({
@@ -277,6 +281,21 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         // Simple removal - re-fetch is preferred
         return state;
       }),
+
+      clearOpenFiles: () => set({
+        openFiles: [],
+        activeFilePath: null,
+        activeFile: null,
+      }),
+
+      markBranchChanged: () => set((state) => ({
+        // Increment counter to trigger effects that depend on branch changes
+        branchChangeCounter: state.branchChangeCounter + 1,
+        // Clear open files since they may have changed content
+        openFiles: [],
+        activeFilePath: null,
+        activeFile: null,
+      })),
     }),
     {
       name: 'workspace-store',

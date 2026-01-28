@@ -371,6 +371,10 @@ class PAIMemory:
     # WARM Tier Operations (Qdrant)
     # =========================================================================
 
+    # Minimum content requirements for storage
+    MIN_CONTENT_LENGTH = 20
+    MIN_CONFIDENCE = 0.4
+
     async def store_learning(
         self,
         learning: Learning,
@@ -379,6 +383,8 @@ class PAIMemory:
     ) -> str | None:
         """
         Store a learning in WARM tier (Qdrant) with optional deduplication.
+
+        Includes quality checks to prevent low-value learnings from being stored.
 
         Args:
             learning: Learning object to store
@@ -390,6 +396,23 @@ class PAIMemory:
         """
         if not self._qdrant:
             logger.warning("Qdrant not configured, skipping WARM storage")
+            return None
+
+        # === Quality gate: Final check before storage ===
+        # Minimum content length
+        if len(learning.content.strip()) < self.MIN_CONTENT_LENGTH:
+            logger.debug(f"Learning rejected: content too short ({len(learning.content)} chars)")
+            return None
+
+        # Minimum confidence
+        if learning.confidence < self.MIN_CONFIDENCE:
+            logger.debug(f"Learning rejected: confidence too low ({learning.confidence})")
+            return None
+
+        # Reject content that's mostly non-alphabetic (likely code or data)
+        alpha_ratio = sum(1 for c in learning.content if c.isalpha()) / max(len(learning.content), 1)
+        if alpha_ratio < 0.4:
+            logger.debug(f"Learning rejected: too much non-text content (alpha ratio: {alpha_ratio:.2f})")
             return None
 
         # Set creator if not already set

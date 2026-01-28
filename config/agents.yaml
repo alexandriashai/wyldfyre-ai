@@ -186,8 +186,18 @@ defaults:
   max_restarts: 3
   health_check_interval: 30
   log_retention_days: 7
-  max_tool_iterations: 50  # Max tool calls per task (increased from 10)
+  max_tool_iterations: 20  # Default max tool calls per task
   max_tokens: 8192  # Max tokens per Claude API call
+
+# Agent-type specific iteration limits
+# Prevents agents from spinning without progress
+limits:
+  max_tool_iterations:
+    default: 20
+    code: 25      # May need more iterations for refactoring
+    infra: 15     # Config changes are typically quick
+    qa: 10        # Verification should be fast
+    research: 8   # Web searches complete quickly
 
 # Elevation settings
 elevation:

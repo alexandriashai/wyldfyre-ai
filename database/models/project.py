@@ -78,6 +78,9 @@ class Project(Base, UUIDMixin, TimestampMixin):
     color: Mapped[str | None] = mapped_column(String(7))  # Hex color e.g., #FF5733
     icon: Mapped[str | None] = mapped_column(String(50))  # Icon name e.g., "folder"
 
+    # Quality settings (JSON) - code quality and linting configuration
+    quality_settings: Mapped[str | None] = mapped_column(Text)  # JSON object
+
     # Owner relationship
     user_id: Mapped[str] = mapped_column(
         String(36),

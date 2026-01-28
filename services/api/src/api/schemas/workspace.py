@@ -123,12 +123,24 @@ class GitCommitRequest(BaseModel):
     files: list[str] | None = None  # None = commit all staged/modified
 
 
+class HookFailure(BaseModel):
+    """Details about a failed pre-commit hook."""
+
+    hook_name: str
+    error_output: str
+    files_affected: list[str] = []
+
+
 class GitCommitResponse(BaseModel):
     """Response after committing."""
 
     commit_hash: str
     message: str
     files_changed: int
+    # Hook failure fields for auto-fix feature
+    hook_failed: bool = False
+    hook_failures: list[HookFailure] = []
+    raw_error: str | None = None
 
 
 class GitLogEntry(BaseModel):

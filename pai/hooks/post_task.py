@@ -5,10 +5,12 @@ Enhanced with:
 - Feedback loop for used learnings (boost/decay)
 - Trace-based learning extraction
 - Learning consolidation
+- Quality filtering to prevent low-value learnings
 
 Responsibilities:
 - Extract learnings from task execution using LearningExtractor
 - Apply feedback to used learnings based on task outcome
+- Filter learnings for quality before storage
 - Store results in memory
 - Update metrics
 - Trigger learning synthesis
@@ -23,6 +25,12 @@ from ai_memory.learning_extractor import LearningExtractor
 
 # Global extractor instance
 _extractor = LearningExtractor()
+
+# Minimum confidence threshold for storing learnings
+MIN_STORAGE_CONFIDENCE = 0.5
+
+# Maximum learnings to store per task (prevents flooding)
+MAX_LEARNINGS_PER_TASK = 5
 
 
 async def post_task_hook(
@@ -118,8 +126,21 @@ async def post_task_hook(
             similarity_threshold=0.85,
         )
 
+    # === Quality filtering before storage ===
+    # Filter out low-confidence learnings
+    quality_learnings = [
+        l for l in extracted_learnings
+        if l.confidence >= MIN_STORAGE_CONFIDENCE
+    ]
+
+    # Limit learnings per task to prevent flooding
+    if len(quality_learnings) > MAX_LEARNINGS_PER_TASK:
+        # Keep highest confidence learnings
+        quality_learnings.sort(key=lambda l: l.confidence, reverse=True)
+        quality_learnings = quality_learnings[:MAX_LEARNINGS_PER_TASK]
+
     # Store each extracted learning with scope
-    for learning in extracted_learnings:
+    for learning in quality_learnings:
         # Apply project/domain scope if provided
         if domain_id:
             learning.scope = "domain"
@@ -154,25 +175,39 @@ async def post_task_hook(
             await memory.store_learning(learning, agent_type=agent_type)
             learnings_stored += 1
 
-    # === Store error learnings for failed tasks (if not already captured) ===
+    # === Store error learnings for failed tasks (distilled, not verbatim) ===
     if not success and "error" in task_result:
-        error_content = f"Task {task_type} failed: {task_result['error']}"
-        if not any(l.content == error_content for l in extracted_learnings):
-            learning = Learning(
-                content=error_content,
-                phase=PAIPhase.LEARN,
-                category="error",
-                task_id=correlation_id,
-                agent_type=agent_type,
-                confidence=0.9,
-                metadata={"error_type": task_result.get("error_type", "unknown")},
-                created_by_agent=agent_type,
-                permission_level=permission_level,
-                project_id=project_id,
-                domain_id=domain_id,
+        raw_error = task_result['error']
+        # Use extractor to distill error into actionable learning
+        distilled_error = _extractor._distill_error(raw_error, context=task_type)
+
+        # Only store if distilled error is meaningful and not already captured
+        if distilled_error and _extractor._passes_quality_check(distilled_error):
+            # Check for duplicates
+            is_duplicate = any(
+                distilled_error in l.content or l.content in distilled_error
+                for l in quality_learnings
             )
-            await memory.store_learning(learning, agent_type=agent_type)
-            learnings_stored += 1
+            if not is_duplicate:
+                learning = Learning(
+                    content=distilled_error,
+                    phase=PAIPhase.LEARN,
+                    category="error_pattern",
+                    task_id=correlation_id,
+                    agent_type=agent_type,
+                    confidence=0.85,  # Slightly lower for distilled errors
+                    metadata={
+                        "error_type": task_result.get("error_type", "unknown"),
+                        "original_error_length": len(raw_error),
+                        "distilled": True,
+                    },
+                    created_by_agent=agent_type,
+                    permission_level=permission_level,
+                    project_id=project_id,
+                    domain_id=domain_id,
+                )
+                await memory.store_learning(learning, agent_type=agent_type)
+                learnings_stored += 1
 
     # === Store LEARN phase trace ===
     await memory.store_task_trace(

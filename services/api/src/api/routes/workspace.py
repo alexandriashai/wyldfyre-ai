@@ -49,6 +49,7 @@ from ..schemas.workspace import (
     GitLogResponse,
     GitStatusResponse,
     HealthCheckResponse,
+    HookFailure,
     RollbackRequest,
     RollbackResponse,
 )
@@ -310,6 +311,79 @@ async def run_git_command(cwd: str, *args: str, check: bool = True) -> subproces
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Git is not installed on this server",
         )
+
+
+def _parse_hook_failures(stderr: str) -> list[HookFailure]:
+    """Parse pre-commit hook output to extract failure details."""
+    failures: list[HookFailure] = []
+    current_hook = None
+    current_output: list[str] = []
+    current_files: list[str] = []
+
+    lines = stderr.split("\n")
+
+    for line in lines:
+        # Detect hook names (e.g., "eslint...Failed", "prettier...Failed")
+        line_lower = line.lower()
+
+        # Common hook patterns
+        if "failed" in line_lower:
+            # Save previous hook if any
+            if current_hook:
+                failures.append(
+                    HookFailure(
+                        hook_name=current_hook,
+                        error_output="\n".join(current_output).strip(),
+                        files_affected=current_files,
+                    )
+                )
+                current_output = []
+                current_files = []
+
+            # Extract hook name
+            for hook in ["eslint", "prettier", "ruff", "mypy", "black", "flake8", "isort"]:
+                if hook in line_lower:
+                    current_hook = hook
+                    break
+            else:
+                # Generic hook name from the line
+                if "hook" in line_lower:
+                    current_hook = "pre-commit"
+                else:
+                    current_hook = "lint"
+
+        # Extract file paths from output
+        # Common patterns: "path/to/file.ts:10:5" or "  path/to/file.py"
+        file_match = re.search(r"([a-zA-Z0-9_\-./]+\.(ts|tsx|js|jsx|py|php|scss|css))(?::\d+)?", line)
+        if file_match:
+            filepath = file_match.group(1)
+            if filepath not in current_files:
+                current_files.append(filepath)
+
+        if current_hook:
+            current_output.append(line)
+
+    # Save last hook
+    if current_hook and current_output:
+        failures.append(
+            HookFailure(
+                hook_name=current_hook,
+                error_output="\n".join(current_output).strip(),
+                files_affected=current_files,
+            )
+        )
+
+    # If no hooks detected but there's output, create a generic one
+    if not failures and stderr.strip():
+        failures.append(
+            HookFailure(
+                hook_name="pre-commit",
+                error_output=stderr.strip()[:2000],  # Limit size
+                files_affected=[],
+            )
+        )
+
+    return failures
 
 
 # --- File Endpoints ---
@@ -945,6 +1019,38 @@ async def git_commit(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Nothing to commit",
             )
+        # Check for pre-commit hook failures
+        stderr_lower = e.stderr.lower()
+        is_hook_failure = any(
+            indicator in stderr_lower
+            for indicator in [
+                "pre-commit",
+                "hook",
+                "eslint",
+                "lint",
+                "prettier",
+                "ruff",
+                "mypy",
+                "failed",
+            ]
+        )
+
+        if is_hook_failure:
+            # Parse hook failures from stderr
+            hook_failures = _parse_hook_failures(e.stderr)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "message": "Pre-commit hooks failed",
+                    "hook_failed": True,
+                    "hook_failures": [hf.model_dump() for hf in hook_failures],
+                    "raw_error": e.stderr,
+                    "files_to_fix": list(
+                        set(f for hf in hook_failures for f in hf.files_affected)
+                    ),
+                },
+            )
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Git commit failed: {e.stderr}",

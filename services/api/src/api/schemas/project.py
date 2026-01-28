@@ -2,11 +2,45 @@
 Project schemas.
 """
 
+import json
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from database.models import ProjectStatus
+
+
+class QualitySettings(BaseModel):
+    """Project code quality settings."""
+
+    # Enable/disable quality checks
+    enabled: bool = True
+
+    # Linting settings
+    lint_on_save: bool = True
+    lint_on_commit: bool = True
+    lint_command: str | None = None  # e.g., "npm run lint", "ruff check"
+
+    # Formatting settings
+    format_on_save: bool = False
+    format_on_commit: bool = True
+    format_command: str | None = None  # e.g., "npm run format", "black ."
+
+    # Type checking settings
+    type_check_enabled: bool = True
+    type_check_command: str | None = None  # e.g., "npm run typecheck", "mypy ."
+
+    # Test settings
+    run_tests_on_commit: bool = False
+    test_command: str | None = None  # e.g., "npm test", "pytest"
+
+    # Agent behavior
+    auto_fix_lint_errors: bool = True  # Agents auto-fix lint errors after tasks
+    block_on_errors: bool = False  # Block commit if errors exist
+
+    # Custom quality commands (key: name, value: command)
+    custom_checks: dict[str, str] = {}
 
 
 class ProjectCreate(BaseModel):
@@ -32,6 +66,9 @@ class ProjectCreate(BaseModel):
     docker_expose_ports: str | None = None
     docker_env_vars: str | None = None
 
+    # Quality settings
+    quality_settings: QualitySettings | None = None
+
 
 class ProjectUpdate(BaseModel):
     """Update project request."""
@@ -56,6 +93,9 @@ class ProjectUpdate(BaseModel):
     docker_cpu_limit: str | None = Field(None, max_length=20)
     docker_expose_ports: str | None = None
     docker_env_vars: str | None = None
+
+    # Quality settings
+    quality_settings: QualitySettings | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -85,9 +125,28 @@ class ProjectResponse(BaseModel):
     docker_env_vars: str | None = None
     docker_container_status: str | None = None
 
+    # Quality settings
+    quality_settings: QualitySettings | None = None
+
     # Timestamps
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("quality_settings", mode="before")
+    @classmethod
+    def parse_quality_settings(cls, v: Any) -> QualitySettings | None:
+        """Deserialize quality_settings from JSON string."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                data = json.loads(v)
+                return QualitySettings(**data)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        if isinstance(v, dict):
+            return QualitySettings(**v)
+        return v
 
     class Config:
         from_attributes = True

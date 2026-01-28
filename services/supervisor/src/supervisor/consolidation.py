@@ -3,6 +3,11 @@ Experience Replay and Consolidation (Improvement 4)
 
 Implements nightly consolidation: merge similar learnings, extract meta-patterns,
 decay stale knowledge, and prune low-utility learnings.
+
+Quality improvements:
+- Require larger sample sizes for meta-pattern extraction (5+)
+- Better skill name generation
+- Enhanced quality checks for patterns
 """
 
 import asyncio
@@ -14,6 +19,18 @@ from ai_core import get_logger
 from ai_memory import Learning, LearningScope, PAIMemory, PAIPhase
 
 logger = get_logger(__name__)
+
+# Minimum samples required for meta-pattern extraction
+MIN_SAMPLES_FOR_PATTERN = 5
+
+# Minimum samples for failure pattern extraction
+MIN_FAILURE_SAMPLES = 4
+
+# Minimum utility score for techniques to be considered for skill promotion
+MIN_TECHNIQUE_UTILITY = 0.8
+
+# Minimum access count before promoting to skill
+MIN_ACCESS_COUNT_FOR_SKILL = 5
 
 
 class LearningConsolidator:
@@ -271,14 +288,14 @@ class LearningConsolidator:
                 or l.get("category") == "error_pattern"
             ]
 
-            # Extract success patterns
-            if len(successes) >= 3:
+            # Extract success patterns - require minimum sample size for statistical validity
+            if len(successes) >= MIN_SAMPLES_FOR_PATTERN:
                 pattern = await self._identify_success_pattern(successes, project_id)
                 if pattern:
                     patterns.append(pattern)
 
-            # Extract anti-patterns
-            if len(failures) >= 3:
+            # Extract anti-patterns - slightly lower threshold since failures are rarer
+            if len(failures) >= MIN_FAILURE_SAMPLES:
                 anti_pattern = await self._identify_failure_pattern(failures, project_id)
                 if anti_pattern:
                     patterns.append(anti_pattern)
@@ -291,7 +308,7 @@ class LearningConsolidator:
         project_id: str,
     ) -> dict[str, Any] | None:
         """Identify common elements in successful executions."""
-        if len(successes) < 3:
+        if len(successes) < MIN_SAMPLES_FOR_PATTERN:
             return None
 
         # Extract common metadata
@@ -352,7 +369,7 @@ class LearningConsolidator:
         project_id: str,
     ) -> dict[str, Any] | None:
         """Identify common elements in failed executions."""
-        if len(failures) < 3:
+        if len(failures) < MIN_FAILURE_SAMPLES:
             return None
 
         # Extract common failure indicators
@@ -397,7 +414,7 @@ class LearningConsolidator:
         return pattern
 
     async def _promote_to_skills(self, patterns: list[dict[str, Any]]) -> list[Any]:
-        """Promote successful patterns to the skill library."""
+        """Promote successful patterns to the skill library with quality filtering."""
         if not self.skills:
             return []
 
@@ -405,22 +422,25 @@ class LearningConsolidator:
 
         # Get high-utility technique learnings
         techniques = await self.memory.get_learnings_by_utility(
-            min_utility=0.8,
+            min_utility=MIN_TECHNIQUE_UTILITY,
             limit=50,
         )
 
-        # Filter for technique category with high access count
+        # Filter for technique category with high access count and quality checks
         promotable = [
             t for t in techniques
             if t.get("category") == "technique"
-            and t.get("access_count", 0) >= 3
+            and t.get("access_count", 0) >= MIN_ACCESS_COUNT_FOR_SKILL
+            and len(t.get("text", t.get("content", ""))) >= 30  # Minimum description length
         ]
 
         for technique in promotable:
             try:
+                technique_content = technique.get("text", technique.get("content", ""))
+
                 # Check if similar skill exists
                 existing = await self.skills.find_applicable_skills(
-                    goal=technique.get("text", technique.get("content", "")),
+                    goal=technique_content,
                     context={},
                     min_success_rate=0.5,
                     limit=1,
@@ -428,19 +448,24 @@ class LearningConsolidator:
                 if existing:
                     continue
 
+                # Generate a meaningful skill name from the content
+                skill_name = self._generate_skill_name(technique_content)
+                if not skill_name:
+                    continue
+
                 # Create skill from technique
                 from ai_memory.skill_library import Skill, SkillLevel
 
                 skill = Skill(
                     id=f"skill_auto_{technique.get('id', '')[:8]}",
-                    name=technique.get("text", "")[:40],
+                    name=skill_name,
                     level=SkillLevel.SKILL,
-                    description=technique.get("text", ""),
+                    description=technique_content,
                     preconditions=[],
                     postconditions=["success:true"],
                     steps=[{
                         "title": "Execute learned pattern",
-                        "description": technique.get("text", ""),
+                        "description": technique_content,
                     }],
                     parameters={},
                     success_rate=technique.get("utility_score", 0.5),
@@ -454,6 +479,49 @@ class LearningConsolidator:
                 logger.debug(f"Failed to promote technique to skill: {e}")
 
         return new_skills
+
+    def _generate_skill_name(self, content: str) -> str | None:
+        """
+        Generate a meaningful skill name from technique content.
+
+        Returns None if content doesn't have enough structure for a good name.
+        """
+        import re
+
+        # Skip generic patterns that don't make good skill names
+        generic_patterns = [
+            r"^create\s+\w+$",
+            r"^do\s+\w+$",
+            r"^run\s+\w+$",
+            r"^execute\s+\w+$",
+        ]
+        content_lower = content.lower().strip()
+        for pattern in generic_patterns:
+            if re.match(pattern, content_lower):
+                return None
+
+        # Try to extract action + object from content
+        action_patterns = [
+            r"(?:to\s+)?(\w+(?:ing|ed|e)?)\s+(\w+(?:\s+\w+)?)\s+(?:by|using|with|when)",
+            r"(?:how\s+to\s+)?(\w+)\s+(\w+(?:\s+\w+)?)\s+(?:in|for|on)",
+            r"(\w+)\s+the\s+(\w+(?:\s+\w+)?)",
+        ]
+
+        for pattern in action_patterns:
+            match = re.search(pattern, content_lower)
+            if match:
+                action = match.group(1).capitalize()
+                obj = match.group(2)
+                name = f"{action} {obj}"
+                if len(name) >= 10 and len(name) <= 50:
+                    return name
+
+        # Fall back to first few meaningful words
+        words = [w for w in content.split()[:6] if len(w) > 2]
+        if len(words) >= 3:
+            return " ".join(words[:4]).capitalize()
+
+        return None
 
     async def _decay_stale_learnings(
         self,

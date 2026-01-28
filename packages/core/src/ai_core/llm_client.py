@@ -9,6 +9,7 @@ provider recovery.
 
 import asyncio
 import os
+import random
 import time
 from typing import Any
 
@@ -484,15 +485,19 @@ class LLMClient:
                 if _is_credit_error(e):
                     raise
 
-                # Retryable errors: wait and try again
+                # Retryable errors: wait and try again with jitter to prevent thundering herd
                 if _is_retryable_error(e) and attempt < MAX_RETRIES:
-                    delay = min(RETRY_BASE_DELAY * (2 ** attempt), RETRY_MAX_DELAY)
+                    base_delay = min(RETRY_BASE_DELAY * (2 ** attempt), RETRY_MAX_DELAY)
+                    # Add jitter: 0.5x to 1.5x of base delay
+                    jitter = base_delay * (0.5 + random.random())
+                    delay = min(jitter, RETRY_MAX_DELAY)
                     logger.warning(
-                        "Retryable error, backing off",
+                        "Retryable error, backing off with jitter",
                         provider=provider.provider_type.value,
                         attempt=attempt + 1,
                         max_retries=MAX_RETRIES,
-                        delay=delay,
+                        base_delay=base_delay,
+                        jittered_delay=round(delay, 2),
                         error=str(e)[:100],
                     )
                     await asyncio.sleep(delay)

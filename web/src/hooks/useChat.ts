@@ -5,6 +5,7 @@ import { useChatStore, PlanChange } from "@/stores/chat-store";
 import { useAgentStore } from "@/stores/agent-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useUsageStore } from "@/stores/usage-store";
+import { useWorkspaceStore } from "@/stores/workspace-store";
 
 // Use wss:// for secure connection, endpoint is /ws/chat
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "wss://api.wyldfyre.ai";
@@ -26,7 +27,7 @@ interface PlanStep {
 }
 
 interface ChatMessage {
-  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "plan_status" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress" | "usage_update" | "supervisor_thinking" | "step_confidence_update" | "plan_change" | "todo_progress" | "file_change_preview" | "available_agents" | "continuation_required" | "thinking_stream" | "rollback_complete" | "redo_complete";
+  type: "message" | "token" | "connected" | "pong" | "error" | "agent_status" | "agent_action" | "subscribed" | "unsubscribed" | "message_ack" | "command_result" | "command_error" | "memory_saved" | "plan_update" | "plan_status" | "task_control_ack" | "message_queued" | "step_update" | "conversation_renamed" | "deploy_progress" | "usage_update" | "supervisor_thinking" | "step_confidence_update" | "plan_change" | "todo_progress" | "file_change_preview" | "available_agents" | "continuation_required" | "thinking_stream" | "rollback_complete" | "redo_complete" | "branch_mismatch_warning" | "quality_check_result";
   title?: string;
   conversation_id?: string;
   message_id?: string;
@@ -98,21 +99,30 @@ interface ChatMessage {
   files_deleted?: string[];
   files_reapplied?: string[];
   files_created?: string[];
+  // Branch tracking fields
+  branch?: string;
+  plan_branch?: string;
+  current_branch?: string;
+  // Quality check result fields
+  task_id?: string;
+  passed?: boolean;
+  errors?: Array<{ file?: string; line?: number; message: string; severity: string; type?: string }>;
+  checks_run?: Array<{ name: string; passed: boolean; message?: string; type?: string; command?: string; output?: string }>;
 }
 
 export type ConnectionState = "connected" | "connecting" | "disconnected" | "reconnecting";
 
-type PlanStatus = "DRAFT" | "PENDING" | "APPROVED" | "REJECTED" | "COMPLETED" | null;
+type PlanStatus = "DRAFT" | "PENDING" | "APPROVED" | "PAUSED" | "REJECTED" | "COMPLETED" | null;
 
 /** Normalize plan_status from backend (may be lowercase) to uppercase for frontend */
 function normalizePlanStatus(status?: string | null): PlanStatus {
   if (!status) return null;
   const upper = status.toUpperCase();
-  if (["DRAFT", "PENDING", "APPROVED", "REJECTED", "COMPLETED"].includes(upper)) {
+  if (["DRAFT", "PENDING", "APPROVED", "PAUSED", "REJECTED", "COMPLETED"].includes(upper)) {
     return upper as PlanStatus;
   }
   // Map backend execution states to frontend equivalents
-  if (upper === "EXECUTING" || upper === "PAUSED") return "APPROVED";
+  if (upper === "EXECUTING") return "APPROVED";
   if (upper === "EXPLORING" || upper === "DRAFTING") return "DRAFT";
   return "DRAFT";
 }
@@ -186,7 +196,7 @@ export function useChat() {
       const responseTypes = [
         "message", "token", "error", "command_result", "command_error",
         "plan_update", "plan_status", "step_update", "agent_status", "agent_action",
-        "thinking_stream", "rollback_complete", "redo_complete", "continuation_required"
+        "thinking_stream", "rollback_complete", "redo_complete", "continuation_required", "quality_check_result"
       ];
       if (responseTypes.includes(data.type)) {
         clearSendingTimeout();
@@ -310,13 +320,29 @@ export function useChat() {
             plan_content: data.plan_content?.substring(0, 100),
             plan_status: data.plan_status,
             plan_id: data.plan_id,
+            branch: data.branch,
             conversation_id: data.conversation_id
           });
           if (data.plan_content !== undefined) {
             const planStatus = normalizePlanStatus(data.plan_status);
-            console.log("[Plan] Calling updatePlan with status:", planStatus, "planId:", data.plan_id);
-            updatePlan(data.plan_content, planStatus, data.plan_id);
+            const planBranch = data.branch || null;
+            console.log("[Plan] Calling updatePlan with status:", planStatus, "planId:", data.plan_id, "branch:", planBranch);
+            updatePlan(data.plan_content, planStatus, data.plan_id, planBranch);
             setIsSending(false);
+          }
+          break;
+
+        case "branch_mismatch_warning":
+          console.log("[Plan] Branch mismatch warning:", {
+            plan_branch: data.plan_branch,
+            current_branch: data.current_branch,
+            plan_id: data.plan_id
+          });
+          if (data.plan_branch && data.current_branch) {
+            useChatStore.getState().setBranchMismatchWarning({
+              planBranch: data.plan_branch,
+              currentBranch: data.current_branch,
+            });
           }
           break;
 
@@ -508,6 +534,19 @@ export function useChat() {
           });
           break;
 
+        case "quality_check_result":
+          // Quality check result after task completion
+          useChatStore.getState().setQualityCheckResult({
+            taskId: data.task_id || "",
+            conversationId: data.conversation_id,
+            passed: data.passed ?? true,
+            errors: data.errors || [],
+            checksRun: data.checks_run || [],
+            agent: data.agent,
+            timestamp: data.timestamp || new Date().toISOString(),
+          });
+          break;
+
         default:
           console.log("Unknown message type:", data.type);
       }
@@ -650,6 +689,9 @@ export function useChat() {
 
       // Send to server with optional target agent
       try {
+        // Include current branch from workspace for plan tracking
+        const currentBranch = useWorkspaceStore.getState().gitStatus?.branch || undefined;
+
         socketRef.current.send(JSON.stringify({
           type: "chat",
           conversation_id: currentConversation.id,
@@ -657,6 +699,7 @@ export function useChat() {
           content,
           message_id: messageId,
           target_agent: activeAgent || undefined,
+          branch: currentBranch,
         }));
       } catch {
         markMessageFailed(messageId);

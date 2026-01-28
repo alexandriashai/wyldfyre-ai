@@ -49,6 +49,7 @@ interface ConversationSidebarProps {
   isCollapsed?: boolean;
   onToggle?: () => void;
   projectId?: string;
+  width?: number;
 }
 
 type DateGroup = "Pinned" | "Today" | "Yesterday" | "Last 7 Days" | "Last 30 Days" | "Older";
@@ -90,6 +91,7 @@ export function ConversationSidebar({
   isCollapsed = false,
   onToggle,
   projectId,
+  width,
 }: ConversationSidebarProps) {
   const { token } = useAuthStore();
   const {
@@ -367,7 +369,10 @@ export function ConversationSidebar({
   };
 
   return (
-    <div className="flex flex-col h-full w-64 border-r bg-muted/20">
+    <div
+      className="flex flex-col h-full border-r bg-muted/20"
+      style={{ width: width || 256 }}
+    >
       {/* Header */}
       <div className="flex items-center justify-between p-2 border-b">
         <div className="flex items-center gap-1">

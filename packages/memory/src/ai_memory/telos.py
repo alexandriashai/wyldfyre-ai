@@ -30,17 +30,25 @@ import aiofiles
 if TYPE_CHECKING:
     from .pai_memory import PAIMemory
 
-# Patterns for detecting ideas in user messages
+# Patterns for detecting ideas in user messages (tightened for quality)
+# Must capture at least 12 characters of meaningful content after the trigger phrase
 IDEA_PATTERNS = [
-    re.compile(r"(?i)I should\s+(.+)", re.IGNORECASE),
-    re.compile(r"(?i)what if\s+(.+)", re.IGNORECASE),
-    re.compile(r"(?i)maybe we could\s+(.+)", re.IGNORECASE),
-    re.compile(r"(?i)it would be cool to\s+(.+)", re.IGNORECASE),
-    re.compile(r"(?i)TODO:\s*(.+)", re.IGNORECASE),
-    re.compile(r"(?i)idea:\s*(.+)", re.IGNORECASE),
-    re.compile(r"(?i)we should\s+(.+)", re.IGNORECASE),
-    re.compile(r"(?i)let's\s+(.+)", re.IGNORECASE),
+    # Future intentions with concrete actions
+    re.compile(r"(?i)(?:we|I)\s+should\s+(?:probably\s+)?(\w{3,}\s+.{12,})", re.IGNORECASE),
+    # Hypotheticals with explanation
+    re.compile(r"(?i)what\s+if\s+we\s+(\w{3,}\s+.{12,})", re.IGNORECASE),
+    # Suggestions with reasoning
+    re.compile(r"(?i)maybe\s+we\s+could\s+(\w{3,}\s+.{12,})", re.IGNORECASE),
+    # Explicit idea markers (these are reliable signals)
+    re.compile(r"(?i)TODO:\s*(\w{3,}\s+.{12,})", re.IGNORECASE),
+    re.compile(r"(?i)IDEA:\s*(\w{3,}\s+.{12,})", re.IGNORECASE),
+    re.compile(r"(?i)FEATURE:\s*(\w{3,}\s+.{12,})", re.IGNORECASE),
+    # Cool/nice to have with substance
+    re.compile(r"(?i)it\s+would\s+be\s+(?:cool|nice|great)\s+(?:if\s+we\s+|to\s+)(\w{3,}\s+.{12,})", re.IGNORECASE),
 ]
+
+# Minimum length for a valid idea to be stored
+MIN_IDEA_LENGTH = 15
 
 
 class TelosFileType(str, Enum):
@@ -709,6 +717,8 @@ class TelosManager:
         """
         Sync top learnings from PAI memory to LEARNED.md.
 
+        Includes quality filtering to only sync meaningful learnings.
+
         Args:
             project_id: If provided, sync to project LEARNED.md
             limit: Maximum learnings to sync
@@ -719,28 +729,55 @@ class TelosManager:
         if not self._memory:
             return 0
 
-        # Get top learnings by utility score
+        # Get top learnings by utility score (raised threshold from 0.6 to 0.65)
         learnings = await self._memory.get_learnings_by_utility(
-            min_utility=0.6,  # Only high-utility learnings
-            limit=limit,
+            min_utility=0.65,  # Higher threshold for TELOS sync
+            limit=limit * 2,  # Over-fetch to account for filtering
         )
 
         if not learnings:
             return 0
 
+        # Filter out low-quality learnings before syncing
+        quality_learnings = []
+        for learning in learnings:
+            text = learning.get("content", learning.get("text", ""))
+
+            # Minimum length check
+            if len(text.strip()) < 25:
+                continue
+
+            # Must have mostly alphabetic content
+            alpha_ratio = sum(1 for c in text if c.isalpha()) / max(len(text), 1)
+            if alpha_ratio < 0.5:
+                continue
+
+            # Must have been accessed at least once (proved useful)
+            if learning.get("access_count", 0) < 1:
+                continue
+
+            quality_learnings.append(learning)
+
         # Sort by utility score
-        learnings.sort(key=lambda x: x.get("utility_score", 0), reverse=True)
+        quality_learnings.sort(key=lambda x: x.get("utility_score", 0), reverse=True)
+
+        # Limit to requested amount
+        quality_learnings = quality_learnings[:limit]
+
+        if not quality_learnings:
+            return 0
 
         # Format learnings for markdown
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         content = f"# Learnings\n\n*Last synced: {timestamp}*\n\n## Top Learnings (by utility score)\n\n"
 
-        for i, learning in enumerate(learnings, 1):
+        for i, learning in enumerate(quality_learnings, 1):
             utility = learning.get("utility_score", 0.5)
             text = learning.get("content", learning.get("text", ""))[:200]
             phase = learning.get("phase", "learn").upper()
+            access_count = learning.get("access_count", 0)
             content += f"{i}. **[{utility:.2f}]** {text}\n"
-            content += f"   - Phase: {phase}\n\n"
+            content += f"   - Phase: {phase} | Used: {access_count}x\n\n"
 
         # Write to appropriate file
         if project_id:
@@ -748,7 +785,7 @@ class TelosManager:
         else:
             await self._update_file(TelosFileType.LEARNED, content)
 
-        return len(learnings)
+        return len(quality_learnings)
 
     async def update_goal_progress(
         self,
@@ -955,20 +992,40 @@ class TelosManager:
         """
         Detect and capture ideas from user messages using pattern matching.
 
+        Includes quality filtering to avoid capturing noise.
+
         Args:
             message: User message to scan
             project_id: Optional project context
 
         Returns:
-            List of captured ideas
+            List of captured ideas (quality filtered)
         """
         captured_ideas = []
+        seen_content = set()  # Avoid duplicates
 
         for pattern in IDEA_PATTERNS:
             matches = pattern.findall(message)
             for match in matches:
+                content = match.strip()
+
+                # Quality checks
+                if len(content) < MIN_IDEA_LENGTH:
+                    continue
+
+                # Skip duplicates
+                content_normalized = content.lower()
+                if content_normalized in seen_content:
+                    continue
+                seen_content.add(content_normalized)
+
+                # Skip content that's mostly non-text (likely code)
+                alpha_ratio = sum(1 for c in content if c.isalpha()) / max(len(content), 1)
+                if alpha_ratio < 0.5:
+                    continue
+
                 idea = await self.capture_idea(
-                    idea_content=match.strip(),
+                    idea_content=content,
                     source="user_message",
                     project_id=project_id,
                 )

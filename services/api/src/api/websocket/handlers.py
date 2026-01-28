@@ -177,12 +177,14 @@ class MessageHandler:
         content = data.get("content", "").strip()
         conversation_id = data.get("conversation_id")
         project_id = data.get("project_id")
+        branch = data.get("branch")  # Git branch from frontend workspace
 
         logger.debug(
             "Chat message received",
             user_id=connection.user_id,
             conversation_id=conversation_id,
             has_content=bool(content),
+            branch=branch,
             data_keys=list(data.keys()),
         )
 
@@ -201,7 +203,7 @@ class MessageHandler:
 
         # Check for slash commands
         if self.command_handler.is_command(content):
-            await self._handle_command(connection, content, conversation_id, project_id)
+            await self._handle_command(connection, content, conversation_id, project_id, branch)
             return
 
         # Resolve project context (root_path, agent_context, domain info)
@@ -347,6 +349,7 @@ class MessageHandler:
                         "project_id": project_context.get("project_id"),
                         "root_path": project_context.get("root_path"),
                         "agent_context": project_context.get("agent_context"),
+                        "branch": branch,  # Git branch for mismatch detection
                     },
                     "metadata": {
                         "timestamp": timestamp,
@@ -406,6 +409,7 @@ class MessageHandler:
                             "project_id": project_context.get("project_id"),
                             "root_path": project_context.get("root_path"),
                             "agent_context": project_context.get("agent_context"),
+                            "branch": branch,  # Git branch for plan tracking
                         },
                         "metadata": {
                             "timestamp": timestamp,
@@ -443,6 +447,7 @@ class MessageHandler:
                     "root_path": project_context.get("root_path"),
                     "domain": project_context.get("domain_name"),
                     "agent_context": project_context.get("agent_context"),
+                    "branch": branch,  # Git branch for plan tracking
                 },
                 "metadata": {
                     "timestamp": timestamp,
@@ -466,6 +471,7 @@ class MessageHandler:
         content: str,
         conversation_id: str,
         project_id: str | None,
+        branch: str | None = None,
     ) -> None:
         """Handle slash command from user."""
         command, args = self.command_handler.parse_command(content)
@@ -475,6 +481,7 @@ class MessageHandler:
             command=command,
             user_id=connection.user_id,
             conversation_id=conversation_id,
+            branch=branch,
         )
 
         # Resolve project context including root_path
@@ -487,6 +494,7 @@ class MessageHandler:
             "root_path": project_context.get("root_path"),
             "agent_context": project_context.get("agent_context"),
             "project_name": project_context.get("project_name"),
+            "branch": branch,  # Git branch from frontend for plan tracking
         }
 
         result = await self.command_handler.handle(command, args, context)
@@ -1507,6 +1515,29 @@ RESPONSE TO ANALYZE:
                 sent_count=sent_count,
             )
 
+        elif response_type == "quality_check_result":
+            # Quality check result after task completion
+            await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "quality_check_result",
+                    "conversation_id": data.get("conversation_id"),
+                    "task_id": data.get("task_id"),
+                    "passed": data.get("passed", True),
+                    "errors": data.get("errors", []),
+                    "checks_run": data.get("checks_run", []),
+                    "agent": data.get("agent"),
+                    "timestamp": data.get("timestamp"),
+                },
+            )
+            logger.info(
+                "Quality check result sent to user",
+                user_id=user_id,
+                task_id=data.get("task_id"),
+                passed=data.get("passed"),
+                error_count=len(data.get("errors", [])),
+            )
+
         elif response_type == "rollback_complete":
             # Rollback operation completed
             await self.manager.send_personal(
@@ -1618,6 +1649,7 @@ RESPONSE TO ANALYZE:
                     "conversation_id": conversation_id,
                     "plan_content": plan_content,
                     "plan_status": plan_status_str,
+                    "branch": data.get("branch"),
                     "agent": data.get("agent"),
                     "timestamp": timestamp,
                 },
@@ -1627,6 +1659,7 @@ RESPONSE TO ANALYZE:
                 user_id=user_id,
                 conversation_id=conversation_id,
                 plan_status=plan_status_str,
+                branch=data.get("branch"),
             )
 
         elif response_type == "plan_status":
@@ -1722,4 +1755,24 @@ RESPONSE TO ANALYZE:
                 input_tokens=data.get("input_tokens"),
                 output_tokens=data.get("output_tokens"),
                 cost=data.get("cost"),
+            )
+
+        elif response_type == "branch_mismatch_warning":
+            # Warning when plan branch differs from current branch
+            await self.manager.send_personal(
+                user_id,
+                {
+                    "type": "branch_mismatch_warning",
+                    "conversation_id": data.get("conversation_id"),
+                    "plan_branch": data.get("plan_branch"),
+                    "current_branch": data.get("current_branch"),
+                    "timestamp": data.get("timestamp"),
+                },
+            )
+            logger.info(
+                "Branch mismatch warning sent to user",
+                user_id=user_id,
+                conversation_id=data.get("conversation_id"),
+                plan_branch=data.get("plan_branch"),
+                current_branch=data.get("current_branch"),
             )

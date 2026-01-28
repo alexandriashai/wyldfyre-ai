@@ -42,6 +42,7 @@ export function WorkspaceLayout() {
     activeFilePath,
     updateFileContent,
     markFileSaved,
+    branchChangeCounter,
   } = useWorkspaceStore();
 
   // Initialize active project
@@ -56,12 +57,12 @@ export function WorkspaceLayout() {
     }
   }, [activeProjectId, selectedProject, projects, setActiveProject]);
 
-  // Fetch file tree when project changes
+  // Fetch file tree when project changes or branch changes
   useEffect(() => {
     if (token && activeProjectId) {
       fetchFileTree();
     }
-  }, [token, activeProjectId, showHiddenFiles]);
+  }, [token, activeProjectId, showHiddenFiles, branchChangeCounter]);
 
   const fetchFileTree = useCallback(async () => {
     if (!token || !activeProjectId) return;

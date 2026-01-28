@@ -412,6 +412,23 @@ export interface Project {
   docker_expose_ports: string | null;
   docker_env_vars: string | null;
   docker_container_status: string | null;
+  // Quality settings
+  quality_settings: {
+    enabled: boolean;
+    lint_on_save: boolean;
+    lint_on_commit: boolean;
+    lint_command: string | null;
+    format_on_save: boolean;
+    format_on_commit: boolean;
+    format_command: string | null;
+    type_check_enabled: boolean;
+    type_check_command: string | null;
+    run_tests_on_commit: boolean;
+    test_command: string | null;
+    auto_fix_lint_errors: boolean;
+    block_on_errors: boolean;
+    custom_checks: Record<string, string>;
+  } | null;
 }
 
 export interface ProjectWithStats extends Project {
@@ -478,6 +495,23 @@ export const projectsApi = {
     docker_cpu_limit?: string;
     docker_expose_ports?: string;
     docker_env_vars?: string;
+    // Quality settings
+    quality_settings?: {
+      enabled?: boolean;
+      lint_on_save?: boolean;
+      lint_on_commit?: boolean;
+      lint_command?: string | null;
+      format_on_save?: boolean;
+      format_on_commit?: boolean;
+      format_command?: string | null;
+      type_check_enabled?: boolean;
+      type_check_command?: string | null;
+      run_tests_on_commit?: boolean;
+      test_command?: string | null;
+      auto_fix_lint_errors?: boolean;
+      block_on_errors?: boolean;
+      custom_checks?: Record<string, string>;
+    };
   }) {
     const response = await fetch(`${API_BASE_URL}/api/projects/${id}`, {
       method: 'PATCH',
@@ -633,7 +667,9 @@ export const conversationsApi = {
           description: string;
           status: string;
           agent?: string;
+          files?: string[];
           todos?: string[];
+          changes?: Array<{ file: string; action: string; summary: string }>;
           output?: string;
           error?: string;
           started_at?: string;

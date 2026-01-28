@@ -17,6 +17,11 @@ import {
   Cpu,
   HardDrive,
   Github,
+  Shield,
+  CheckCircle,
+  AlertTriangle,
+  FileCode,
+  TestTube,
 } from "lucide-react";
 import { GitHubProjectSettingsCard } from "@/components/workspace/github-project-settings";
 import { cn } from "@/lib/utils";
@@ -57,6 +62,21 @@ export default function WorkspaceSettingsPage() {
   const [dockerEnvVars, setDockerEnvVars] = useState("");
   const [containerStatus, setContainerStatus] = useState<string | null>(null);
 
+  // Quality settings
+  const [qualityEnabled, setQualityEnabled] = useState(true);
+  const [lintOnSave, setLintOnSave] = useState(true);
+  const [lintOnCommit, setLintOnCommit] = useState(true);
+  const [lintCommand, setLintCommand] = useState("");
+  const [formatOnSave, setFormatOnSave] = useState(false);
+  const [formatOnCommit, setFormatOnCommit] = useState(true);
+  const [formatCommand, setFormatCommand] = useState("");
+  const [typeCheckEnabled, setTypeCheckEnabled] = useState(true);
+  const [typeCheckCommand, setTypeCheckCommand] = useState("");
+  const [runTestsOnCommit, setRunTestsOnCommit] = useState(false);
+  const [testCommand, setTestCommand] = useState("");
+  const [autoFixLintErrors, setAutoFixLintErrors] = useState(true);
+  const [blockOnErrors, setBlockOnErrors] = useState(false);
+
   const [isSaving, setIsSaving] = useState(false);
   const [isContainerAction, setIsContainerAction] = useState(false);
 
@@ -79,6 +99,24 @@ export default function WorkspaceSettingsPage() {
       setDockerExposePorts(p.docker_expose_ports || "");
       setDockerEnvVars(p.docker_env_vars || "");
       setContainerStatus(p.docker_container_status || null);
+
+      // Quality settings
+      const qs = p.quality_settings;
+      if (qs) {
+        setQualityEnabled(qs.enabled ?? true);
+        setLintOnSave(qs.lint_on_save ?? true);
+        setLintOnCommit(qs.lint_on_commit ?? true);
+        setLintCommand(qs.lint_command || "");
+        setFormatOnSave(qs.format_on_save ?? false);
+        setFormatOnCommit(qs.format_on_commit ?? true);
+        setFormatCommand(qs.format_command || "");
+        setTypeCheckEnabled(qs.type_check_enabled ?? true);
+        setTypeCheckCommand(qs.type_check_command || "");
+        setRunTestsOnCommit(qs.run_tests_on_commit ?? false);
+        setTestCommand(qs.test_command || "");
+        setAutoFixLintErrors(qs.auto_fix_lint_errors ?? true);
+        setBlockOnErrors(qs.block_on_errors ?? false);
+      }
     }
   }, [selectedProject]);
 
@@ -107,6 +145,22 @@ export default function WorkspaceSettingsPage() {
         docker_cpu_limit: dockerCpuLimit,
         docker_expose_ports: dockerExposePorts || undefined,
         docker_env_vars: dockerEnvVars || undefined,
+        quality_settings: {
+          enabled: qualityEnabled,
+          lint_on_save: lintOnSave,
+          lint_on_commit: lintOnCommit,
+          lint_command: lintCommand || null,
+          format_on_save: formatOnSave,
+          format_on_commit: formatOnCommit,
+          format_command: formatCommand || null,
+          type_check_enabled: typeCheckEnabled,
+          type_check_command: typeCheckCommand || null,
+          run_tests_on_commit: runTestsOnCommit,
+          test_command: testCommand || null,
+          auto_fix_lint_errors: autoFixLintErrors,
+          block_on_errors: blockOnErrors,
+          custom_checks: {},
+        },
       });
       toast({
         title: "Settings saved",
@@ -441,6 +495,237 @@ export default function WorkspaceSettingsPage() {
               <p className="text-xs text-muted-foreground">
                 System user for terminal sessions. Enable Docker for better isolation.
               </p>
+            </div>
+          )}
+        </section>
+
+        {/* Code Quality Settings */}
+        <section className="space-y-4">
+          <h2 className="text-lg font-medium border-b pb-2 flex items-center gap-2">
+            <Shield className="h-5 w-5" />
+            Code Quality
+          </h2>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setQualityEnabled(!qualityEnabled)}
+              className={cn(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                qualityEnabled ? "bg-primary" : "bg-muted"
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                  qualityEnabled ? "translate-x-6" : "translate-x-1"
+                )}
+              />
+            </button>
+            <span className="text-sm font-medium">
+              Enable code quality checks
+            </span>
+          </div>
+
+          {qualityEnabled && (
+            <div className="space-y-6 pl-4 border-l-2 border-primary/20">
+              {/* Linting */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium flex items-center gap-2">
+                  <CheckCircle className="h-4 w-4 text-green-500" />
+                  Linting
+                </h3>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="lintOnSave"
+                      checked={lintOnSave}
+                      onChange={(e) => setLintOnSave(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <label htmlFor="lintOnSave" className="text-sm">
+                      Lint on save
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="lintOnCommit"
+                      checked={lintOnCommit}
+                      onChange={(e) => setLintOnCommit(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <label htmlFor="lintOnCommit" className="text-sm">
+                      Lint on commit
+                    </label>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">
+                    Custom lint command (leave empty for auto-detect)
+                  </label>
+                  <input
+                    type="text"
+                    value={lintCommand}
+                    onChange={(e) => setLintCommand(e.target.value)}
+                    className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
+                    placeholder="e.g., npm run lint, ruff check ."
+                  />
+                </div>
+              </div>
+
+              {/* Formatting */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium flex items-center gap-2">
+                  <FileCode className="h-4 w-4 text-blue-500" />
+                  Formatting
+                </h3>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="formatOnSave"
+                      checked={formatOnSave}
+                      onChange={(e) => setFormatOnSave(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <label htmlFor="formatOnSave" className="text-sm">
+                      Format on save
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="formatOnCommit"
+                      checked={formatOnCommit}
+                      onChange={(e) => setFormatOnCommit(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <label htmlFor="formatOnCommit" className="text-sm">
+                      Format on commit
+                    </label>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">
+                    Custom format command (leave empty for auto-detect)
+                  </label>
+                  <input
+                    type="text"
+                    value={formatCommand}
+                    onChange={(e) => setFormatCommand(e.target.value)}
+                    className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
+                    placeholder="e.g., npm run format, black ."
+                  />
+                </div>
+              </div>
+
+              {/* Type Checking */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                  Type Checking
+                </h3>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="typeCheckEnabled"
+                    checked={typeCheckEnabled}
+                    onChange={(e) => setTypeCheckEnabled(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300"
+                  />
+                  <label htmlFor="typeCheckEnabled" className="text-sm">
+                    Enable type checking
+                  </label>
+                </div>
+
+                {typeCheckEnabled && (
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">
+                      Custom type check command (leave empty for auto-detect)
+                    </label>
+                    <input
+                      type="text"
+                      value={typeCheckCommand}
+                      onChange={(e) => setTypeCheckCommand(e.target.value)}
+                      className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
+                      placeholder="e.g., npx tsc --noEmit, mypy ."
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Testing */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium flex items-center gap-2">
+                  <TestTube className="h-4 w-4 text-purple-500" />
+                  Testing
+                </h3>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="runTestsOnCommit"
+                    checked={runTestsOnCommit}
+                    onChange={(e) => setRunTestsOnCommit(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-300"
+                  />
+                  <label htmlFor="runTestsOnCommit" className="text-sm">
+                    Run tests on commit
+                  </label>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">
+                    Custom test command (leave empty for auto-detect)
+                  </label>
+                  <input
+                    type="text"
+                    value={testCommand}
+                    onChange={(e) => setTestCommand(e.target.value)}
+                    className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
+                    placeholder="e.g., npm test, pytest"
+                  />
+                </div>
+              </div>
+
+              {/* Agent Behavior */}
+              <div className="space-y-3 pt-2 border-t border-muted">
+                <h3 className="text-sm font-medium">Agent Behavior</h3>
+
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="autoFixLintErrors"
+                      checked={autoFixLintErrors}
+                      onChange={(e) => setAutoFixLintErrors(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <label htmlFor="autoFixLintErrors" className="text-sm">
+                      Auto-fix lint errors after tasks
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="blockOnErrors"
+                      checked={blockOnErrors}
+                      onChange={(e) => setBlockOnErrors(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <label htmlFor="blockOnErrors" className="text-sm">
+                      Block commits if errors exist
+                    </label>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </section>
