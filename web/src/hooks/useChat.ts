@@ -468,11 +468,12 @@ export function useChat() {
             // Also update active task todos (task_id and step_id are both used as key)
             if (data.task_id || data.step_id) {
               const taskId = data.task_id || data.step_id;
+              const progress = data.progress ?? 0;
               useChatStore.getState().updateActiveTaskTodo(
                 taskId,
                 data.todo_index,
-                data.status || (data.progress >= 100 ? "completed" : "in_progress"),
-                data.progress || 0,
+                data.status || (progress >= 100 ? "completed" : "in_progress"),
+                progress,
                 data.status_message
               );
             }
