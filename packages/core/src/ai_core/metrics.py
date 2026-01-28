@@ -241,6 +241,29 @@ routing_latency_seconds = Histogram(
     buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25],
 )
 
+routing_cost_savings_dollars = Counter(
+    "llm_routing_cost_savings_dollars",
+    "Estimated cost savings from routing decisions (can be negative for upgrades)",
+    ["from_tier", "to_tier"],
+)
+
+routing_tokens_redirected = Counter(
+    "llm_routing_tokens_redirected_total",
+    "Total tokens redirected by routing decisions",
+    ["to_tier"],
+)
+
+routing_model_accuracy = Gauge(
+    "llm_routing_model_accuracy",
+    "Router model accuracy from last evaluation",
+    ["tier"],
+)
+
+routing_cost_efficiency_ratio = Gauge(
+    "llm_routing_cost_efficiency_ratio",
+    "Ratio of actual cost to baseline cost (< 1.0 = savings)",
+)
+
 # =============================================================================
 # System Metrics
 # =============================================================================

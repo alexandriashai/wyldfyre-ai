@@ -10,6 +10,11 @@ import { useWorkspaceStore } from "@/stores/workspace-store";
 // Use wss:// for secure connection, endpoint is /ws/chat
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || "wss://api.wyldfyre.ai";
 
+// Singleton WebSocket instance to prevent multiple connections
+let globalSocket: WebSocket | null = null;
+let globalSocketUrl: string | null = null;
+let globalConnectionCount = 0;
+
 interface PlanStep {
   id: string;
   order: number;
@@ -557,13 +562,28 @@ export function useChat() {
 
   const connect = useCallback(() => {
     const wsUrl = getWsUrl();
-    if (!wsUrl || socketRef.current?.readyState === WebSocket.OPEN) return;
+    if (!wsUrl) return;
 
-    // Close existing connection if any
-    if (socketRef.current) {
-      socketRef.current.close();
-      socketRef.current = null;
+    // Use global singleton - if already connected with same URL, just reuse
+    if (globalSocket?.readyState === WebSocket.OPEN && globalSocketUrl === wsUrl) {
+      socketRef.current = globalSocket;
+      globalConnectionCount++;
+      setIsConnected(true);
+      setIsConnecting(false);
+      setConnectionState("connected");
+      return;
     }
+
+    // If connecting/connected to different URL, close old connection
+    if (globalSocket && globalSocketUrl !== wsUrl) {
+      globalSocket.close();
+      globalSocket = null;
+      globalSocketUrl = null;
+      globalConnectionCount = 0;
+    }
+
+    // Already has a local ref (shouldn't happen with singleton, but safety check)
+    if (socketRef.current?.readyState === WebSocket.OPEN) return;
 
     setIsConnecting(true);
     setConnectionState(reconnectAttemptsRef.current > 0 ? "reconnecting" : "connecting");
@@ -595,15 +615,21 @@ export function useChat() {
       };
 
       socket.onclose = (event) => {
+        // Only process close if this is still the global socket
+        if (socket === globalSocket) {
+          globalSocket = null;
+          globalSocketUrl = null;
+          globalConnectionCount = 0;
+        }
+
         setIsConnected(false);
         setIsConnecting(false);
-        setIsSending(false); // Clear sending state on disconnect
+        setIsSending(false);
         stopPingInterval();
 
         // Don't reconnect if closed normally (code 1000) or auth failed (4001)
         if (event.code !== 1000 && event.code !== 4001) {
           setConnectionState("reconnecting");
-          // Attempt to reconnect with exponential backoff
           if (reconnectAttemptsRef.current < maxReconnectAttempts) {
             const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
             reconnectAttemptsRef.current++;
@@ -618,12 +644,16 @@ export function useChat() {
 
       socket.onerror = () => {
         setIsConnecting(false);
-        setIsSending(false); // Clear sending state on error
+        setIsSending(false);
       };
 
       socket.onmessage = handleMessage;
 
+      // Store as both local ref and global singleton
       socketRef.current = socket;
+      globalSocket = socket;
+      globalSocketUrl = wsUrl;
+      globalConnectionCount = 1;
     } catch (e) {
       console.error("Failed to create WebSocket:", e);
       setIsConnecting(false);
@@ -639,10 +669,18 @@ export function useChat() {
       reconnectTimeoutRef.current = null;
     }
 
-    if (socketRef.current) {
-      socketRef.current.close(1000, "User disconnected");
-      socketRef.current = null;
-      setIsConnected(false);
+    // Decrement connection count - only close if last connection
+    globalConnectionCount = Math.max(0, globalConnectionCount - 1);
+
+    if (globalConnectionCount === 0 && globalSocket) {
+      globalSocket.close(1000, "User disconnected");
+      globalSocket = null;
+      globalSocketUrl = null;
+    }
+
+    socketRef.current = null;
+    setIsConnected(globalConnectionCount > 0);
+    if (globalConnectionCount === 0) {
       setConnectionState("disconnected");
     }
   }, [stopPingInterval, setConnectionState]);

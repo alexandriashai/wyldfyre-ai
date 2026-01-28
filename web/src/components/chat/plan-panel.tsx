@@ -32,7 +32,9 @@ import {
   Link2,
   GitBranch,
   AlertTriangle,
+  ExternalLink,
 } from "lucide-react";
+import Link from "next/link";
 import { PlanChangelog } from "./plan-changelog";
 import { StepRollbackButton } from "./rollback-controls";
 
@@ -473,15 +475,30 @@ export function PlanPanel({ className }: PlanPanelProps) {
             )}
           </div>
         </CollapsibleTrigger>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={(e) => { e.stopPropagation(); clearPlan(); }}
-          className="h-7 w-7 ml-1 sm:ml-2 shrink-0 text-muted-foreground hover:text-foreground hover:bg-destructive/10"
-          title="Dismiss plan"
-        >
-          <X className="h-4 w-4" />
-        </Button>
+        <div className="flex items-center gap-1 shrink-0">
+          {currentPlanId && (
+            <Link href={`/workspace/plans?id=${currentPlanId}`}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                title="View in Plans"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ExternalLink className="h-4 w-4" />
+              </Button>
+            </Link>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={(e) => { e.stopPropagation(); clearPlan(); }}
+            className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-destructive/10"
+            title="Dismiss plan"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
       <CollapsibleContent>
         {branchMismatchWarning && (
@@ -551,10 +568,18 @@ export function PlanPanel({ className }: PlanPanelProps) {
           )}
 
           {isExecuting && (
-            <div className="mt-3 pt-3 border-t">
+            <div className="mt-3 pt-3 border-t flex items-center justify-between">
               <p className="text-xs text-muted-foreground italic">
                 Tip: Type in chat to modify the plan while executing.
               </p>
+              {currentPlanId && (
+                <Link href={`/workspace/plans?id=${currentPlanId}`}>
+                  <Button variant="ghost" size="sm" className="h-6 text-xs">
+                    <ExternalLink className="h-3 w-3 mr-1" />
+                    View in Plans
+                  </Button>
+                </Link>
+              )}
             </div>
           )}
 

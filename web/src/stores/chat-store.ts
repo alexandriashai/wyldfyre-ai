@@ -141,6 +141,22 @@ export interface RollbackResult {
   timestamp: string;
 }
 
+// Plan refinement question types
+export interface QuestionOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface PlanQuestion {
+  id: string;
+  question: string;
+  type: "single" | "multiple" | "text" | "hybrid";
+  options?: QuestionOption[];
+  placeholder?: string;
+  required?: boolean;
+}
+
 interface Conversation {
   id: string;
   title: string;
@@ -235,6 +251,11 @@ interface ChatState {
   // Active agent for chat
   activeAgent: string | null;
   availableAgents: string[];
+
+  // Plan refinement questions
+  planQuestions: PlanQuestion[] | null;
+  isAwaitingAnswers: boolean;
+  planQuestionConversationId: string | null;
 
   // Conversation organization
   pinnedConversations: Set<string>;
@@ -336,6 +357,12 @@ interface ChatState {
 
   // Filter actions
   setProjectFilter: (projectId: string | null) => void;
+
+  // Plan questions actions
+  setPlanQuestions: (questions: PlanQuestion[] | null, conversationId?: string) => void;
+  submitQuestionAnswers: (answers: Record<string, string | string[]>) => void;
+  skipQuestions: () => void;
+  clearPlanQuestions: () => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -376,6 +403,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   searchQuery: "",
   tagFilter: [],
   projectFilter: null,
+  planQuestions: null,
+  isAwaitingAnswers: false,
+  planQuestionConversationId: null,
 
   fetchConversations: async (token: string, projectId?: string | null) => {
     set({ isLoading: true, error: null });
@@ -1015,6 +1045,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
   // Filter actions
   setProjectFilter: (projectId: string | null) => {
     set({ projectFilter: projectId });
+  },
+
+  // Plan questions actions
+  setPlanQuestions: (questions: PlanQuestion[] | null, conversationId?: string) => {
+    set({
+      planQuestions: questions,
+      isAwaitingAnswers: questions !== null && questions.length > 0,
+      planQuestionConversationId: conversationId || null,
+    });
+  },
+
+  submitQuestionAnswers: (answers: Record<string, string | string[]>) => {
+    // This will be called when user submits answers
+    // The actual sending to backend is handled by the WebSocket handler
+    set({
+      isAwaitingAnswers: false,
+    });
+    // The answers are sent via WebSocket in the component
+  },
+
+  skipQuestions: () => {
+    set({
+      planQuestions: null,
+      isAwaitingAnswers: false,
+      planQuestionConversationId: null,
+    });
+  },
+
+  clearPlanQuestions: () => {
+    set({
+      planQuestions: null,
+      isAwaitingAnswers: false,
+      planQuestionConversationId: null,
+    });
   },
 }));
 

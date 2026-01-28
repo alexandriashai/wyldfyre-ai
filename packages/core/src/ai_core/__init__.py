@@ -136,7 +136,28 @@ from .llm_provider import (
     LLMToolCall,
     LLMToolResult,
 )
-from .content_router import ContentRouter, get_content_router
+from .content_router import ContentRouter, get_content_router, COST_PER_1K_TOKENS
+from .stack_detector import (
+    DatabaseConfig,
+    ProjectStack,
+    StackDetector,
+    detect_project_stack,
+    get_database_info,
+    get_cached_stack,
+    clear_stack_cache,
+)
+from .router_training import (
+    RouterTrainer,
+    TrainingConfig,
+    TrainingSample,
+    generate_training_data,
+    generate_pairwise_data,
+    CostAnalytics,
+    CostAnalyticsTracker,
+    calculate_routing_savings,
+    estimate_monthly_savings,
+    get_cost_analytics_tracker,
+)
 from .llm_client import LLMClient
 from .model_selector import ModelTier, select_model, select_model_with_routing
 from .mcp_client import (
@@ -208,6 +229,10 @@ from .metrics import (
     pai_phase_executions_total,
     routing_decisions_total,
     routing_latency_seconds,
+    routing_cost_savings_dollars,
+    routing_tokens_redirected,
+    routing_model_accuracy,
+    routing_cost_efficiency_ratio,
     security_violations_total,
     system_uptime_seconds,
 )
@@ -348,6 +373,10 @@ __all__ = [
     "pai_learnings_extracted_total",
     "routing_decisions_total",
     "routing_latency_seconds",
+    "routing_cost_savings_dollars",
+    "routing_tokens_redirected",
+    "routing_model_accuracy",
+    "routing_cost_efficiency_ratio",
     "system_uptime_seconds",
     # Plugins
     "Plugin",
@@ -372,6 +401,27 @@ __all__ = [
     # Content Router
     "ContentRouter",
     "get_content_router",
+    "COST_PER_1K_TOKENS",
+    # Stack Detection
+    "DatabaseConfig",
+    "ProjectStack",
+    "StackDetector",
+    "detect_project_stack",
+    "get_database_info",
+    "get_cached_stack",
+    "clear_stack_cache",
+    # Router Training
+    "RouterTrainer",
+    "TrainingConfig",
+    "TrainingSample",
+    "generate_training_data",
+    "generate_pairwise_data",
+    # Cost Analytics
+    "CostAnalytics",
+    "CostAnalyticsTracker",
+    "calculate_routing_savings",
+    "estimate_monthly_savings",
+    "get_cost_analytics_tracker",
     # MCP Client
     "MCPClient",
     "MCPToolResult",

@@ -18,6 +18,7 @@ import {
   BarChart3,
   FileCode,
   Terminal,
+  ListTodo,
 } from "lucide-react";
 import { Button } from "./button";
 import { Separator } from "./separator";
@@ -38,6 +39,7 @@ const projectNavItems = [
   { href: "/workspace/files", icon: FileCode, label: "Files" },
   { href: "/workspace/terminal", icon: Terminal, label: "Terminal" },
   { href: "/workspace/chats", icon: MessageSquare, label: "Chats" },
+  { href: "/workspace/plans", icon: ListTodo, label: "Plans" },
   { href: "/workspace/settings", icon: Settings2, label: "Project" },
 ];
 

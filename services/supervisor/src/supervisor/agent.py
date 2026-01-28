@@ -4781,27 +4781,56 @@ Only output the JSON object, no other text."""
             context_lower = agent_context.lower() if agent_context else ""
             explored_files_str = " ".join(f.get("path", "") for f in exploration.get("files", []))
 
+            # Detect tech stack from exploration
             uses_twig = "twig" in context_lower or ".twig" in explored_files_str
             uses_blade = "blade" in context_lower or ".blade.php" in explored_files_str
+            uses_php = ".php" in explored_files_str or "php" in context_lower
             uses_typescript = "typescript" in context_lower or ".ts" in explored_files_str
+            uses_react = "react" in context_lower or ".tsx" in explored_files_str or ".jsx" in explored_files_str
             uses_vite = "vite" in context_lower
+            uses_laravel = "laravel" in context_lower or "artisan" in explored_files_str
+            uses_symfony = "symfony" in context_lower or "symfony" in explored_files_str
 
-            template_system = "Twig (.twig)" if uses_twig else "Blade (.blade.php)" if uses_blade else "HTML"
+            # Determine template system
+            if uses_twig:
+                template_system = "Twig (.twig)"
+            elif uses_blade:
+                template_system = "Blade (.blade.php)"
+            elif uses_react:
+                template_system = "React (.tsx/.jsx)"
+            elif uses_php:
+                template_system = "PHP (.php)"
+            else:
+                template_system = "HTML"
+
             script_system = "TypeScript (.ts)" if uses_typescript else "JavaScript (.js)"
             asset_system = "Vite bundling (NO CDN links)" if uses_vite else "direct includes"
 
-            if uses_twig or uses_blade or uses_typescript:
+            # Detect backend framework
+            backend = ""
+            if uses_laravel:
+                backend = "Laravel"
+            elif uses_symfony:
+                backend = "Symfony"
+            elif uses_php:
+                backend = "PHP"
+
+            if uses_twig or uses_blade or uses_typescript or uses_php or uses_react:
                 # Modern project detected - use architecture-aware guide
                 web_planning_guide = f"""
 ## Web Project Architecture (detected from codebase)
+- Backend: {backend or 'Not detected'}
 - Templates: {template_system}
 - Scripts: {script_system}
 - Assets: {asset_system}
 
-IMPORTANT: Check exploration results for existing templates, routes, and controllers.
-If similar pages exist, MODIFY them rather than creating new files.
-Do NOT create static HTML files if the project uses {template_system}.
-Do NOT use Bootstrap CDN if assets are bundled via Vite/npm.
+CRITICAL STACK CONSTRAINTS:
+- This is a {backend or template_system} project. ALL new code MUST use {template_system}.
+- Do NOT create React/JSX components if the project uses PHP.
+- Do NOT create static HTML files if the project uses {template_system}.
+- Do NOT suggest different frameworks than what the project already uses.
+- If similar pages exist, MODIFY them rather than creating new files.
+- Do NOT use Bootstrap CDN if assets are bundled via Vite/npm.
 """
             else:
                 # Generic web project - use basic guide

@@ -1,10 +1,10 @@
 """
-Content-based model routing using LLMRouter.
+Content-based model routing using LLMRouter (MFRouter).
 
 Analyzes prompt content to refine tier selection beyond structural heuristics.
 Only invoked for BALANCED-tier requests (the uncertain middle ground).
-Uses a two-threshold approach: score > UP_THRESHOLD -> POWERFUL,
-score < DOWN_THRESHOLD -> FAST, otherwise keep BALANCED.
+Uses MFRouter's matrix factorization model to predict the optimal tier
+based on learned query complexity patterns.
 """
 
 import asyncio
@@ -21,43 +21,71 @@ logger = get_logger(__name__)
 
 # Configuration via environment variables with sensible defaults
 ROUTER_ENABLED_KEY = "llm:router_enabled"  # Redis key to enable/disable
-UP_THRESHOLD = float(os.environ.get("CONTENT_ROUTER_UP_THRESHOLD", "0.75"))
-DOWN_THRESHOLD = float(os.environ.get("CONTENT_ROUTER_DOWN_THRESHOLD", "0.30"))
-LATENCY_BUDGET_MS = int(os.environ.get("CONTENT_ROUTER_LATENCY_BUDGET_MS", "50"))
-ROUTER_TYPE = os.environ.get("CONTENT_ROUTER_TYPE", "mf")
+# Default 2000ms (2s) timeout - Longformer embedding takes ~1-2s on CPU
+# For production, consider pre-computing embeddings or using GPU
+LATENCY_BUDGET_MS = int(os.environ.get("CONTENT_ROUTER_LATENCY_BUDGET_MS", "2000"))
+ROUTER_CONFIG_PATH = os.environ.get(
+    "CONTENT_ROUTER_CONFIG_PATH",
+    "/home/wyld-core/config/router/router_config.yaml"
+)
 CACHE_TTL = 300  # Cache routing decisions for 5 min (same prompt pattern)
+
+# Cost tracking constants (per 1K tokens)
+COST_PER_1K_TOKENS = {
+    ModelTier.FAST: {"input": 0.00025, "output": 0.00125},      # Haiku
+    ModelTier.BALANCED: {"input": 0.003, "output": 0.015},       # Sonnet
+    ModelTier.POWERFUL: {"input": 0.015, "output": 0.075},       # Opus
+}
 
 
 class ContentRouter:
     """
-    Content-based LLM routing using LLMRouter library.
+    Content-based LLM routing using MFRouter (LLMRouter library).
 
-    Uses a trained router model to analyze prompt complexity and
-    decide if a BALANCED request should be upgraded to POWERFUL
-    or downgraded to FAST.
+    Uses a trained matrix factorization model to analyze prompt complexity
+    and decide if a BALANCED request should be upgraded to POWERFUL
+    or downgraded to FAST. Includes cost tracking for analytics.
     """
 
     def __init__(self, redis: Any = None):
-        self._router = None  # Lazy-loaded LLMRouter instance
+        self._router = None  # Lazy-loaded MFRouter instance
         self._redis = redis
         self._enabled = os.environ.get("CONTENT_ROUTER_ENABLED", "true").lower() == "true"
-        self._up_threshold = UP_THRESHOLD
-        self._down_threshold = DOWN_THRESHOLD
         self._latency_budget_ms = LATENCY_BUDGET_MS
-        self._router_type = ROUTER_TYPE
         self._cache: dict[str, tuple[ModelTier, float]] = {}  # hash -> (tier, timestamp)
         self._circuit_breaker = get_circuit_breaker(
             "content-router",
             CircuitBreakerConfig(failure_threshold=5, timeout=30.0),
         )
+        self._cost_tracking_enabled = True
 
     def _get_router(self):
-        """Lazy-load the LLMRouter model."""
+        """Lazy-load the MFRouter model."""
         if self._router is None:
-            from llmrouter import Router
+            # Check if config path is set and exists
+            if not ROUTER_CONFIG_PATH:
+                logger.info("CONTENT_ROUTER_CONFIG_PATH not set, disabling content routing")
+                self._enabled = False
+                return None
 
-            # Use the configured router type (default: mf - matrix factorization)
-            self._router = Router(router_type=self._router_type)
+            import os.path
+            if not os.path.exists(ROUTER_CONFIG_PATH):
+                logger.info(f"Router config not found at {ROUTER_CONFIG_PATH}, disabling content routing")
+                self._enabled = False
+                return None
+
+            try:
+                from llmrouter.models.mfrouter.router import MFRouter
+                self._router = MFRouter(yaml_path=ROUTER_CONFIG_PATH)
+                logger.info(f"Loaded MFRouter from {ROUTER_CONFIG_PATH}")
+            except ImportError:
+                logger.warning("llmrouter package not installed, disabling content routing")
+                self._enabled = False
+                return None
+            except Exception as e:
+                logger.warning(f"Failed to load MFRouter, disabling content routing: {e}")
+                self._enabled = False
+                return None
         return self._router
 
     async def route(
@@ -106,31 +134,95 @@ class ContentRouter:
             return current_tier
 
     async def _do_route(self, messages: list[dict], system: str) -> ModelTier:
-        """Execute the actual routing logic."""
+        """Execute routing and track cost impact."""
         from .metrics import routing_latency_seconds
 
         start = time.monotonic()
         router = self._get_router()
 
+        # If router failed to load, return BALANCED
+        if router is None:
+            return ModelTier.BALANCED
+
         # Build the prompt text for the router
         prompt_text = self._extract_prompt_text(messages, system)
 
-        # Get routing score (0.0 = simple/FAST, 1.0 = complex/POWERFUL)
-        score = await asyncio.wait_for(
-            asyncio.to_thread(router.route, prompt_text),
+        # Use MFRouter's route_single() method for tier prediction
+        result = await asyncio.wait_for(
+            asyncio.to_thread(router.route_single, {"query": prompt_text}),
             timeout=self._latency_budget_ms / 1000,
         )
 
         elapsed_ms = (time.monotonic() - start) * 1000
         routing_latency_seconds.observe(elapsed_ms / 1000)
 
-        # Two-threshold decision
-        if score >= self._up_threshold:
-            return ModelTier.POWERFUL
-        elif score <= self._down_threshold:
-            return ModelTier.FAST
-        else:
-            return ModelTier.BALANCED  # Uncertain -> keep default
+        # Map model_name to ModelTier
+        model_name = result.get("model_name", "balanced")
+        selected_tier = self._tier_from_model_name(model_name)
+
+        # Track cost analytics
+        if self._cost_tracking_enabled:
+            # Rough token estimate: words * 1.3
+            estimated_tokens = len(prompt_text.split()) * 1.3
+            self._record_routing_cost_impact(
+                from_tier=ModelTier.BALANCED,
+                to_tier=selected_tier,
+                estimated_tokens=estimated_tokens,
+            )
+
+        return selected_tier
+
+    def _tier_from_model_name(self, model_name: str) -> ModelTier:
+        """Map MFRouter model name to ModelTier."""
+        mapping = {
+            "fast": ModelTier.FAST,
+            "balanced": ModelTier.BALANCED,
+            "powerful": ModelTier.POWERFUL,
+        }
+        return mapping.get(model_name.lower(), ModelTier.BALANCED)
+
+    def _record_routing_cost_impact(
+        self,
+        from_tier: ModelTier,
+        to_tier: ModelTier,
+        estimated_tokens: float,
+    ):
+        """Record cost savings/increase from routing decision."""
+        # Update Prometheus metrics
+        try:
+            from .metrics import (
+                routing_cost_savings_dollars,
+                routing_tokens_redirected,
+            )
+
+            baseline_cost = COST_PER_1K_TOKENS[from_tier]["input"] * estimated_tokens / 1000
+            actual_cost = COST_PER_1K_TOKENS[to_tier]["input"] * estimated_tokens / 1000
+            savings = baseline_cost - actual_cost
+
+            # Counters can only be incremented by non-negative amounts
+            if savings >= 0:
+                routing_cost_savings_dollars.labels(
+                    from_tier=from_tier.value,
+                    to_tier=to_tier.value,
+                ).inc(savings)
+
+            routing_tokens_redirected.labels(
+                to_tier=to_tier.value,
+            ).inc(estimated_tokens)
+        except Exception:
+            pass  # Metrics not critical
+
+        # Update cost analytics tracker (handles both savings and costs)
+        try:
+            from .router_training.cost_analytics import get_cost_analytics_tracker
+            tracker = get_cost_analytics_tracker()
+            tracker.record_decision(
+                from_tier=from_tier,
+                to_tier=to_tier,
+                estimated_input_tokens=estimated_tokens,
+            )
+        except Exception:
+            pass  # Analytics not critical
 
     def _extract_prompt_text(self, messages: list[dict], system: str) -> str:
         """Extract text from messages for router input."""
@@ -185,45 +277,34 @@ class ContentRouter:
                 if val is not None:
                     self._enabled = val == "1"
 
-                val = await self._redis.client.get("llm:router_up_threshold")
-                if val is not None:
-                    self._up_threshold = float(val)
-
-                val = await self._redis.client.get("llm:router_down_threshold")
-                if val is not None:
-                    self._down_threshold = float(val)
-
                 val = await self._redis.client.get("llm:router_latency_budget_ms")
                 if val is not None:
                     self._latency_budget_ms = int(val)
 
-                val = await self._redis.client.get("llm:router_type")
-                if val is not None and val != self._router_type:
-                    self._router_type = val
-                    self._router = None  # Force re-init with new type
+                val = await self._redis.client.get("llm:router_cost_tracking")
+                if val is not None:
+                    self._cost_tracking_enabled = val == "1"
             except Exception:
                 pass
 
     def update_config(
         self,
         enabled: bool | None = None,
-        up_threshold: float | None = None,
-        down_threshold: float | None = None,
         latency_budget_ms: int | None = None,
-        router_type: str | None = None,
+        cost_tracking_enabled: bool | None = None,
     ):
         """Update in-memory config (called by API after Redis write)."""
         if enabled is not None:
             self._enabled = enabled
-        if up_threshold is not None:
-            self._up_threshold = up_threshold
-        if down_threshold is not None:
-            self._down_threshold = down_threshold
         if latency_budget_ms is not None:
             self._latency_budget_ms = latency_budget_ms
-        if router_type is not None and router_type != self._router_type:
-            self._router_type = router_type
-            self._router = None  # Force re-init with new type
+        if cost_tracking_enabled is not None:
+            self._cost_tracking_enabled = cost_tracking_enabled
+
+    def reload_router(self):
+        """Force reload of the MFRouter model."""
+        self._router = None
+        logger.info("MFRouter marked for reload on next request")
 
 
 # Global singleton
