@@ -14,6 +14,7 @@ export function PreviewPanel() {
   const { activeProjectId, deployStatus } = useWorkspaceStore();
   const { projects } = useProjectStore();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [currentUrl, setCurrentUrl] = useState<string | null>(null); // Tracks iframe navigation
   const [refreshKey, setRefreshKey] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -79,14 +80,43 @@ export function PreviewPanel() {
     }
   }, [deployStatus]);
 
+  // Reset currentUrl when previewUrl changes
+  useEffect(() => {
+    setCurrentUrl(previewUrl);
+  }, [previewUrl]);
+
+  // Listen for URL changes from iframe
+  useEffect(() => {
+    if (!previewUrl) return;
+
+    const handleMessage = (event: MessageEvent) => {
+      // Validate origin matches our preview URL's origin
+      try {
+        const previewOrigin = new URL(previewUrl).origin;
+        if (event.origin !== previewOrigin) return;
+      } catch {
+        return;
+      }
+
+      // Handle url-change messages
+      if (event.data?.type === "url-change" && typeof event.data.url === "string") {
+        setCurrentUrl(event.data.url);
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [previewUrl]);
+
   const handleRefresh = () => {
     setRefreshKey((k) => k + 1);
   };
 
   const handleCopyUrl = async () => {
-    if (!previewUrl) return;
+    const urlToCopy = currentUrl || previewUrl;
+    if (!urlToCopy) return;
     try {
-      await navigator.clipboard.writeText(previewUrl);
+      await navigator.clipboard.writeText(urlToCopy);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
@@ -160,7 +190,7 @@ export function PreviewPanel() {
         <div className="flex items-center gap-1">
           <div className="flex-1 min-w-0 flex items-center gap-1 px-2 py-1 bg-background rounded border text-xs">
             <Globe className="h-3 w-3 text-muted-foreground shrink-0" />
-            <span className="truncate text-foreground font-mono">{previewUrl}</span>
+            <span className="truncate text-foreground font-mono">{currentUrl || previewUrl}</span>
           </div>
           <Button
             variant="ghost"
@@ -202,7 +232,7 @@ export function PreviewPanel() {
           </Button>
           <div className="flex-1" />
           <a
-            href={previewUrl}
+            href={currentUrl || previewUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="shrink-0"
