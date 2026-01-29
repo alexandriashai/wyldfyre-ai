@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useProjectStore } from "@/stores/project-store";
+import { useBrowserStore } from "@/stores/browser-store";
 import { domainsApi, projectsApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, ExternalLink, Globe, Copy, Check, Trash2 } from "lucide-react";
@@ -13,6 +14,7 @@ export function PreviewPanel() {
   const { token } = useAuthStore();
   const { activeProjectId, deployStatus } = useWorkspaceStore();
   const { projects } = useProjectStore();
+  const { permissions } = useBrowserStore();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [currentUrl, setCurrentUrl] = useState<string | null>(null); // Tracks iframe navigation
   const [refreshKey, setRefreshKey] = useState(0);
@@ -21,6 +23,27 @@ export function PreviewPanel() {
   const [copied, setCopied] = useState(false);
   const [clearing, setClearing] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Build iframe allow attribute based on browser permissions
+  const iframeAllowAttribute = useMemo(() => {
+    if (!activeProjectId) return "";
+    const projectPerms = permissions[activeProjectId];
+    if (!projectPerms) return "";
+
+    const allowPolicies: string[] = [];
+    if (projectPerms.geolocation) allowPolicies.push("geolocation");
+    if (projectPerms.camera) allowPolicies.push("camera");
+    if (projectPerms.microphone) allowPolicies.push("microphone");
+    if (projectPerms.clipboard) {
+      allowPolicies.push("clipboard-read");
+      allowPolicies.push("clipboard-write");
+    }
+    // Note: midi and notifications are not typically iframe feature policies
+    // but we can add fullscreen and other common ones
+    allowPolicies.push("fullscreen"); // Always allow fullscreen
+
+    return allowPolicies.join("; ");
+  }, [activeProjectId, permissions]);
 
   const fetchDomainUrl = useCallback(async () => {
     if (!token || !activeProjectId) return;
@@ -252,7 +275,8 @@ export function PreviewPanel() {
           key={refreshKey}
           src={iframeUrl}
           className="w-full h-full border-0"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+          allow={iframeAllowAttribute}
           title="Site Preview"
           onLoad={() => setIsLoading(false)}
         />

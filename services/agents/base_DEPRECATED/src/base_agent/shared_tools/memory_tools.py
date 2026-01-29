@@ -138,6 +138,22 @@ async def search_memory(
                 "description": "Importance level",
                 "default": "medium",
             },
+            "phase": {
+                "type": "string",
+                "enum": ["observe", "think", "plan", "build", "execute", "verify", "learn"],
+                "description": "PAI phase this learning relates to",
+                "default": "learn",
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["global", "project", "domain"],
+                "description": "Scope of the learning (global=everywhere, project=specific project, domain=specific site)",
+                "default": "global",
+            },
+            "project_id": {
+                "type": "string",
+                "description": "Project ID if scope is 'project'",
+            },
         },
         "required": ["content"],
     },
@@ -149,18 +165,41 @@ async def store_memory(
     tags: list[str] | None = None,
     source: str | None = None,
     importance: str = "medium",
+    phase: str = "learn",
+    scope: str = "global",
+    project_id: str | None = None,
+    _project_id: str | None = None,  # Auto-injected from agent context
+    **context,  # Accept additional context like _agent_type, _task_id
 ) -> ToolResult:
     """Store content in vector database."""
+    from datetime import datetime, timezone
+
     store = None
     try:
         store = await _get_qdrant_store(collection)
+
+        # Get agent type from context if available
+        agent_type = context.get("_agent_type", "unknown")
+
+        # Use explicit project_id if provided, otherwise fall back to context
+        effective_project_id = project_id or _project_id
 
         metadata = {
             "category": category,
             "tags": tags or [],
             "source": source,
             "importance": importance,
+            "phase": phase,
+            "scope": scope,
+            "outcome": "success",
+            "agent": agent_type,
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
+
+        # Add project_id if scope is project (or always add if available for filtering)
+        if effective_project_id:
+            metadata["project_id"] = effective_project_id
+
         # Remove None values
         metadata = {k: v for k, v in metadata.items() if v is not None}
 
@@ -175,6 +214,8 @@ async def store_memory(
             "id": doc_id,
             "collection": collection or DEFAULT_COLLECTION,
             "category": category,
+            "phase": phase,
+            "scope": scope,
         })
 
     except Exception as e:

@@ -4,6 +4,7 @@ API route modules.
 
 from .agents import router as agents_router
 from .auth import router as auth_router
+from .browser import router as browser_router
 from .chat import router as chat_router
 from .conversations import router as conversations_router
 from .domains import router as domains_router
@@ -26,6 +27,7 @@ from .telos import router as telos_router
 __all__ = [
     "agents_router",
     "auth_router",
+    "browser_router",
     "chat_router",
     "conversations_router",
     "domains_router",

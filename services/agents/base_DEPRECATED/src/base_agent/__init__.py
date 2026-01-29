@@ -54,6 +54,28 @@ from .shared_tools import (
     resource_monitor,
 )
 
+# Re-export browser debug tools
+from .browser_debug_tools import (
+    BROWSER_DEBUG_TOOLS,
+    configure_browser_tools,
+    browser_open,
+    browser_click,
+    browser_type,
+    browser_screenshot,
+    browser_get_content,
+    browser_find_elements,
+    browser_wait,
+    browser_check_auth,
+    browser_prompt_user,
+    browser_request_credentials,
+    browser_get_console_errors,
+    browser_get_network_errors,
+    browser_get_network_requests,
+    browser_evaluate,
+    browser_create_bug_task,
+    browser_create_improvement_task,
+)
+
 __version__ = "0.1.0"
 
 __all__ = [
@@ -103,4 +125,23 @@ __all__ = [
     "process_kill",
     "service_manage",
     "resource_monitor",
+    # Browser debug tools
+    "BROWSER_DEBUG_TOOLS",
+    "configure_browser_tools",
+    "browser_open",
+    "browser_click",
+    "browser_type",
+    "browser_screenshot",
+    "browser_get_content",
+    "browser_find_elements",
+    "browser_wait",
+    "browser_check_auth",
+    "browser_prompt_user",
+    "browser_request_credentials",
+    "browser_get_console_errors",
+    "browser_get_network_errors",
+    "browser_get_network_requests",
+    "browser_evaluate",
+    "browser_create_bug_task",
+    "browser_create_improvement_task",
 ]

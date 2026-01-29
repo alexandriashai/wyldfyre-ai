@@ -42,6 +42,9 @@ async def _scan_user_plans(redis: RedisClient, user_id: str) -> list[dict]:
     while True:
         cursor, keys = await redis.scan(cursor=cursor, match="plan:*", count=100)
         for key in keys:
+            # Skip history keys (they are LISTs, not strings)
+            if ":history" in key:
+                continue
             plan_data = await redis.get(key)
             if plan_data:
                 try:

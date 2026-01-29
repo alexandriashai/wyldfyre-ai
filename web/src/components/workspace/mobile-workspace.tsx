@@ -1,14 +1,16 @@
 "use client";
 
 import { useWorkspaceStore } from "@/stores/workspace-store";
+import { useBrowserStore } from "@/stores/browser-store";
 import { FileTreePanel } from "./panels/file-tree-panel";
 import { EditorPanel } from "./panels/editor-panel";
 import { PreviewPanel } from "./preview/preview-panel";
 import { WorkspaceChatPanel } from "./chat-panel";
 import { TerminalPanel } from "./panels/terminal-panel";
 import { GitPanel } from "./panels/git-panel";
+import { ChatBrowserPanel } from "@/components/chat/chat-browser-panel";
 import { cn } from "@/lib/utils";
-import { Files, Code2, Monitor, MessageSquare, Terminal, GitBranch } from "lucide-react";
+import { Files, Code2, Monitor, MessageSquare, Terminal, GitBranch, Globe } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 interface MobileWorkspaceProps {
@@ -22,11 +24,13 @@ const tabs = [
   { id: "editor" as const, icon: Code2, label: "Editor" },
   { id: "git" as const, icon: GitBranch, label: "Git" },
   { id: "terminal" as const, icon: Terminal, label: "Term" },
+  { id: "browser" as const, icon: Globe, label: "Debug" },
   { id: "chat" as const, icon: MessageSquare, label: "Chat" },
 ];
 
 export function MobileWorkspace({ onFileOpen, onRefresh, onSave }: MobileWorkspaceProps) {
   const { mobileActiveTab, setMobileActiveTab, openFiles, gitStatus, activeProjectId } = useWorkspaceStore();
+  const { isConnected: isBrowserConnected } = useBrowserStore();
 
   // Calculate git change count for indicator
   const gitChangeCount = (gitStatus?.staged?.length || 0) +
@@ -55,6 +59,9 @@ export function MobileWorkspace({ onFileOpen, onRefresh, onSave }: MobileWorkspa
         {mobileActiveTab === "terminal" && (
           <TerminalPanel alwaysShow isMobileView />
         )}
+        {mobileActiveTab === "browser" && (
+          <ChatBrowserPanel />
+        )}
         {mobileActiveTab === "chat" && (
           <WorkspaceChatPanel />
         )}
@@ -67,6 +74,7 @@ export function MobileWorkspace({ onFileOpen, onRefresh, onSave }: MobileWorkspa
           const isActive = mobileActiveTab === tab.id;
           const hasEditorIndicator = tab.id === "editor" && openFiles.some((f) => f.isDirty);
           const hasGitIndicator = tab.id === "git" && gitChangeCount > 0;
+          const hasBrowserIndicator = tab.id === "browser" && isBrowserConnected;
 
           return (
             <button
@@ -88,6 +96,9 @@ export function MobileWorkspace({ onFileOpen, onRefresh, onSave }: MobileWorkspa
               <span className="text-[10px]">{tab.label}</span>
               {hasEditorIndicator && (
                 <span className="absolute top-1.5 right-1/3 h-1.5 w-1.5 rounded-full bg-amber-500" />
+              )}
+              {hasBrowserIndicator && (
+                <span className="absolute top-1.5 right-1/3 h-1.5 w-1.5 rounded-full bg-green-500" />
               )}
             </button>
           );

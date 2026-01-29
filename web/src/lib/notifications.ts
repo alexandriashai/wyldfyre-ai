@@ -310,7 +310,7 @@ export async function registerPushSubscription(
     keys: { p256dh: string; auth: string };
   }
 ): Promise<boolean> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8010";
 
   try {
     const response = await fetch(`${apiUrl}/api/notifications/subscribe`, {
@@ -336,7 +336,7 @@ export async function unregisterPushSubscription(
   token: string,
   endpoint: string
 ): Promise<boolean> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8010";
 
   try {
     const response = await fetch(`${apiUrl}/api/notifications/unsubscribe`, {

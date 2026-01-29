@@ -27,6 +27,14 @@ class ModelTier(str, Enum):
     POWERFUL = "powerful"  # opus / gpt-5.2
 
 
+class PromptTier(str, Enum):
+    """Prompt complexity tiers for dynamic prompt sizing."""
+
+    MINIMAL = "minimal"    # ~500 tokens: Core instructions only
+    STANDARD = "standard"  # ~2K tokens: Core + common scenarios
+    FULL = "full"          # ~5K+ tokens: Everything including edge cases
+
+
 # Model names for each provider at each tier
 TIER_MODELS: dict[LLMProviderType, dict[ModelTier, str]] = {
     LLMProviderType.ANTHROPIC: {

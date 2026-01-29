@@ -5,17 +5,20 @@ Analyzes prompt content to refine tier selection beyond structural heuristics.
 Only invoked for BALANCED-tier requests (the uncertain middle ground).
 Uses MFRouter's matrix factorization model to predict the optimal tier
 based on learned query complexity patterns.
+
+Also provides prompt tier classification for dynamic prompt sizing.
 """
 
 import asyncio
 import hashlib
 import os
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from .circuit_breaker import CircuitBreaker, CircuitBreakerConfig, get_circuit_breaker
 from .logging import get_logger
-from .model_selector import ModelTier
+from .model_selector import ModelTier, PromptTier
 
 logger = get_logger(__name__)
 
@@ -29,6 +32,20 @@ ROUTER_CONFIG_PATH = os.environ.get(
     "/home/wyld-core/config/router/router_config.yaml"
 )
 CACHE_TTL = 300  # Cache routing decisions for 5 min (same prompt pattern)
+
+
+@dataclass
+class RoutingResult:
+    """Result of content routing including both model and prompt tiers."""
+
+    model_tier: ModelTier
+    prompt_tier: PromptTier
+    from_cache: bool = False
+
+    def __iter__(self):
+        """Allow tuple unpacking: model_tier, prompt_tier = result"""
+        return iter((self.model_tier, self.prompt_tier))
+
 
 # Cost tracking constants (per 1K tokens)
 COST_PER_1K_TOKENS = {
@@ -132,6 +149,59 @@ class ContentRouter:
                 from_tier="balanced", to_tier="fallback"
             ).inc()
             return current_tier
+
+    async def route_with_prompt_tier(
+        self,
+        messages: list[dict],
+        system: str = "",
+        current_tier: ModelTier = ModelTier.BALANCED,
+        tools_count: int = 0,
+    ) -> RoutingResult:
+        """
+        Route request and determine both model tier and prompt tier.
+
+        This method combines model routing with prompt tier classification
+        for maximum cost optimization.
+
+        Args:
+            messages: Conversation messages
+            system: System prompt text
+            current_tier: Initial model tier from structural analysis
+            tools_count: Number of tools available
+
+        Returns:
+            RoutingResult with model_tier and prompt_tier
+        """
+        from .prompt_tier import classify_prompt_tier
+
+        # Get model tier (using existing routing)
+        model_tier = await self.route(messages, system, current_tier)
+
+        # Classify prompt tier based on request complexity
+        has_context = len(messages) > 2
+        prompt_tier, _category = classify_prompt_tier(
+            messages, tools_count, has_context
+        )
+
+        # Align prompt tier with model tier for consistency
+        # FAST model should use MINIMAL prompt, POWERFUL should allow FULL
+        if model_tier == ModelTier.FAST and prompt_tier != PromptTier.MINIMAL:
+            prompt_tier = PromptTier.MINIMAL
+        elif model_tier == ModelTier.POWERFUL and prompt_tier == PromptTier.MINIMAL:
+            prompt_tier = PromptTier.STANDARD  # Don't use minimal with powerful model
+
+        logger.debug(
+            "Routed request with prompt tier",
+            model_tier=model_tier.value,
+            prompt_tier=prompt_tier.value,
+            tools_count=tools_count,
+        )
+
+        return RoutingResult(
+            model_tier=model_tier,
+            prompt_tier=prompt_tier,
+            from_cache=False,
+        )
 
     async def _do_route(self, messages: list[dict], system: str) -> ModelTier:
         """Execute routing and track cost impact."""

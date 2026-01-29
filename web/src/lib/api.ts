@@ -6,7 +6,7 @@
 
 import { getToken, setToken, getRefreshToken, setRefreshToken, isTokenExpired, removeToken } from './auth';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8010';
 
 // Token refresh state to prevent concurrent refresh attempts
 let refreshPromise: Promise<string | null> | null = null;

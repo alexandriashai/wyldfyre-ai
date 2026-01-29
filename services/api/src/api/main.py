@@ -20,6 +20,7 @@ from .middleware import LoggingMiddleware, RateLimitMiddleware
 from .routes import (
     agents_router,
     auth_router,
+    browser_router,
     chat_router,
     containers_router,
     conversations_router,
@@ -39,6 +40,7 @@ from .routes import (
     usage_router,
     workspace_router,
 )
+from .websocket.browser import router as browser_ws_router
 from .websocket.handlers import AgentResponseHandler
 from .websocket.manager import get_connection_manager
 from .websocket.terminal import router as terminal_router
@@ -177,8 +179,10 @@ def create_app() -> FastAPI:
     app.include_router(github_router, prefix="/api")  # GitHub integration
     app.include_router(plans_router, prefix="/api")  # Plan CRUD management
     app.include_router(telos_router, prefix="/api")  # TELOS mission/beliefs/wizard
+    app.include_router(browser_router, prefix="/api")  # Browser debug routes
     app.include_router(chat_router)  # WebSocket at root level
     app.include_router(terminal_router)  # Terminal WebSocket
+    app.include_router(browser_ws_router)  # Browser WebSocket
 
     # Prometheus metrics endpoint
     @app.get("/metrics", include_in_schema=False)

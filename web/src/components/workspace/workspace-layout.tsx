@@ -45,17 +45,13 @@ export function WorkspaceLayout() {
     branchChangeCounter,
   } = useWorkspaceStore();
 
-  // Initialize active project
+  // Always sync activeProjectId with selectedProject from sidebar
   useEffect(() => {
-    if (!activeProjectId && selectedProject) {
-      setActiveProject(selectedProject.id);
-    } else if (!activeProjectId && projects.length > 0) {
-      const activeProjects = projects.filter((p) => p.status === "active");
-      if (activeProjects.length > 0) {
-        setActiveProject(activeProjects[0].id);
-      }
+    const newProjectId = selectedProject?.id || null;
+    if (activeProjectId !== newProjectId) {
+      setActiveProject(newProjectId);
     }
-  }, [activeProjectId, selectedProject, projects, setActiveProject]);
+  }, [selectedProject?.id, activeProjectId, setActiveProject]);
 
   // Fetch file tree when project changes or branch changes
   useEffect(() => {

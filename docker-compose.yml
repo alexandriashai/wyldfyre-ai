@@ -322,6 +322,39 @@ services:
       retries: 3
       start_period: 20s
 
+  browser:
+    build:
+      context: .
+      dockerfile: services/browser/Dockerfile
+    container_name: ai-browser
+    restart: unless-stopped
+    ports:
+      - "${BROWSER_SERVICE_PORT:-8002}:8002"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - BROWSER_HEADLESS=true
+      - BROWSER_STREAM_FPS=10
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - ai-backend
+      - ai-frontend  # For external URL access
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   # =============================================================================
   # Integration Services
   # =============================================================================

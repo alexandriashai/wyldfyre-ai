@@ -136,7 +136,7 @@ async def search_memory(
                     "score": r.get("score", 0),
                     "phase": r.get("metadata", {}).get("phase"),
                     "category": r.get("metadata", {}).get("category"),
-                    "agent": r.get("metadata", {}).get("agent"),
+                    "agent": r.get("metadata", {}).get("agent") or r.get("metadata", {}).get("agent_type"),
                     "scope": r.get("metadata", {}).get("scope", "global"),
                     "tags": r.get("metadata", {}).get("tags", []),  # Tags for filtering
                     "created_at": r.get("metadata", {}).get("created_at"),
@@ -265,7 +265,7 @@ async def list_learnings(
                     "phase": r.get("metadata", {}).get("phase"),
                     "category": r.get("metadata", {}).get("category"),
                     "outcome": r.get("metadata", {}).get("outcome", "success"),
-                    "agent": r.get("metadata", {}).get("agent"),
+                    "agent": r.get("metadata", {}).get("agent") or r.get("metadata", {}).get("agent_type"),
                     "scope": r.get("metadata", {}).get("scope", "global"),
                     "project_id": r.get("metadata", {}).get("project_id"),
                     "domain_id": r.get("metadata", {}).get("domain_id"),

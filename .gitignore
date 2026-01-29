@@ -137,3 +137,4 @@ dump.rdb
 
 # Qdrant data (local dev)
 qdrant_storage/
+LLMRouter/

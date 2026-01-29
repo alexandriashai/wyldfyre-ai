@@ -2,19 +2,13 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useAuthStore } from "@/stores/auth-store";
+import { useProjectStore } from "@/stores/project-store";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -50,11 +44,6 @@ interface TelosFile {
   last_modified: string | null;
 }
 
-interface Project {
-  id: string;
-  name: string;
-}
-
 interface WizardMessage {
   role: "user" | "assistant";
   content: string;
@@ -76,6 +65,7 @@ const FILE_DESCRIPTIONS: Record<string, string> = {
 
 export function TelosSettings() {
   const { token } = useAuthStore();
+  const { projects, selectedProject: globalSelectedProject, fetchProjects } = useProjectStore();
   const [files, setFiles] = useState<TelosFile[]>([]);
   const [selectedFile, setSelectedFile] = useState<string>("MISSION.md");
   const [fileContent, setFileContent] = useState<string>("");
@@ -84,10 +74,11 @@ export function TelosSettings() {
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  // Project selection
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  // Scope determines if we're editing system or project TELOS
   const [scope, setScope] = useState<"system" | "project">("system");
+
+  // Use the globally selected project from sidebar
+  const selectedProjectId = globalSelectedProject?.id || null;
 
   // Wizard state
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -104,7 +95,7 @@ export function TelosSettings() {
     const fetchFiles = async () => {
       setIsLoading(true);
       try {
-        const projectParam = scope === "project" && selectedProject ? `?project_id=${selectedProject}` : "";
+        const projectParam = scope === "project" && selectedProjectId ? `?project_id=${selectedProjectId}` : "";
         const res = await fetch(`${API_BASE}/api/telos/files${projectParam}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -120,28 +111,14 @@ export function TelosSettings() {
     };
 
     fetchFiles();
-  }, [token, scope, selectedProject]);
+  }, [token, scope, selectedProjectId]);
 
-  // Fetch projects list
+  // Ensure projects are loaded
   useEffect(() => {
-    if (!token) return;
-
-    const fetchProjects = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/projects`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setProjects(data.projects || []);
-        }
-      } catch (error) {
-        console.error("Failed to fetch projects:", error);
-      }
-    };
-
-    fetchProjects();
-  }, [token]);
+    if (token && projects.length === 0) {
+      fetchProjects(token);
+    }
+  }, [token, projects.length, fetchProjects]);
 
   // Fetch file content when selected file changes
   useEffect(() => {
@@ -150,7 +127,7 @@ export function TelosSettings() {
     const fetchContent = async () => {
       setIsLoading(true);
       try {
-        const projectParam = scope === "project" && selectedProject ? `?project_id=${selectedProject}` : "";
+        const projectParam = scope === "project" && selectedProjectId ? `?project_id=${selectedProjectId}` : "";
         const res = await fetch(`${API_BASE}/api/telos/file/${selectedFile}${projectParam}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -167,7 +144,7 @@ export function TelosSettings() {
     };
 
     fetchContent();
-  }, [token, selectedFile, scope, selectedProject]);
+  }, [token, selectedFile, scope, selectedProjectId]);
 
   // Scroll wizard messages
   useEffect(() => {
@@ -188,7 +165,7 @@ export function TelosSettings() {
         },
         body: JSON.stringify({
           content: fileContent,
-          project_id: scope === "project" ? selectedProject : null,
+          project_id: scope === "project" ? selectedProjectId : null,
         }),
       });
 
@@ -207,9 +184,7 @@ export function TelosSettings() {
   };
 
   const startWizard = () => {
-    const projectName = selectedProject
-      ? projects.find((p) => p.id === selectedProject)?.name
-      : null;
+    const projectName = globalSelectedProject?.name || null;
 
     setWizardMessages([
       {
@@ -233,9 +208,7 @@ export function TelosSettings() {
     setWizardLoading(true);
 
     try {
-      const projectName = selectedProject
-        ? projects.find((p) => p.id === selectedProject)?.name
-        : null;
+      const projectName = globalSelectedProject?.name || null;
 
       const res = await fetch(`${API_BASE}/api/telos/wizard/chat`, {
         method: "POST",
@@ -246,7 +219,7 @@ export function TelosSettings() {
         body: JSON.stringify({
           messages: [...wizardMessages, { role: "user", content: userMessage }],
           target_file: selectedFile.replace(".md", ""),
-          project_id: scope === "project" ? selectedProject : null,
+          project_id: scope === "project" ? selectedProjectId : null,
           project_name: projectName,
         }),
       });
@@ -297,7 +270,7 @@ export function TelosSettings() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-col sm:flex-row gap-4">
+          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
             <div className="flex-1">
               <Tabs value={scope} onValueChange={(v) => setScope(v as "system" | "project")}>
                 <TabsList className="grid w-full grid-cols-2">
@@ -305,7 +278,7 @@ export function TelosSettings() {
                     <Target className="h-4 w-4 mr-2" />
                     System
                   </TabsTrigger>
-                  <TabsTrigger value="project">
+                  <TabsTrigger value="project" disabled={!globalSelectedProject}>
                     <FolderOpen className="h-4 w-4 mr-2" />
                     Project
                   </TabsTrigger>
@@ -313,19 +286,16 @@ export function TelosSettings() {
               </Tabs>
             </div>
 
-            {scope === "project" && (
-              <Select value={selectedProject || ""} onValueChange={setSelectedProject}>
-                <SelectTrigger className="w-full sm:w-[200px]">
-                  <SelectValue placeholder="Select project" />
-                </SelectTrigger>
-                <SelectContent>
-                  {projects.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            {scope === "project" && globalSelectedProject && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-muted text-sm">
+                <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">{globalSelectedProject.name}</span>
+              </div>
+            )}
+            {scope === "project" && !globalSelectedProject && (
+              <p className="text-sm text-muted-foreground">
+                Select a project from the sidebar to configure project-specific TELOS
+              </p>
             )}
           </div>
         </CardContent>
@@ -468,7 +438,7 @@ export function TelosSettings() {
             <DialogDescription>
               {scope === "system"
                 ? "I'll help you articulate your organization's core context"
-                : `Setting up project-specific context for ${projects.find((p) => p.id === selectedProject)?.name || "this project"}`}
+                : `Setting up project-specific context for ${globalSelectedProject?.name || "this project"}`}
             </DialogDescription>
           </DialogHeader>
 

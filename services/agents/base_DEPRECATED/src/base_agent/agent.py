@@ -104,6 +104,9 @@ class AgentState:
     # Context for action publishing
     current_user_id: str | None = None
     current_conversation_id: str | None = None
+    current_project_id: str | None = None
+    # Task control state
+    _cancelled: bool = False
 
 
 class BaseAgent(ABC):
@@ -280,6 +283,12 @@ class BaseAgent(ABC):
             self._handle_task_message,
         )
 
+        # Subscribe to task control messages (cancel, pause, resume)
+        await self._pubsub.subscribe(
+            "agent:task_control",
+            self._handle_task_control,
+        )
+
         # Start heartbeat
         self._running = True
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -333,11 +342,16 @@ class BaseAgent(ABC):
         self._state.current_task_id = task_id
         agent_active_tasks.labels(agent_type=self.agent_type.value).inc()
 
+        # Reset cancellation flag for new task
+        self._reset_cancellation()
+
         # Set context for action publishing
         user_id = request.user_id or request.payload.get("user_id")
         conversation_id = request.payload.get("conversation_id")
+        project_id = request.payload.get("project_id")
         self._state.current_user_id = user_id
         self._state.current_conversation_id = conversation_id
+        self._state.current_project_id = project_id
 
         # Send status update to WebSocket clients
         if user_id and self._pubsub:
@@ -565,6 +579,15 @@ class BaseAgent(ABC):
         while iterations < iteration_limit:
             iterations += 1
 
+            # Check for task cancellation
+            if self.is_task_cancelled():
+                logger.info("Task cancelled by user", task_id=task_id, iterations=iterations)
+                return {
+                    "response": "Task cancelled by user.",
+                    "iterations": iterations,
+                    "cancelled": True,
+                }
+
             # Build messages for API
             messages = self._build_api_messages()
 
@@ -632,7 +655,7 @@ class BaseAgent(ABC):
                             ).model_dump_json(),
                         )
 
-                    # Execute tool with context (memory, agent type, task id)
+                    # Execute tool with context (memory, agent type, task id, project id)
                     result = await self._tool_registry.execute(
                         tool_name,
                         tool_input,
@@ -641,6 +664,7 @@ class BaseAgent(ABC):
                             "_memory": self._memory,
                             "_agent_type": self.agent_type.value,
                             "_task_id": task_id,
+                            "_project_id": self._state.current_project_id,
                             "_agent": self,  # Pass agent for action publishing
                         },
                     )
@@ -1029,6 +1053,35 @@ class BaseAgent(ABC):
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
+
+    # Task cancellation support
+    def is_task_cancelled(self) -> bool:
+        """Check if the current task has been cancelled by the user."""
+        return self._state._cancelled
+
+    def _reset_cancellation(self) -> None:
+        """Reset the cancellation flag for a new task."""
+        self._state._cancelled = False
+
+    async def _handle_task_control(self, message: str) -> None:
+        """Handle task control messages (cancel, pause, resume)."""
+        import json
+        try:
+            data = json.loads(message)
+            action = data.get("action")
+            target_conversation_id = data.get("conversation_id")
+
+            # Only process if it's for our current conversation
+            if target_conversation_id == self._state.current_conversation_id:
+                if action == "cancel":
+                    self._state._cancelled = True
+                    logger.info(
+                        "Task cancellation requested",
+                        agent=self.name,
+                        conversation_id=target_conversation_id,
+                    )
+        except Exception as e:
+            logger.warning("Failed to handle task control message", error=str(e))
 
     # Hooks for subclasses
     async def on_task_start(self, request: TaskRequest) -> None:

@@ -5,6 +5,20 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useProjectStore } from "@/stores/project-store";
 import { useToast } from "@/hooks/useToast";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Save,
   FolderOpen,
@@ -22,8 +36,12 @@ import {
   AlertTriangle,
   FileCode,
   TestTube,
+  Loader2,
+  Settings,
+  Target,
 } from "lucide-react";
 import { GitHubProjectSettingsCard } from "@/components/workspace/github-project-settings";
+import { ProjectTelosSettings } from "@/components/settings/project-telos-settings";
 import { cn } from "@/lib/utils";
 
 const PROJECT_TYPES = [
@@ -203,548 +221,630 @@ export default function WorkspaceSettingsPage() {
     }
   };
 
+  if (!selectedProject) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center p-6">
+        <div className="text-center space-y-2">
+          <FolderOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+          <h2 className="text-lg font-medium">No Project Selected</h2>
+          <p className="text-sm text-muted-foreground">
+            Select a project from the sidebar to view its settings
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-full p-6 overflow-y-auto">
-      <h1 className="text-2xl font-semibold mb-6">Project Settings</h1>
+    <div className="p-4 sm:p-6 max-w-4xl mx-auto overflow-y-auto h-full">
+      <div className="mb-6">
+        <h1 className="text-xl sm:text-2xl font-bold">Project Settings</h1>
+        <p className="text-sm sm:text-base text-muted-foreground">
+          Configure settings for {selectedProject.name}
+        </p>
+      </div>
 
-      <div className="space-y-8 max-w-2xl">
-        {/* Basic Settings */}
-        <section className="space-y-4">
-          <h2 className="text-lg font-medium border-b pb-2">General</h2>
+      <Tabs defaultValue="general" className="space-y-6">
+        <TabsList className="w-full sm:w-auto flex-wrap h-auto gap-1 p-1">
+          <TabsTrigger value="general" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+            <Settings className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span className="hidden sm:inline">General</span>
+          </TabsTrigger>
+          <TabsTrigger value="docker" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+            <Container className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span className="hidden sm:inline">Docker</span>
+          </TabsTrigger>
+          <TabsTrigger value="quality" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+            <Shield className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span className="hidden sm:inline">Quality</span>
+          </TabsTrigger>
+          <TabsTrigger value="telos" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+            <Target className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span className="hidden sm:inline">TELOS</span>
+          </TabsTrigger>
+          <TabsTrigger value="github" className="flex-1 sm:flex-initial gap-1.5 text-xs sm:text-sm px-2 sm:px-3">
+            <Github className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span className="hidden sm:inline">GitHub</span>
+          </TabsTrigger>
+        </TabsList>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Project Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-              placeholder="My Project"
-            />
-          </div>
+        {/* General Tab */}
+        <TabsContent value="general" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Project Information</CardTitle>
+              <CardDescription>Basic project details and paths</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="name">Project Name</Label>
+                <Input
+                  id="name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="My Project"
+                />
+              </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium flex items-center gap-2">
-              <FolderOpen className="h-4 w-4" />
-              Root Path
-            </label>
-            <input
-              type="text"
-              value={rootPath}
-              onChange={(e) => setRootPath(e.target.value)}
-              className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
-              placeholder="/home/projects/my-site"
-            />
-            <p className="text-xs text-muted-foreground">
-              The filesystem path where project files are stored.
-            </p>
-          </div>
+              <div className="space-y-2">
+                <Label htmlFor="rootPath" className="flex items-center gap-2">
+                  <FolderOpen className="h-4 w-4" />
+                  Root Path
+                </Label>
+                <Input
+                  id="rootPath"
+                  value={rootPath}
+                  onChange={(e) => setRootPath(e.target.value)}
+                  className="font-mono"
+                  placeholder="/home/projects/my-site"
+                />
+                <p className="text-xs text-muted-foreground">
+                  The filesystem path where project files are stored
+                </p>
+              </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium flex items-center gap-2">
-              <Globe className="h-4 w-4" />
-              Primary URL
-            </label>
-            <input
-              type="text"
-              value={primaryUrl}
-              onChange={(e) => setPrimaryUrl(e.target.value)}
-              className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-              placeholder="https://mysite.com"
-            />
-          </div>
-        </section>
+              <div className="space-y-2">
+                <Label htmlFor="primaryUrl" className="flex items-center gap-2">
+                  <Globe className="h-4 w-4" />
+                  Primary URL
+                </Label>
+                <Input
+                  id="primaryUrl"
+                  value={primaryUrl}
+                  onChange={(e) => setPrimaryUrl(e.target.value)}
+                  placeholder="https://mysite.com"
+                />
+              </div>
 
-        {/* Docker Settings */}
-        <section className="space-y-4">
-          <h2 className="text-lg font-medium border-b pb-2 flex items-center gap-2">
-            <Container className="h-5 w-5" />
-            Docker Environment
-          </h2>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setDockerEnabled(!dockerEnabled)}
-              className={cn(
-                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
-                dockerEnabled ? "bg-primary" : "bg-muted"
+              {!dockerEnabled && (
+                <div className="space-y-2">
+                  <Label htmlFor="terminalUser" className="flex items-center gap-2">
+                    <Terminal className="h-4 w-4" />
+                    Terminal User
+                  </Label>
+                  <Input
+                    id="terminalUser"
+                    value={terminalUser}
+                    onChange={(e) => setTerminalUser(e.target.value)}
+                    className="font-mono"
+                    placeholder="e.g., project-www"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    System user for terminal sessions. Enable Docker for better isolation.
+                  </p>
+                </div>
               )}
-            >
-              <span
-                className={cn(
-                  "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
-                  dockerEnabled ? "translate-x-6" : "translate-x-1"
+
+              <Separator className="my-4" />
+
+              <Button onClick={handleSave} disabled={isSaving}>
+                {isSaving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save className="h-4 w-4 mr-2" />
+                    Save Changes
+                  </>
                 )}
-              />
-            </button>
-            <span className="text-sm font-medium">
-              Enable Docker isolation
-            </span>
-          </div>
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Docker Tab */}
+        <TabsContent value="docker" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Docker Environment</CardTitle>
+              <CardDescription>Isolated container environment for your project</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Enable Docker Isolation</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Run your project in an isolated Docker container
+                  </p>
+                </div>
+                <Switch checked={dockerEnabled} onCheckedChange={setDockerEnabled} />
+              </div>
+            </CardContent>
+          </Card>
 
           {dockerEnabled && (
-            <div className="space-y-4 pl-4 border-l-2 border-primary/20">
-              {/* Container Status */}
-              <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
-                <div className="flex items-center gap-2">
-                  <div
-                    className={cn(
-                      "h-2.5 w-2.5 rounded-full",
-                      containerStatus === "running"
-                        ? "bg-green-500"
-                        : containerStatus === "stopped"
-                        ? "bg-yellow-500"
-                        : "bg-gray-400"
-                    )}
-                  />
-                  <span className="text-sm">
-                    Container: {containerStatus || "Not created"}
-                  </span>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleContainerAction("start")}
-                    disabled={isContainerAction || containerStatus === "running"}
-                  >
-                    <Play className="h-3.5 w-3.5 mr-1" />
-                    Start
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleContainerAction("stop")}
-                    disabled={isContainerAction || containerStatus !== "running"}
-                  >
-                    <Square className="h-3.5 w-3.5 mr-1" />
-                    Stop
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleContainerAction("rebuild")}
-                    disabled={isContainerAction}
-                  >
-                    <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                    Rebuild
-                  </Button>
-                </div>
-              </div>
+            <>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Container Status</CardTitle>
+                  <CardDescription>Manage your Docker container</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                    <div className="flex items-center gap-2">
+                      <div
+                        className={cn(
+                          "h-2.5 w-2.5 rounded-full",
+                          containerStatus === "running"
+                            ? "bg-green-500"
+                            : containerStatus === "stopped"
+                            ? "bg-yellow-500"
+                            : "bg-gray-400"
+                        )}
+                      />
+                      <span className="text-sm">
+                        Status: {containerStatus || "Not created"}
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleContainerAction("start")}
+                        disabled={isContainerAction || containerStatus === "running"}
+                      >
+                        <Play className="h-3.5 w-3.5 mr-1" />
+                        Start
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleContainerAction("stop")}
+                        disabled={isContainerAction || containerStatus !== "running"}
+                      >
+                        <Square className="h-3.5 w-3.5 mr-1" />
+                        Stop
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleContainerAction("rebuild")}
+                        disabled={isContainerAction}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                        Rebuild
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
 
-              {/* Project Type */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Project Type</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {PROJECT_TYPES.map((type) => (
-                    <button
-                      key={type.value}
-                      type="button"
-                      onClick={() => setDockerProjectType(type.value)}
-                      className={cn(
-                        "p-3 rounded-lg border text-left transition-colors",
-                        dockerProjectType === type.value
-                          ? "border-primary bg-primary/5"
-                          : "border-muted hover:border-primary/50"
-                      )}
-                    >
-                      <div className="font-medium text-sm">{type.label}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {type.description}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Project Type</CardTitle>
+                  <CardDescription>Select your project's technology stack</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-3">
+                    {PROJECT_TYPES.map((type) => (
+                      <button
+                        key={type.value}
+                        type="button"
+                        onClick={() => setDockerProjectType(type.value)}
+                        className={cn(
+                          "p-3 rounded-lg border text-left transition-colors",
+                          dockerProjectType === type.value
+                            ? "border-primary bg-primary/5 ring-1 ring-primary"
+                            : "border-muted hover:border-primary/50"
+                        )}
+                      >
+                        <div className="font-medium text-sm">{type.label}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {type.description}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Runtime Configuration</CardTitle>
+                  <CardDescription>Version and resource settings</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    {dockerProjectType === "node" && (
+                      <div className="space-y-2">
+                        <Label>Node.js Version</Label>
+                        <Select value={dockerNodeVersion} onValueChange={setDockerNodeVersion}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {NODE_VERSIONS.map((v) => (
+                              <SelectItem key={v} value={v}>Node {v}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
+                    )}
 
-              {/* Version Selection */}
-              <div className="grid grid-cols-3 gap-4">
-                {dockerProjectType === "node" && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Node.js Version</label>
-                    <select
-                      value={dockerNodeVersion}
-                      onChange={(e) => setDockerNodeVersion(e.target.value)}
-                      className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-                    >
-                      {NODE_VERSIONS.map((v) => (
-                        <option key={v} value={v}>
-                          Node {v}
-                        </option>
-                      ))}
-                    </select>
+                    {dockerProjectType === "php" && (
+                      <div className="space-y-2">
+                        <Label>PHP Version</Label>
+                        <Select value={dockerPhpVersion} onValueChange={setDockerPhpVersion}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {PHP_VERSIONS.map((v) => (
+                              <SelectItem key={v} value={v}>PHP {v}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    {dockerProjectType === "python" && (
+                      <div className="space-y-2">
+                        <Label>Python Version</Label>
+                        <Select value={dockerPythonVersion} onValueChange={setDockerPythonVersion}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {PYTHON_VERSIONS.map((v) => (
+                              <SelectItem key={v} value={v}>Python {v}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      <Label className="flex items-center gap-1">
+                        <HardDrive className="h-3.5 w-3.5" />
+                        Memory Limit
+                      </Label>
+                      <Select value={dockerMemoryLimit} onValueChange={setDockerMemoryLimit}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {MEMORY_OPTIONS.map((v) => (
+                            <SelectItem key={v} value={v}>{v}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="flex items-center gap-1">
+                        <Cpu className="h-3.5 w-3.5" />
+                        CPU Cores
+                      </Label>
+                      <Select value={dockerCpuLimit} onValueChange={setDockerCpuLimit}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {CPU_OPTIONS.map((v) => (
+                            <SelectItem key={v} value={v}>{v} cores</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
-                )}
 
-                {dockerProjectType === "php" && (
+                  <Separator />
+
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">PHP Version</label>
-                    <select
-                      value={dockerPhpVersion}
-                      onChange={(e) => setDockerPhpVersion(e.target.value)}
-                      className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-                    >
-                      {PHP_VERSIONS.map((v) => (
-                        <option key={v} value={v}>
-                          PHP {v}
-                        </option>
-                      ))}
-                    </select>
+                    <Label>Exposed Ports</Label>
+                    <Input
+                      value={dockerExposePorts}
+                      onChange={(e) => setDockerExposePorts(e.target.value)}
+                      className="font-mono"
+                      placeholder="3000, 8080, 5432"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Comma-separated list of ports to expose from the container
+                    </p>
                   </div>
-                )}
 
-                {dockerProjectType === "python" && (
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Python Version</label>
-                    <select
-                      value={dockerPythonVersion}
-                      onChange={(e) => setDockerPythonVersion(e.target.value)}
-                      className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-                    >
-                      {PYTHON_VERSIONS.map((v) => (
-                        <option key={v} value={v}>
-                          Python {v}
-                        </option>
-                      ))}
-                    </select>
+                    <Label>Environment Variables</Label>
+                    <textarea
+                      value={dockerEnvVars}
+                      onChange={(e) => setDockerEnvVars(e.target.value)}
+                      className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono h-24 resize-none"
+                      placeholder="DATABASE_URL=postgres://...&#10;API_KEY=xxx"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      One per line: KEY=value. These are injected into the container.
+                    </p>
                   </div>
-                )}
 
-                <div className="space-y-2">
-                  <label className="text-sm font-medium flex items-center gap-1">
-                    <HardDrive className="h-3.5 w-3.5" />
-                    Memory
-                  </label>
-                  <select
-                    value={dockerMemoryLimit}
-                    onChange={(e) => setDockerMemoryLimit(e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-                  >
-                    {MEMORY_OPTIONS.map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                  <Separator className="my-4" />
 
-                <div className="space-y-2">
-                  <label className="text-sm font-medium flex items-center gap-1">
-                    <Cpu className="h-3.5 w-3.5" />
-                    CPU Cores
-                  </label>
-                  <select
-                    value={dockerCpuLimit}
-                    onChange={(e) => setDockerCpuLimit(e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border bg-background text-sm"
-                  >
-                    {CPU_OPTIONS.map((v) => (
-                      <option key={v} value={v}>
-                        {v} cores
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Exposed Ports */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Exposed Ports</label>
-                <input
-                  type="text"
-                  value={dockerExposePorts}
-                  onChange={(e) => setDockerExposePorts(e.target.value)}
-                  className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
-                  placeholder="3000, 8080, 5432"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Comma-separated list of ports to expose from the container.
-                </p>
-              </div>
-
-              {/* Environment Variables */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Environment Variables</label>
-                <textarea
-                  value={dockerEnvVars}
-                  onChange={(e) => setDockerEnvVars(e.target.value)}
-                  className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono h-24"
-                  placeholder="DATABASE_URL=postgres://...&#10;API_KEY=xxx"
-                />
-                <p className="text-xs text-muted-foreground">
-                  One per line: KEY=value. These are injected into the container.
-                </p>
-              </div>
-            </div>
+                  <Button onClick={handleSave} disabled={isSaving}>
+                    {isSaving ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      <>
+                        <Save className="h-4 w-4 mr-2" />
+                        Save Changes
+                      </>
+                    )}
+                  </Button>
+                </CardContent>
+              </Card>
+            </>
           )}
+        </TabsContent>
 
-          {!dockerEnabled && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium flex items-center gap-2">
-                <Terminal className="h-4 w-4" />
-                Terminal User (Legacy)
-              </label>
-              <input
-                type="text"
-                value={terminalUser}
-                onChange={(e) => setTerminalUser(e.target.value)}
-                className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
-                placeholder="e.g., project-www"
-              />
-              <p className="text-xs text-muted-foreground">
-                System user for terminal sessions. Enable Docker for better isolation.
-              </p>
-            </div>
-          )}
-        </section>
-
-        {/* Code Quality Settings */}
-        <section className="space-y-4">
-          <h2 className="text-lg font-medium border-b pb-2 flex items-center gap-2">
-            <Shield className="h-5 w-5" />
-            Code Quality
-          </h2>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setQualityEnabled(!qualityEnabled)}
-              className={cn(
-                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
-                qualityEnabled ? "bg-primary" : "bg-muted"
-              )}
-            >
-              <span
-                className={cn(
-                  "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
-                  qualityEnabled ? "translate-x-6" : "translate-x-1"
-                )}
-              />
-            </button>
-            <span className="text-sm font-medium">
-              Enable code quality checks
-            </span>
-          </div>
+        {/* Quality Tab */}
+        <TabsContent value="quality" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Code Quality</CardTitle>
+              <CardDescription>Configure linting, formatting, and testing</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Enable Code Quality Checks</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Run automated checks on your code
+                  </p>
+                </div>
+                <Switch checked={qualityEnabled} onCheckedChange={setQualityEnabled} />
+              </div>
+            </CardContent>
+          </Card>
 
           {qualityEnabled && (
-            <div className="space-y-6 pl-4 border-l-2 border-primary/20">
-              {/* Linting */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium flex items-center gap-2">
-                  <CheckCircle className="h-4 w-4 text-green-500" />
-                  Linting
-                </h3>
+            <>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <CheckCircle className="h-5 w-5 text-green-500" />
+                    Linting
+                  </CardTitle>
+                  <CardDescription>Detect code issues and style problems</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="lintOnSave"
+                        checked={lintOnSave}
+                        onChange={(e) => setLintOnSave(e.target.checked)}
+                        className="h-4 w-4 rounded border-gray-300"
+                      />
+                      <Label htmlFor="lintOnSave">Lint on save</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="lintOnCommit"
+                        checked={lintOnCommit}
+                        onChange={(e) => setLintOnCommit(e.target.checked)}
+                        className="h-4 w-4 rounded border-gray-300"
+                      />
+                      <Label htmlFor="lintOnCommit">Lint on commit</Label>
+                    </div>
+                  </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">
+                      Custom lint command (leave empty for auto-detect)
+                    </Label>
+                    <Input
+                      value={lintCommand}
+                      onChange={(e) => setLintCommand(e.target.value)}
+                      className="font-mono"
+                      placeholder="e.g., npm run lint, ruff check ."
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <FileCode className="h-5 w-5 text-blue-500" />
+                    Formatting
+                  </CardTitle>
+                  <CardDescription>Automatically format your code</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="formatOnSave"
+                        checked={formatOnSave}
+                        onChange={(e) => setFormatOnSave(e.target.checked)}
+                        className="h-4 w-4 rounded border-gray-300"
+                      />
+                      <Label htmlFor="formatOnSave">Format on save</Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="formatOnCommit"
+                        checked={formatOnCommit}
+                        onChange={(e) => setFormatOnCommit(e.target.checked)}
+                        className="h-4 w-4 rounded border-gray-300"
+                      />
+                      <Label htmlFor="formatOnCommit">Format on commit</Label>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">
+                      Custom format command (leave empty for auto-detect)
+                    </Label>
+                    <Input
+                      value={formatCommand}
+                      onChange={(e) => setFormatCommand(e.target.value)}
+                      className="font-mono"
+                      placeholder="e.g., npm run format, black ."
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <AlertTriangle className="h-5 w-5 text-yellow-500" />
+                    Type Checking
+                  </CardTitle>
+                  <CardDescription>Catch type errors before runtime</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
-                      id="lintOnSave"
-                      checked={lintOnSave}
-                      onChange={(e) => setLintOnSave(e.target.checked)}
+                      id="typeCheckEnabled"
+                      checked={typeCheckEnabled}
+                      onChange={(e) => setTypeCheckEnabled(e.target.checked)}
                       className="h-4 w-4 rounded border-gray-300"
                     />
-                    <label htmlFor="lintOnSave" className="text-sm">
-                      Lint on save
-                    </label>
+                    <Label htmlFor="typeCheckEnabled">Enable type checking</Label>
                   </div>
+
+                  {typeCheckEnabled && (
+                    <div className="space-y-2">
+                      <Label className="text-xs text-muted-foreground">
+                        Custom type check command (leave empty for auto-detect)
+                      </Label>
+                      <Input
+                        value={typeCheckCommand}
+                        onChange={(e) => setTypeCheckCommand(e.target.value)}
+                        className="font-mono"
+                        placeholder="e.g., npx tsc --noEmit, mypy ."
+                      />
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <TestTube className="h-5 w-5 text-purple-500" />
+                    Testing
+                  </CardTitle>
+                  <CardDescription>Run automated tests</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
-                      id="lintOnCommit"
-                      checked={lintOnCommit}
-                      onChange={(e) => setLintOnCommit(e.target.checked)}
+                      id="runTestsOnCommit"
+                      checked={runTestsOnCommit}
+                      onChange={(e) => setRunTestsOnCommit(e.target.checked)}
                       className="h-4 w-4 rounded border-gray-300"
                     />
-                    <label htmlFor="lintOnCommit" className="text-sm">
-                      Lint on commit
-                    </label>
+                    <Label htmlFor="runTestsOnCommit">Run tests on commit</Label>
                   </div>
-                </div>
 
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">
-                    Custom lint command (leave empty for auto-detect)
-                  </label>
-                  <input
-                    type="text"
-                    value={lintCommand}
-                    onChange={(e) => setLintCommand(e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
-                    placeholder="e.g., npm run lint, ruff check ."
-                  />
-                </div>
-              </div>
-
-              {/* Formatting */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium flex items-center gap-2">
-                  <FileCode className="h-4 w-4 text-blue-500" />
-                  Formatting
-                </h3>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="formatOnSave"
-                      checked={formatOnSave}
-                      onChange={(e) => setFormatOnSave(e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300"
-                    />
-                    <label htmlFor="formatOnSave" className="text-sm">
-                      Format on save
-                    </label>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="formatOnCommit"
-                      checked={formatOnCommit}
-                      onChange={(e) => setFormatOnCommit(e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300"
-                    />
-                    <label htmlFor="formatOnCommit" className="text-sm">
-                      Format on commit
-                    </label>
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">
-                    Custom format command (leave empty for auto-detect)
-                  </label>
-                  <input
-                    type="text"
-                    value={formatCommand}
-                    onChange={(e) => setFormatCommand(e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
-                    placeholder="e.g., npm run format, black ."
-                  />
-                </div>
-              </div>
-
-              {/* Type Checking */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4 text-yellow-500" />
-                  Type Checking
-                </h3>
-
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="typeCheckEnabled"
-                    checked={typeCheckEnabled}
-                    onChange={(e) => setTypeCheckEnabled(e.target.checked)}
-                    className="h-4 w-4 rounded border-gray-300"
-                  />
-                  <label htmlFor="typeCheckEnabled" className="text-sm">
-                    Enable type checking
-                  </label>
-                </div>
-
-                {typeCheckEnabled && (
-                  <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">
-                      Custom type check command (leave empty for auto-detect)
-                    </label>
-                    <input
-                      type="text"
-                      value={typeCheckCommand}
-                      onChange={(e) => setTypeCheckCommand(e.target.value)}
-                      className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
-                      placeholder="e.g., npx tsc --noEmit, mypy ."
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">
+                      Custom test command (leave empty for auto-detect)
+                    </Label>
+                    <Input
+                      value={testCommand}
+                      onChange={(e) => setTestCommand(e.target.value)}
+                      className="font-mono"
+                      placeholder="e.g., npm test, pytest"
                     />
                   </div>
-                )}
-              </div>
+                </CardContent>
+              </Card>
 
-              {/* Testing */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-medium flex items-center gap-2">
-                  <TestTube className="h-4 w-4 text-purple-500" />
-                  Testing
-                </h3>
-
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="runTestsOnCommit"
-                    checked={runTestsOnCommit}
-                    onChange={(e) => setRunTestsOnCommit(e.target.checked)}
-                    className="h-4 w-4 rounded border-gray-300"
-                  />
-                  <label htmlFor="runTestsOnCommit" className="text-sm">
-                    Run tests on commit
-                  </label>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs text-muted-foreground">
-                    Custom test command (leave empty for auto-detect)
-                  </label>
-                  <input
-                    type="text"
-                    value={testCommand}
-                    onChange={(e) => setTestCommand(e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border bg-background text-sm font-mono"
-                    placeholder="e.g., npm test, pytest"
-                  />
-                </div>
-              </div>
-
-              {/* Agent Behavior */}
-              <div className="space-y-3 pt-2 border-t border-muted">
-                <h3 className="text-sm font-medium">Agent Behavior</h3>
-
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="autoFixLintErrors"
-                      checked={autoFixLintErrors}
-                      onChange={(e) => setAutoFixLintErrors(e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300"
-                    />
-                    <label htmlFor="autoFixLintErrors" className="text-sm">
-                      Auto-fix lint errors after tasks
-                    </label>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Agent Behavior</CardTitle>
+                  <CardDescription>How agents handle code quality issues</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>Auto-fix Lint Errors</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Automatically fix lint errors after tasks
+                      </p>
+                    </div>
+                    <Switch checked={autoFixLintErrors} onCheckedChange={setAutoFixLintErrors} />
                   </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="blockOnErrors"
-                      checked={blockOnErrors}
-                      onChange={(e) => setBlockOnErrors(e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300"
-                    />
-                    <label htmlFor="blockOnErrors" className="text-sm">
-                      Block commits if errors exist
-                    </label>
+
+                  <Separator />
+
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>Block on Errors</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Block commits if quality errors exist
+                      </p>
+                    </div>
+                    <Switch checked={blockOnErrors} onCheckedChange={setBlockOnErrors} />
                   </div>
-                </div>
-              </div>
-            </div>
+
+                  <Separator className="my-4" />
+
+                  <Button onClick={handleSave} disabled={isSaving}>
+                    {isSaving ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Saving...
+                      </>
+                    ) : (
+                      <>
+                        <Save className="h-4 w-4 mr-2" />
+                        Save Changes
+                      </>
+                    )}
+                  </Button>
+                </CardContent>
+              </Card>
+            </>
           )}
-        </section>
+        </TabsContent>
 
-        {/* GitHub Integration */}
-        {selectedProject && (
-          <section className="space-y-4">
-            <GitHubProjectSettingsCard
-              projectId={selectedProject.id}
-              projectName={selectedProject.name}
-            />
-          </section>
-        )}
+        {/* TELOS Tab */}
+        <TabsContent value="telos" className="space-y-6">
+          <ProjectTelosSettings />
+        </TabsContent>
 
-        <Button type="button" onClick={handleSave} disabled={isSaving} className="gap-2">
-          <Save className="h-4 w-4" />
-          {isSaving ? "Saving..." : "Save Changes"}
-        </Button>
-      </div>
+        {/* GitHub Tab */}
+        <TabsContent value="github" className="space-y-6">
+          <GitHubProjectSettingsCard
+            projectId={selectedProject.id}
+            projectName={selectedProject.name}
+          />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -136,7 +136,21 @@ from .llm_provider import (
     LLMToolCall,
     LLMToolResult,
 )
-from .content_router import ContentRouter, get_content_router, COST_PER_1K_TOKENS
+from .content_router import ContentRouter, get_content_router, COST_PER_1K_TOKENS, RoutingResult
+from .prompt_tier import (
+    PromptTierClassifier,
+    PromptSection,
+    TaskCategory,
+    TieredPromptConfig,
+    classify_prompt_tier,
+    get_prompt_tier_classifier,
+)
+from .task_complexity_classifier import (
+    ClassificationResult,
+    TaskComplexityClassifier,
+    ExecutionMode,
+    get_task_classifier,
+)
 from .stack_detector import (
     DatabaseConfig,
     ProjectStack,
@@ -146,20 +160,36 @@ from .stack_detector import (
     get_cached_stack,
     clear_stack_cache,
 )
-from .router_training import (
-    RouterTrainer,
-    TrainingConfig,
-    TrainingSample,
-    generate_training_data,
-    generate_pairwise_data,
-    CostAnalytics,
-    CostAnalyticsTracker,
-    calculate_routing_savings,
-    estimate_monthly_savings,
-    get_cost_analytics_tracker,
-)
+# Router training requires torch - make optional
+try:
+    from .router_training import (
+        RouterTrainer,
+        TrainingConfig,
+        TrainingSample,
+        generate_training_data,
+        generate_pairwise_data,
+        CostAnalytics,
+        CostAnalyticsTracker,
+        calculate_routing_savings,
+        estimate_monthly_savings,
+        get_cost_analytics_tracker,
+    )
+    _ROUTER_TRAINING_AVAILABLE = True
+except ImportError:
+    # torch not installed - router training not available
+    RouterTrainer = None  # type: ignore
+    TrainingConfig = None  # type: ignore
+    TrainingSample = None  # type: ignore
+    generate_training_data = None  # type: ignore
+    generate_pairwise_data = None  # type: ignore
+    CostAnalytics = None  # type: ignore
+    CostAnalyticsTracker = None  # type: ignore
+    calculate_routing_savings = None  # type: ignore
+    estimate_monthly_savings = None  # type: ignore
+    get_cost_analytics_tracker = None  # type: ignore
+    _ROUTER_TRAINING_AVAILABLE = False
 from .llm_client import LLMClient
-from .model_selector import ModelTier, select_model, select_model_with_routing
+from .model_selector import ModelTier, PromptTier, select_model, select_model_with_routing
 from .mcp_client import (
     MCPClient,
     MCPToolResult,
@@ -396,12 +426,26 @@ __all__ = [
     "LLMToolResult",
     # Model Selection
     "ModelTier",
+    "PromptTier",
     "select_model",
     "select_model_with_routing",
     # Content Router
     "ContentRouter",
     "get_content_router",
     "COST_PER_1K_TOKENS",
+    "RoutingResult",
+    # Prompt Tier
+    "PromptTierClassifier",
+    "PromptSection",
+    "TaskCategory",
+    "TieredPromptConfig",
+    "classify_prompt_tier",
+    "get_prompt_tier_classifier",
+    # Task Complexity Classifier
+    "ClassificationResult",
+    "TaskComplexityClassifier",
+    "ExecutionMode",
+    "get_task_classifier",
     # Stack Detection
     "DatabaseConfig",
     "ProjectStack",

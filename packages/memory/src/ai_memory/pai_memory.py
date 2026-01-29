@@ -461,6 +461,8 @@ class PAIMemory:
                 "category": learning.category,
                 "task_id": learning.task_id,
                 "agent_type": learning.agent_type,
+                "agent": learning.agent_type or learning.created_by_agent,  # For API compatibility
+                "outcome": "success",  # Required by API
                 "confidence": learning.confidence,
                 "tags": learning.tags,  # Tags for filtering
                 "created_at": learning.created_at.isoformat(),

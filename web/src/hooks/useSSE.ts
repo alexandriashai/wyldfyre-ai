@@ -199,7 +199,7 @@ export function useSSE<T = unknown>({
  * Hook for SSE with agent events
  */
 export function useAgentSSE(token: string | null) {
-  const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8010";
 
   return useSSE<{
     type: "agent_status" | "task_update" | "message" | "error";
@@ -225,7 +225,7 @@ export function useConversationSSE(
   token: string | null,
   conversationId: string | null
 ) {
-  const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8010";
 
   return useSSE<{
     type: "message" | "typing" | "stream" | "complete" | "error";

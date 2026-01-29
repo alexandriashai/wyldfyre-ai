@@ -8,6 +8,14 @@ Provides:
 - Memory and messaging integration
 """
 
+from .context_manager import (
+    ContextManager,
+    MAX_TOOL_RESULT_CHARS,
+    get_context_manager,
+    truncate_for_context,
+    truncate_tool_result,
+)
+
 from .agent import (
     ACTION_API_CALL,
     ACTION_API_RESPONSE,
@@ -31,6 +39,24 @@ from .context_summarizer import ContextSummarizer
 from .parallel_executor import ParallelToolExecutor, ToolCallRequest, ToolCallResult
 from .subagent import Subagent, SubagentResult
 from .tools import CRITICAL_TOOLS, Tool, ToolRegistry, ToolResult, tool
+
+# Browser debug tools
+from .browser_debug_tools import (
+    BROWSER_DEBUG_TOOLS,
+    configure_browser_tools,
+)
+
+# Browser helper tools (for managing site-specific helpers)
+from .browser_helper_tools import (
+    BROWSER_HELPER_TOOLS,
+    browser_helper_list,
+    browser_helper_create,
+    browser_helper_delete,
+    browser_helper_apply,
+    browser_helper_run_actions,
+    browser_helper_learn,
+    browser_helper_init_common,
+)
 
 # Re-export permission types for convenience
 from ai_core import CapabilityCategory, PermissionContext, PermissionLevel
@@ -63,6 +89,12 @@ __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
+    # Context management
+    "ContextManager",
+    "MAX_TOOL_RESULT_CHARS",
+    "get_context_manager",
+    "truncate_for_context",
+    "truncate_tool_result",
     # Action constants
     "ACTION_API_CALL",
     "ACTION_API_RESPONSE",
@@ -96,6 +128,18 @@ __all__ = [
     "ToolRegistry",
     "ToolResult",
     "tool",
+    # Browser debug tools
+    "BROWSER_DEBUG_TOOLS",
+    "configure_browser_tools",
+    # Browser helper tools
+    "BROWSER_HELPER_TOOLS",
+    "browser_helper_list",
+    "browser_helper_create",
+    "browser_helper_delete",
+    "browser_helper_apply",
+    "browser_helper_run_actions",
+    "browser_helper_learn",
+    "browser_helper_init_common",
     # Shared tools - Memory
     "search_memory",
     "store_memory",

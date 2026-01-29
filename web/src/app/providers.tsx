@@ -11,6 +11,7 @@ import { PWAUpdatePrompt } from "@/components/pwa/update-prompt";
 import { NetworkStatus } from "@/components/pwa/network-status";
 import { FlameLoader } from "@/components/brand/logo";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { SwipeNavigationProvider } from "@/hooks/useSwipeNavigation";
 
 // Service Worker Registration
 function useServiceWorker() {
@@ -93,7 +94,11 @@ function AuthInitializer({ children }: { children: React.ReactNode }) {
     );
   }
 
-  return <>{children}</>;
+  return (
+    <SwipeNavigationProvider>
+      {children}
+    </SwipeNavigationProvider>
+  );
 }
 
 export function Providers({ children }: { children: React.ReactNode }) {

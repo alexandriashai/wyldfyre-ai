@@ -91,6 +91,11 @@ class RedisClient:
         """Get a PubSub instance for subscribing to channels."""
         return self.client.pubsub()
 
+    async def publish(self, channel: str, message: str) -> int:
+        """Publish message to channel."""
+        result = await self.client.publish(channel, message)
+        return cast(int, result)
+
     # Key-Value Operations
     async def get(self, key: str) -> str | None:
         """Get value by key."""

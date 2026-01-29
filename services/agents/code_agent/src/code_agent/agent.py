@@ -5,7 +5,7 @@ Code Agent - Specialized agent for code and git operations.
 from ai_core import AgentType, get_logger
 from ai_memory import PAIMemory
 from ai_messaging import RedisClient
-from base_agent import BaseAgent
+from base_agent import BaseAgent, BROWSER_DEBUG_TOOLS, configure_browser_tools
 from base_agent.agent import AgentConfig
 
 from .tools import (
@@ -162,6 +162,10 @@ class CodeAgent(BaseAgent):
         self.register_tool(get_python_imports._tool)
         self.register_tool(get_package_dependencies._tool)
         self.register_tool(count_lines._tool)
+
+        # Browser debug tools (for web testing and debugging)
+        for browser_tool in BROWSER_DEBUG_TOOLS:
+            self.register_tool(browser_tool._tool)
 
         logger.info(
             "Code agent tools registered",

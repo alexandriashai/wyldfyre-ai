@@ -325,6 +325,8 @@ class ToolRegistry:
                 kwargs["_agent_type"] = ctx["_agent_type"]
             if "_task_id" in sig.parameters and "_task_id" in ctx:
                 kwargs["_task_id"] = ctx["_task_id"]
+            if "_project_id" in sig.parameters and "_project_id" in ctx:
+                kwargs["_project_id"] = ctx["_project_id"]
 
             result = await tool.handler(**kwargs)
 

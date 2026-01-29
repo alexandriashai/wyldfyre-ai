@@ -43,6 +43,8 @@ from ai_core import (
     LLMClient,
     PermissionContext,
     PermissionLevel,
+    PromptTier,
+    classify_prompt_tier,
     agent_active_tasks,
     agent_errors_total,
     agent_last_heartbeat_timestamp,
@@ -91,6 +93,14 @@ ACTION_MEMORY_STORE = "memory_store"
 ACTION_COMPLETE = "complete"
 ACTION_ERROR = "error"
 
+from .context_manager import (
+    ContextManager,
+    MAX_TOOL_RESULT_CHARS,
+    estimate_message_tokens,
+    get_context_manager,
+    truncate_for_context,
+    truncate_tool_result,
+)
 from .context_summarizer import ContextSummarizer
 from .parallel_executor import ParallelToolExecutor, ToolCallRequest, ToolCallResult
 from .tools import Tool, ToolRegistry, ToolResult
@@ -363,39 +373,100 @@ class BaseAgent(ABC):
         """
         pass
 
-    def _inject_dynamic_context(self, base_prompt: str) -> str:
+    def get_tiered_system_prompt(self, tier: PromptTier) -> str:
+        """
+        Get system prompt optimized for the given tier.
+
+        Override this method in subclasses to provide tier-specific prompts.
+        By default:
+        - MINIMAL: First 25% of the prompt (core identity)
+        - STANDARD: First 60% of the prompt
+        - FULL: Complete prompt
+
+        Args:
+            tier: The prompt tier to use
+
+        Returns:
+            System prompt optimized for the tier
+        """
+        full_prompt = self.get_system_prompt()
+
+        if tier == PromptTier.FULL:
+            return full_prompt
+
+        # Split into sections for intelligent truncation
+        sections = full_prompt.split("\n## ")
+
+        if tier == PromptTier.MINIMAL:
+            # Keep only the core identity (first section + ~25%)
+            if len(sections) > 1:
+                # Keep first section (core identity)
+                keep_count = max(1, len(sections) // 4)
+                minimal_prompt = sections[0]
+                for section in sections[1:keep_count]:
+                    minimal_prompt += "\n## " + section
+                return minimal_prompt
+            else:
+                # No sections, truncate to first 25%
+                return full_prompt[:len(full_prompt) // 4]
+
+        elif tier == PromptTier.STANDARD:
+            # Keep ~60% of sections
+            if len(sections) > 1:
+                keep_count = max(1, int(len(sections) * 0.6))
+                standard_prompt = sections[0]
+                for section in sections[1:keep_count]:
+                    standard_prompt += "\n## " + section
+                return standard_prompt
+            else:
+                return full_prompt[:int(len(full_prompt) * 0.6)]
+
+        return full_prompt
+
+    def _inject_dynamic_context(self, base_prompt: str, tier: PromptTier = PromptTier.FULL) -> str:
         """
         Inject dynamic context into a system prompt.
 
         Adds TELOS context and pre-warmed learnings from the session context.
+        Respects prompt tier - MINIMAL tier skips extra context to save tokens.
         Subclasses should call this in their get_system_prompt() implementation.
 
         Args:
             base_prompt: The base system prompt
+            tier: Prompt tier to determine how much context to inject
 
         Returns:
             Enhanced prompt with dynamic context injected
         """
         sections = [base_prompt]
 
-        # Inject TELOS context if available
+        # MINIMAL tier: Skip all dynamic context injection to save tokens
+        if tier == PromptTier.MINIMAL:
+            return base_prompt
+
         session_ctx = getattr(self, "_session_context", {})
+
+        # STANDARD tier: Only inject TELOS context (most important)
         telos_context = session_ctx.get("telos_context", "")
         if telos_context:
-            sections.append(f"\n## TELOS Context (Current Goals)\n{telos_context[:2000]}")
+            # Shorter for STANDARD tier
+            max_len = 1000 if tier == PromptTier.STANDARD else 2000
+            sections.append(f"\n## TELOS Context (Current Goals)\n{telos_context[:max_len]}")
 
-        # Inject pre-warmed learnings if available
-        warm_learnings = session_ctx.get("warm_learnings", [])
-        if warm_learnings:
-            learnings_text = "\n".join(
-                f"- {l.get('content', '')[:150]}" for l in warm_learnings[:5]
-            )
-            sections.append(f"\n## Relevant Learnings (from PAI memory)\n{learnings_text}")
+        # FULL tier only: Inject learnings and phase context
+        if tier == PromptTier.FULL:
+            # Inject pre-warmed learnings if available
+            warm_learnings = session_ctx.get("warm_learnings", [])
+            if warm_learnings:
+                learnings_text = "\n".join(
+                    f"- {l.get('content', '')[:150]}" for l in warm_learnings[:5]
+                )
+                sections.append(f"\n## Relevant Learnings (from PAI memory)\n{learnings_text}")
 
-        # Inject current PAI phase context if available
-        phase_context = session_ctx.get("phase_context", "")
-        if phase_context:
-            sections.append(f"\n## Current Phase Context\n{phase_context[:1000]}")
+            # Inject current PAI phase context if available
+            phase_context = session_ctx.get("phase_context", "")
+            if phase_context:
+                sections.append(f"\n## Current Phase Context\n{phase_context[:1000]}")
 
         return "\n".join(sections)
 
@@ -748,6 +819,18 @@ class BaseAgent(ABC):
         conversation_id = request.payload.get("conversation_id")
         self._state.current_user_id = user_id
         self._state.current_conversation_id = conversation_id
+
+        # Extract project_id and configure browser tools
+        project_id = request.payload.get("project_id") or request.metadata.get("project_id")
+        self._state.current_project_id = project_id
+        if project_id and self._redis:
+            from .browser_debug_tools import configure_browser_tools
+            configure_browser_tools(
+                redis=self._redis,
+                project_id=project_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
 
         # Extract and validate root_path (REQUIRED for file operations)
         root_path = request.payload.get("root_path")
@@ -1370,6 +1453,24 @@ class BaseAgent(ABC):
             # Build messages for API (async for context summarization)
             messages = await self._build_api_messages()
 
+            # Classify prompt tier for cost optimization
+            # Uses lightweight heuristics based on message content and tools
+            tools_count = len(tools) if tools else 0
+            has_context = len(self._state.conversation_history) > 2
+            prompt_tier, _task_category = classify_prompt_tier(
+                messages, tools_count, has_context
+            )
+
+            # Get tiered system prompt (MINIMAL/STANDARD/FULL based on request)
+            system_prompt = self.get_tiered_system_prompt(prompt_tier)
+
+            logger.debug(
+                "Using tiered prompt",
+                prompt_tier=prompt_tier.value,
+                task_category=_task_category.value,
+                prompt_tokens_estimate=len(system_prompt) // 4,
+            )
+
             # Publish API call action
             await self.publish_action(ACTION_API_CALL, "Calling LLM API...")
 
@@ -1378,7 +1479,7 @@ class BaseAgent(ABC):
             response = await self._llm.create_message(
                 model="auto",
                 max_tokens=self.config.max_tokens,
-                system=self.get_system_prompt(),
+                system=system_prompt,
                 messages=messages,
                 tools=tools if tools else None,
             )
@@ -1519,10 +1620,25 @@ class BaseAgent(ABC):
                             ).model_dump_json(),
                         )
 
+                    # Truncate large tool results to prevent context overflow
+                    if result.success:
+                        output_str = str(result.output)
+                        if len(output_str) > MAX_TOOL_RESULT_CHARS:
+                            output_str = truncate_for_context(output_str, MAX_TOOL_RESULT_CHARS)
+                            logger.debug(
+                                "Truncated large tool result",
+                                tool=tool_name,
+                                original_len=len(str(result.output)),
+                                truncated_len=len(output_str),
+                            )
+                        content = output_str
+                    else:
+                        content = result.error or "Tool execution failed"
+
                     return {
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
-                        "content": str(result.output) if result.success else (result.error or "Tool execution failed"),
+                        "content": content,
                         "is_error": not result.success,
                     }
 
@@ -1754,20 +1870,139 @@ class BaseAgent(ABC):
         # If we couldn't find a safe point, start from beginning
         return 0
 
+    def _cleanup_old_tool_results(
+        self,
+        messages: list[dict[str, Any]],
+        keep_last_n: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Remove old tool results from context to reduce O(N²) growth.
+
+        Keeps the last N tool result messages and removes older ones.
+        This prevents context from growing quadratically in multi-tool tasks.
+
+        Args:
+            messages: List of message dicts
+            keep_last_n: Number of recent tool result messages to keep
+
+        Returns:
+            Filtered message list with old tool results removed
+        """
+        # Find indices of all user messages containing tool_result blocks
+        tool_result_indices = []
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, list):
+                    has_tool_result = any(
+                        isinstance(b, dict) and b.get("type") == "tool_result"
+                        for b in content
+                    )
+                    if has_tool_result:
+                        tool_result_indices.append(i)
+
+        # If we have fewer than keep_last_n, no cleanup needed
+        if len(tool_result_indices) <= keep_last_n:
+            return messages
+
+        # Indices to remove (all except the last keep_last_n)
+        to_remove = set(tool_result_indices[:-keep_last_n])
+
+        # Also need to remove the corresponding assistant tool_use messages
+        # (the message immediately before each tool_result)
+        assistant_to_remove = set()
+        for idx in to_remove:
+            if idx > 0 and messages[idx - 1].get("role") == "assistant":
+                assistant_to_remove.add(idx - 1)
+
+        all_to_remove = to_remove | assistant_to_remove
+
+        # Build filtered list
+        result = [msg for i, msg in enumerate(messages) if i not in all_to_remove]
+
+        if all_to_remove:
+            logger.debug(
+                "Cleaned up old tool results",
+                removed_count=len(all_to_remove),
+                original_count=len(messages),
+                new_count=len(result),
+            )
+
+        return result
+
     async def _build_api_messages(self) -> list[dict[str, Any]]:
         """Build messages list for Claude API.
 
-        Uses context summarization when history exceeds threshold.
-        Falls back to truncation for safety.
-        Ensures tool_use/tool_result pairs are never split.
+        Uses token-based context management:
+        1. Estimate total tokens in conversation history
+        2. If over 100K tokens, trigger summarization
+        3. If over 150K tokens, aggressively truncate
+        4. Ensures tool_use/tool_result pairs are never split
         """
         messages = []
+
+        # Token thresholds (Claude has 200K context)
+        SUMMARIZE_AT = 100_000  # Start summarizing at 100K tokens (earlier = lower costs)
+        HARD_LIMIT = 180_000   # Hard truncate above 180K (leave room for response)
+        TARGET_AFTER_TRUNCATION = 120_000  # Target after aggressive truncation
 
         # Limit conversation history to prevent context overflow
         history = self._state.conversation_history
 
-        # Try context summarization first (threshold: 24 messages)
-        if self._context_summarizer.should_summarize(len(history)):
+        # Estimate current token usage
+        def estimate_history_tokens(hist: list) -> int:
+            total = 0
+            for msg in hist:
+                if isinstance(msg.content, str):
+                    total += len(msg.content) // 4 + 10
+                elif isinstance(msg.content, list):
+                    for block in msg.content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                total += len(block.get("text", "")) // 4 + 5
+                            elif block.get("type") == "tool_result":
+                                content = block.get("content", "")
+                                if isinstance(content, str):
+                                    total += len(content) // 4 + 5
+                                else:
+                                    total += 100  # Estimate for complex content
+                            elif block.get("type") == "tool_use":
+                                total += 50 + len(str(block.get("input", {}))) // 4
+            return total
+
+        current_tokens = estimate_history_tokens(history)
+        logger.debug(
+            "Context token estimate",
+            messages=len(history),
+            tokens=current_tokens,
+            summarize_at=SUMMARIZE_AT,
+            hard_limit=HARD_LIMIT,
+        )
+
+        # Check if we need aggressive truncation first (over hard limit)
+        if current_tokens > HARD_LIMIT:
+            logger.warning(
+                "Context exceeds hard limit, aggressive truncation",
+                tokens=current_tokens,
+                hard_limit=HARD_LIMIT,
+            )
+            # Keep only most recent messages to get under target
+            while len(history) > 4 and estimate_history_tokens(history) > TARGET_AFTER_TRUNCATION:
+                # Remove from front, but keep tool pairs together
+                safe_start = self._find_safe_truncation_point(history, len(history) - 2)
+                if safe_start > 0:
+                    history = history[safe_start:]
+                else:
+                    history = history[2:]  # Force remove first 2 messages
+
+            current_tokens = estimate_history_tokens(history)
+            logger.info(
+                "After aggressive truncation",
+                messages=len(history),
+                tokens=current_tokens,
+            )
+
+        # Try context summarization (at lower threshold)
+        elif current_tokens > SUMMARIZE_AT or self._context_summarizer.should_summarize(len(history)):
             summary, recent_history = await self._context_summarizer.summarize_history(history)
 
             if summary:
@@ -1784,32 +2019,21 @@ class BaseAgent(ABC):
                 logger.debug(
                     "Applied context summarization",
                     original_length=len(self._state.conversation_history),
+                    original_tokens=current_tokens,
                     recent_kept=len(recent_history),
+                    new_tokens=estimate_history_tokens(recent_history),
                 )
             else:
-                # Summarization returned empty, fall back to truncation
-                max_history = 32
+                # Summarization returned empty, fall back to message-based truncation
+                max_history = 20  # More aggressive than before
                 if len(history) > max_history:
-                    safe_start = self._find_safe_truncation_point(
-                        history,
-                        max_history,
-                    )
+                    safe_start = self._find_safe_truncation_point(history, max_history)
                     history = history[safe_start:]
                     logger.debug(
                         "Truncated conversation history (summarization empty)",
                         original_length=len(self._state.conversation_history),
                         truncated_length=len(history),
-                        safe_start_index=safe_start,
                     )
-        else:
-            # Under threshold, still apply hard truncation if somehow exceeded
-            max_history = 32
-            if len(history) > max_history:
-                safe_start = self._find_safe_truncation_point(
-                    history,
-                    max_history,
-                )
-                history = history[safe_start:]
 
         for msg in history:
             if msg.role == "user":
@@ -1844,7 +2068,143 @@ class BaseAgent(ABC):
                                 })
                     messages.append({"role": "assistant", "content": content})
 
+        # Validate and fix tool_use/tool_result pairing
+        # Claude API requires tool_result to immediately follow assistant with matching tool_use
+        messages = self._validate_tool_pairs(messages)
+
+        # Clean up old tool results to prevent O(N²) context growth
+        messages = self._cleanup_old_tool_results(messages)
+
         return messages
+
+    def _validate_tool_pairs(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Validate and fix tool_use/tool_result pairing in messages.
+
+        The Claude API requires:
+        1. tool_result messages must immediately follow an assistant message with tool_use
+        2. The tool_use_id in tool_result must match an id in the preceding tool_use
+
+        If violations are found, we fix them by:
+        - For orphaned tool_results: remove them or add synthetic tool_use
+        - For missing tool_results: add synthetic ones
+        """
+        if not messages:
+            return messages
+
+        fixed_messages = []
+        i = 0
+
+        while i < len(messages):
+            msg = messages[i]
+            role = msg.get("role")
+            content = msg.get("content")
+
+            # Check if this is a user message with tool_result
+            if role == "user" and isinstance(content, list):
+                tool_results = [
+                    b for b in content
+                    if isinstance(b, dict) and b.get("type") == "tool_result"
+                ]
+
+                if tool_results:
+                    # This message has tool_results - verify preceding message has tool_use
+                    if not fixed_messages:
+                        # No preceding message - need synthetic context
+                        logger.warning(
+                            "Tool result at start of messages, adding synthetic context",
+                            tool_result_count=len(tool_results),
+                        )
+                        # Add synthetic user/assistant pair
+                        fixed_messages.append({
+                            "role": "user",
+                            "content": "[Context resumed - previous tool calls follow]",
+                        })
+                        # Create synthetic tool_use for each tool_result
+                        synthetic_tool_uses = []
+                        for tr in tool_results:
+                            tool_use_id = tr.get("tool_use_id", "unknown")
+                            synthetic_tool_uses.append({
+                                "type": "tool_use",
+                                "id": tool_use_id,
+                                "name": "previous_tool",
+                                "input": {"note": "reconstructed from truncated context"},
+                            })
+                        fixed_messages.append({
+                            "role": "assistant",
+                            "content": synthetic_tool_uses,
+                        })
+                    else:
+                        # Check if previous message is assistant with matching tool_use
+                        prev_msg = fixed_messages[-1]
+                        if prev_msg.get("role") != "assistant":
+                            # Previous message is not assistant - insert synthetic tool_use
+                            logger.warning(
+                                "Tool result without preceding assistant, adding synthetic tool_use",
+                                prev_role=prev_msg.get("role"),
+                                tool_result_count=len(tool_results),
+                            )
+                            synthetic_tool_uses = []
+                            for tr in tool_results:
+                                tool_use_id = tr.get("tool_use_id", "unknown")
+                                synthetic_tool_uses.append({
+                                    "type": "tool_use",
+                                    "id": tool_use_id,
+                                    "name": "previous_tool",
+                                    "input": {"note": "reconstructed from truncated context"},
+                                })
+                            fixed_messages.append({
+                                "role": "assistant",
+                                "content": synthetic_tool_uses,
+                            })
+                        else:
+                            # Previous is assistant - verify it has matching tool_use ids
+                            prev_content = prev_msg.get("content", [])
+                            if isinstance(prev_content, list):
+                                existing_tool_use_ids = {
+                                    b.get("id") for b in prev_content
+                                    if isinstance(b, dict) and b.get("type") == "tool_use"
+                                }
+                            else:
+                                existing_tool_use_ids = set()
+
+                            # Check for missing tool_use ids
+                            missing_ids = []
+                            for tr in tool_results:
+                                tool_use_id = tr.get("tool_use_id")
+                                if tool_use_id and tool_use_id not in existing_tool_use_ids:
+                                    missing_ids.append(tool_use_id)
+
+                            if missing_ids:
+                                logger.warning(
+                                    "Tool results reference missing tool_use ids, patching",
+                                    missing_ids=missing_ids,
+                                )
+                                # Patch the previous assistant message to include missing tool_use
+                                if isinstance(prev_content, list):
+                                    for missing_id in missing_ids:
+                                        prev_content.append({
+                                            "type": "tool_use",
+                                            "id": missing_id,
+                                            "name": "previous_tool",
+                                            "input": {"note": "reconstructed from truncated context"},
+                                        })
+                                else:
+                                    # Convert string content to list with text + tool_use
+                                    new_content = [{"type": "text", "text": str(prev_content)}]
+                                    for missing_id in missing_ids:
+                                        new_content.append({
+                                            "type": "tool_use",
+                                            "id": missing_id,
+                                            "name": "previous_tool",
+                                            "input": {"note": "reconstructed from truncated context"},
+                                        })
+                                    fixed_messages[-1]["content"] = new_content
+
+            fixed_messages.append(msg)
+            i += 1
+
+        return fixed_messages
 
     async def _handle_task_message(self, message: str) -> None:
         """Handle incoming task message from pub/sub."""

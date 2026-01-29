@@ -1,0 +1,24 @@
+# Browser Debug Service Dependencies
+
+# Playwright for browser automation
+playwright>=1.40.0
+
+# Redis for pub/sub
+redis>=5.0.0
+hiredis>=2.3.0
+
+# Async utilities
+aiohttp>=3.9.0
+anyio>=4.0.0
+
+# Image processing for screenshots
+Pillow>=10.0.0
+
+# FastAPI for health endpoints
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Logging and utilities
+structlog>=24.0.0
+pydantic>=2.5.0
+python-dotenv>=1.0.0

@@ -8,19 +8,19 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:8000/api/:path*',
+        destination: 'http://localhost:8010/api/:path*',
       },
       {
         source: '/ws/:path*',
-        destination: 'http://localhost:8000/ws/:path*',
+        destination: 'http://localhost:8010/ws/:path*',
       },
     ];
   },
 
   // Environment variables exposed to the browser
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
-    NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000',
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8010',
+    NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8010',
   },
 
   // Transpile GrapesJS for standalone build

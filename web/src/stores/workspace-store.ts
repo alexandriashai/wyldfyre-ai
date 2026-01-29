@@ -70,7 +70,7 @@ interface WorkspaceState {
   diffFilePath: string | null;
 
   // Mobile
-  mobileActiveTab: 'files' | 'editor' | 'git' | 'terminal' | 'chat';
+  mobileActiveTab: 'files' | 'editor' | 'git' | 'terminal' | 'browser' | 'chat';
 
   // Settings
   autoSave: boolean;
@@ -119,7 +119,7 @@ interface WorkspaceState {
   setTerminalOpen: (open: boolean) => void;
   setSplitEditor: (split: boolean, filePath?: string | null) => void;
   setDiffMode: (enabled: boolean, filePath?: string | null) => void;
-  setMobileActiveTab: (tab: 'files' | 'editor' | 'git' | 'terminal' | 'chat') => void;
+  setMobileActiveTab: (tab: 'files' | 'editor' | 'git' | 'terminal' | 'browser' | 'chat') => void;
   setAutoSave: (enabled: boolean) => void;
   setShowHiddenFiles: (show: boolean) => void;
   setDeployStatus: (status: Partial<DeployStatus>) => void;

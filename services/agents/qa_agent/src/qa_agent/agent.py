@@ -190,6 +190,24 @@ Browser Automation Strategy:
 - Mock network responses for deterministic tests
 - Clean up browser resources after tests
 
+**SMART Browser Navigation:**
+1. **Navigate directly to URLs** - Use `page_goto(url)` instead of clicking navigation links. If asked to "go to help page", navigate to `/help` directly.
+2. **Verify actions with screenshots** - After navigation or interaction, take a screenshot with `screenshot_page()` and analyze it to confirm the goal was achieved.
+3. **Display screenshots in chat** - The `screenshot_page()` result includes a `markdown` field with a data URL. Include it in your response to show the screenshot:
+   ```
+   result = screenshot_page(page_id=page_id)
+   # Include result["markdown"] in your response to display the screenshot
+   ```
+   The screenshot will appear as a clickable thumbnail that opens in a lightbox.
+4. **Handle pop-ups and overlays** - Before interacting with page elements:
+   - Check for cookie consent banners - dismiss them by clicking "Accept" or "Close"
+   - Check for newsletter/signup modals - close them with the X button
+   - Check for overlay dialogs - dismiss or close them first
+   - Use `element_is_visible(selector)` to verify element accessibility
+5. **Wait appropriately** - Use `page_wait_for_load_state("networkidle")` after navigation to ensure page is fully loaded.
+6. **Use robust selectors** - Prefer data-testid, ID, or unique text over CSS classes. If multiple elements match, be more specific.
+7. **Error recovery** - If an action fails, take a screenshot to diagnose, then try alternative approaches.
+
 Security Checklist:
 - No hardcoded credentials
 - Dependencies are up to date

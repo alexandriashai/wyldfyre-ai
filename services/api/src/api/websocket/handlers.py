@@ -75,6 +75,8 @@ class MessageHandler:
         - project_id: str
         - project_name: str
         - root_path: str (project root_path or primary domain web_root)
+        - domain_name: str (primary domain name, always included if available)
+        - domain_url: str (full URL with https://)
         - agent_context: str (custom instructions)
         """
         if not project_id:
@@ -99,22 +101,30 @@ class MessageHandler:
                     "agent_context": project.agent_context,
                 }
 
-                # Priority: project.root_path > primary domain web_root > first domain web_root
+                # Get domains for this project (primary first)
+                domain_result = await session.execute(
+                    select(Domain)
+                    .where(Domain.project_id == project_id)
+                    .order_by(Domain.is_primary.desc())
+                )
+                domains = domain_result.scalars().all()
+
+                # Always include primary domain info if available
+                if domains:
+                    primary_domain = domains[0]
+                    context["domain_name"] = primary_domain.domain_name
+                    # Construct full URL (assume https if ssl_enabled, else http)
+                    protocol = "https" if primary_domain.ssl_enabled else "http"
+                    context["domain_url"] = f"{protocol}://{primary_domain.domain_name}"
+
+                # Priority for root_path: project.root_path > primary domain web_root
                 if project.root_path:
                     context["root_path"] = project.root_path
                 else:
-                    # Check domains for web_root
-                    domain_result = await session.execute(
-                        select(Domain)
-                        .where(Domain.project_id == project_id)
-                        .order_by(Domain.is_primary.desc())
-                    )
-                    domains = domain_result.scalars().all()
-
+                    # Fall back to domain web_root
                     for domain in domains:
                         if domain.web_root:
                             context["root_path"] = domain.web_root
-                            context["domain_name"] = domain.domain_name
                             break
 
                 return context
@@ -446,6 +456,7 @@ class MessageHandler:
                     "project_name": project_context.get("project_name"),
                     "root_path": project_context.get("root_path"),
                     "domain": project_context.get("domain_name"),
+                    "domain_url": project_context.get("domain_url"),
                     "agent_context": project_context.get("agent_context"),
                     "branch": branch,  # Git branch for plan tracking
                 },

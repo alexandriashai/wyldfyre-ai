@@ -40,7 +40,12 @@ class AnthropicProvider(BaseLLMProvider):
         }
 
         if system:
-            kwargs["system"] = system
+            # Enable prompt caching for system prompt (87.5% discount on cached tokens)
+            kwargs["system"] = [{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"}
+            }]
 
         if tools:
             kwargs["tools"] = tools

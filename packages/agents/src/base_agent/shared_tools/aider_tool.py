@@ -27,7 +27,7 @@ TIER_TO_AIDER_MODEL = {
 # Env var fallbacks (used when Redis is unavailable)
 _AIDER_ENABLED_DEFAULT = os.environ.get("AIDER_ENABLED", "true").lower() == "true"
 _AIDER_DEFAULT_MODEL_DEFAULT = os.environ.get("AIDER_DEFAULT_MODEL", "claude-sonnet-4-20250514")
-_AIDER_MAP_TOKENS_DEFAULT = int(os.environ.get("AIDER_MAP_TOKENS", "2048"))
+_AIDER_MAP_TOKENS_DEFAULT = int(os.environ.get("AIDER_MAP_TOKENS", "1024"))
 _AIDER_EDIT_FORMAT_DEFAULT = os.environ.get("AIDER_EDIT_FORMAT", "diff")
 
 

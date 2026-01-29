@@ -7,13 +7,6 @@ import { useWorkspaceStore } from "@/stores/workspace-store";
 import { workspaceApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -26,15 +19,14 @@ import {
   Save,
   Circle,
   RotateCcw,
+  FolderOpen,
 } from "lucide-react";
 import { BranchSwitcher } from "./branch-switcher";
 
 export function WorkspaceToolbar() {
   const { token } = useAuthStore();
-  const { projects, selectedProject, selectProject } = useProjectStore();
+  const { selectedProject } = useProjectStore();
   const {
-    activeProjectId,
-    setActiveProject,
     gitStatus,
     setGitStatus,
     deployStatus,
@@ -48,16 +40,18 @@ export function WorkspaceToolbar() {
   const [isDeploying, setIsDeploying] = useState(false);
   const [showGitPopover, setShowGitPopover] = useState(false);
 
+  const projectId = selectedProject?.id;
+
   const fetchGitStatus = useCallback(async () => {
-    if (!token || !activeProjectId) return;
+    if (!token || !projectId) return;
     try {
-      const status = await workspaceApi.getGitStatus(token, activeProjectId);
+      const status = await workspaceApi.getGitStatus(token, projectId);
       setGitStatus(status);
     } catch {
       // Git might not be initialized
       setGitStatus(null);
     }
-  }, [token, activeProjectId, setGitStatus]);
+  }, [token, projectId, setGitStatus]);
 
   // Handle branch change - refresh status and clear cached files
   const handleBranchChange = useCallback(async (branchName: string) => {
@@ -69,18 +63,18 @@ export function WorkspaceToolbar() {
 
   // Fetch git status when project changes
   useEffect(() => {
-    if (token && activeProjectId) {
+    if (token && projectId) {
       fetchGitStatus();
     }
-  }, [token, activeProjectId, fetchGitStatus]);
+  }, [token, projectId, fetchGitStatus]);
 
   const handleDeploy = async () => {
-    if (!token || !activeProjectId || isDeploying) return;
+    if (!token || !projectId || isDeploying) return;
     setIsDeploying(true);
     setDeployStatus({ isDeploying: true, stage: "Starting deploy...", progress: 0, error: null });
 
     try {
-      const result = await workspaceApi.deploy(token, activeProjectId);
+      const result = await workspaceApi.deploy(token, projectId);
       setDeployStatus({
         isDeploying: false,
         stage: null,
@@ -101,14 +95,6 @@ export function WorkspaceToolbar() {
     }
   };
 
-  const handleProjectChange = (projectId: string) => {
-    setActiveProject(projectId);
-    const project = projects.find((p) => p.id === projectId);
-    if (project && token) {
-      selectProject(project);
-    }
-  };
-
   const modifiedCount = gitStatus
     ? gitStatus.modified.length + gitStatus.untracked.length + gitStatus.staged.length
     : 0;
@@ -117,24 +103,18 @@ export function WorkspaceToolbar() {
 
   return (
     <div className="flex h-10 items-center gap-2 border-b bg-card px-3 shrink-0">
-      {/* Project Selector */}
-      <Select value={activeProjectId || ""} onValueChange={handleProjectChange}>
-        <SelectTrigger className="h-7 w-[180px] text-xs">
-          <SelectValue placeholder="Select project" />
-        </SelectTrigger>
-        <SelectContent>
-          {projects.filter((p) => p.status === "active").map((project) => (
-            <SelectItem key={project.id} value={project.id} className="text-xs">
-              {project.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      {/* Project Name Display */}
+      {selectedProject && (
+        <div className="flex items-center gap-2 px-2 h-7 rounded-md bg-muted/50 text-xs font-medium">
+          <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="truncate max-w-[150px]">{selectedProject.name}</span>
+        </div>
+      )}
 
       {/* Branch Switcher */}
-      {activeProjectId && (
+      {projectId && (
         <BranchSwitcher
-          projectId={activeProjectId}
+          projectId={projectId}
           onBranchChange={handleBranchChange}
         />
       )}
@@ -215,7 +195,7 @@ export function WorkspaceToolbar() {
         size="sm"
         className="h-7 text-xs gap-1.5"
         onClick={handleDeploy}
-        disabled={isDeploying || !activeProjectId}
+        disabled={isDeploying || !projectId}
       >
         <Upload className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">

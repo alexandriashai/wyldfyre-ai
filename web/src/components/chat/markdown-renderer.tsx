@@ -3,6 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeArtifact, InlineCode } from "./code-artifact";
+import { ImageLightbox } from "./image-lightbox";
 
 interface MarkdownRendererProps {
   content: string;
@@ -149,6 +150,33 @@ export function MarkdownRenderer({
           // Strikethrough (GFM)
           del({ children }) {
             return <del className="line-through text-muted-foreground">{children}</del>;
+          },
+          // Images with lightbox support for screenshots
+          img({ src, alt }) {
+            if (!src) return null;
+            // Use lightbox for base64 images and screenshot paths
+            const isScreenshot = src.startsWith("data:image") ||
+              alt?.toLowerCase().includes("screenshot") ||
+              src.includes("/screenshot");
+
+            if (isScreenshot) {
+              return (
+                <ImageLightbox
+                  src={src}
+                  alt={alt || "Screenshot"}
+                  thumbnailSize="md"
+                  className="my-2"
+                />
+              );
+            }
+            // Regular images
+            return (
+              <img
+                src={src}
+                alt={alt || ""}
+                className="max-w-full h-auto rounded-lg my-2 border border-border"
+              />
+            );
           },
         }}
       >

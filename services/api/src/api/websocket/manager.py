@@ -150,6 +150,14 @@ class ConnectionManager:
         connections = self._connections.get(user_id, [])
         sent_count = 0
 
+        if not connections:
+            logger.debug(
+                "No WebSocket connections for user",
+                user_id=user_id,
+                message_type=message.get("type"),
+                all_connected_users=list(self._connections.keys()),
+            )
+
         for connection in connections[:]:  # Copy list to avoid modification during iteration
             try:
                 await connection.websocket.send_json(message)

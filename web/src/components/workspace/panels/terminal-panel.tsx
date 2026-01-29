@@ -277,7 +277,7 @@ export function TerminalPanel({ alwaysShow = false, isMobileView = false }: Term
 
     // Build WebSocket URL
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const apiHost = process.env.NEXT_PUBLIC_API_URL?.replace(/^https?:\/\//, "") || "localhost:8000";
+    const apiHost = process.env.NEXT_PUBLIC_API_URL?.replace(/^https?:\/\//, "") || "localhost:8010";
     const rootPath = selectedProject.root_path || "/tmp";
     const terminalUser = (selectedProject as any).terminal_user || "";
     const projectName = selectedProject.name || "";

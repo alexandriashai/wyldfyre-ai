@@ -39,6 +39,9 @@ from base_agent import (
     ACTION_RECEIVED,
     ACTION_WAITING,
     BaseAgent,
+    BROWSER_DEBUG_TOOLS,
+    BROWSER_HELPER_TOOLS,
+    configure_browser_tools,
     Tool,
     ToolResult,
     tool,
@@ -567,6 +570,83 @@ When completing tasks:
 - If a learning was USEFUL → System auto-boosts relevance
 - If you're WRONG about something → Store correction with `store_memory`
 - When discovering something NEW → Store it with appropriate scope (GLOBAL/PROJECT/DOMAIN)
+
+## Browser Debug Tools
+
+You have browser automation tools for interactive debugging. Use them SMARTLY:
+
+**NAVIGATION:**
+- Use `browser_open(url)` to navigate directly to URLs - DON'T try to click navigation links
+- If asked to "go to the help page", use `browser_open("/help")` not `browser_click("Help")`
+- Always use full URLs or paths, not element clicking for navigation
+
+**SCREENSHOTS & VERIFICATION:**
+- After navigation or any action, use `browser_screenshot()` to capture the result
+- The screenshot returns a `data_url` and `markdown` field you can include in your response
+- **To show the user the screenshot:** Include the markdown from the result in your response:
+  ```
+  result = browser_screenshot()
+  # Include result["markdown"] in your response to display the screenshot
+  ```
+- The screenshot will appear as a clickable thumbnail that opens in a lightbox
+- Analyze the screenshot to confirm your action succeeded
+- If the page doesn't look right, diagnose and retry
+
+**POP-UP HANDLING - CRITICAL WORKFLOW:**
+
+⚠️ **MANDATORY: After EVERY `browser_open()`, dismiss popups BEFORE taking screenshots:**
+
+**Step 1: Try helper first**
+```
+browser_helper_run_actions(domain="example.com")
+```
+
+**Step 2: If no helper or click failed, ANALYZE and find the right selector:**
+
+A. **Take screenshot and READ IT** - Look at the actual button text, colors, position
+B. **Search the codebase** for the modal/banner component:
+   ```
+   grep_files(pattern="cookie|banner|modal|consent", file_type="vue")
+   grep_files(pattern="acceptAll|accept-btn|cookie-banner", file_type="vue")
+   ```
+C. **Read the component file** to find the exact selector:
+   - Look for button classes, IDs, or data attributes
+   - Check the @click handler name
+   - Note the exact button text
+D. **Click with the EXACT selector from the code:**
+   ```
+   browser_click(selector=".cookie-banner__btn--accept")  # Exact class from code
+   browser_click(selector="button", js_click=True)  # Use JS if visibility issues
+   ```
+E. **Save as helper for next time:**
+   ```
+   browser_helper_learn(domain="...", action_type="click", selector=".cookie-banner__btn--accept")
+   ```
+
+**Step 3: Only AFTER dismissing, take screenshot:**
+```
+browser_screenshot()
+```
+
+**When clicks fail with "element not visible":**
+- Use `force=True`: `browser_click(selector="...", force=True)`
+- Use `js_click=True`: `browser_click(selector="...", js_click=True)`
+- The element may be off-screen or have CSS hiding it
+
+**SMART SELECTOR DISCOVERY:**
+1. Screenshot → See what the popup looks like, read button text
+2. Search codebase → `grep_files(pattern="<button text you see>")`
+3. Read component → Find exact CSS class or ID
+4. Click with exact selector → Much more reliable than guessing
+
+**DO NOT guess selectors - SEARCH THE CODE to find them!**
+
+**BEST PRACTICES:**
+- Use helpers for repeat visits - much faster than clicking every time
+- Wait for page load: After navigation, wait briefly before interacting
+- Use robust selectors: Prefer data-testid, IDs, or unique text over CSS classes
+- Error recovery: If something fails, screenshot → diagnose → try alternative approach
+- Clean up: Close browsers when done
 """
 
 
@@ -617,6 +697,8 @@ class SupervisorAgent(BaseAgent):
                 project_section += f"- **Project Root Path: {project_ctx['root_path']}** (ALL operations MUST be within this directory)\n"
             if project_ctx.get("domain"):
                 project_section += f"- Domain: {project_ctx['domain']}\n"
+            if project_ctx.get("domain_url"):
+                project_section += f"- Base URL: {project_ctx['domain_url']}\n"
             if project_ctx.get("agent_context"):
                 project_section += f"- Additional Context: {project_ctx['agent_context']}\n"
             project_section += "\n**WORKSPACE SCOPING RULES (MANDATORY):**\n"
@@ -647,6 +729,14 @@ class SupervisorAgent(BaseAgent):
         self.register_tool(self._create_approve_elevation_tool())
         self.register_tool(self._create_deny_elevation_tool())
         self.register_tool(self._create_restart_agent_tool())
+
+        # Browser debug tools (for web debugging when user asks to check sites)
+        for browser_tool in BROWSER_DEBUG_TOOLS:
+            self.register_tool(browser_tool._tool)
+
+        # Browser helper tools (for managing site-specific automation helpers)
+        for helper_tool in BROWSER_HELPER_TOOLS:
+            self.register_tool(helper_tool._tool)
 
     async def _record_and_emit_usage(
         self,
@@ -1618,6 +1708,7 @@ class SupervisorAgent(BaseAgent):
                 "project_name": payload.get("project_name"),
                 "root_path": payload.get("root_path"),
                 "domain": payload.get("domain"),
+                "domain_url": payload.get("domain_url"),
                 "agent_context": payload.get("agent_context"),
             }
 
@@ -1735,6 +1826,15 @@ class SupervisorAgent(BaseAgent):
         root_path = request.payload.get("root_path")
         agent_context = request.payload.get("agent_context") or ""
         project_name = request.payload.get("project_name") or ""
+
+        # Configure browser tools with current context
+        if project_id and self._redis:
+            configure_browser_tools(
+                redis=self._redis,
+                project_id=project_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
 
         # Enforce workspace scoping - root_path MUST be provided
         if not root_path:

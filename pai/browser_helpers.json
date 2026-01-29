@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "updated_at": "2026-01-29T00:25:50.443541+00:00",
+  "helpers": {
+    "google.com": {
+      "domain": "google.com",
+      "name": "Google Consent",
+      "description": "Accept Google's cookie consent",
+      "cookies": [],
+      "dismiss_actions": [
+        {
+          "type": "click",
+          "selector": "button[id=\"L2AGLb\"], button:has-text(\"Accept all\")",
+          "cookie": null,
+          "js_code": null,
+          "wait_after": 500,
+          "description": "Accept all cookies"
+        }
+      ],
+      "popup_selectors": [
+        "[role=\"dialog\"]",
+        "#consent"
+      ],
+      "apply_timing": "on_popup",
+      "created_at": "2025-01-28T13:30:00Z",
+      "last_used": null,
+      "use_count": 0
+    },
+    "youtube.com": {
+      "domain": "youtube.com",
+      "name": "YouTube Consent",
+      "description": "Accept YouTube's cookie consent",
+      "cookies": [],
+      "dismiss_actions": [
+        {
+          "type": "click",
+          "selector": "button[aria-label*=\"Accept\"], tp-yt-paper-button:has-text(\"Accept all\")",
+          "cookie": null,
+          "js_code": null,
+          "wait_after": 500,
+          "description": "Accept all cookies"
+        }
+      ],
+      "popup_selectors": [
+        "ytd-consent-bump-v2-lightbox"
+      ],
+      "apply_timing": "on_popup",
+      "created_at": "2025-01-28T13:30:00Z",
+      "last_used": null,
+      "use_count": 0
+    },
+    "cookiebot": {
+      "domain": "cookiebot",
+      "name": "CookieBot Handler",
+      "description": "Handles CookieBot consent banners (used by many sites)",
+      "cookies": [],
+      "dismiss_actions": [
+        {
+          "type": "click",
+          "selector": "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, a#CybotCookiebotDialogBodyButtonAccept",
+          "cookie": null,
+          "js_code": null,
+          "wait_after": 500,
+          "description": "Accept all via CookieBot"
+        }
+      ],
+      "popup_selectors": [
+        "#CybotCookiebotDialog"
+      ],
+      "apply_timing": "on_popup",
+      "created_at": "2025-01-28T13:30:00Z",
+      "last_used": null,
+      "use_count": 0
+    },
+    "onetrust": {
+      "domain": "onetrust",
+      "name": "OneTrust Handler",
+      "description": "Handles OneTrust consent banners (used by many enterprise sites)",
+      "cookies": [],
+      "dismiss_actions": [
+        {
+          "type": "click",
+          "selector": "#onetrust-accept-btn-handler, button[id*=\"onetrust\"][id*=\"accept\"]",
+          "cookie": null,
+          "js_code": null,
+          "wait_after": 500,
+          "description": "Accept all via OneTrust"
+        }
+      ],
+      "popup_selectors": [
+        "#onetrust-banner-sdk",
+        "#onetrust-consent-sdk"
+      ],
+      "apply_timing": "on_popup",
+      "created_at": "2025-01-28T13:30:00Z",
+      "last_used": null,
+      "use_count": 0
+    },
+    "github.com": {
+      "domain": "github.com",
+      "name": "GitHub Cookies",
+      "description": "Set GitHub analytics consent cookie",
+      "cookies": [
+        {
+          "name": "logged_in",
+          "value": "no",
+          "domain": null,
+          "path": "/",
+          "secure": true,
+          "http_only": false,
+          "same_site": "Lax",
+          "expires": null
+        }
+      ],
+      "dismiss_actions": [],
+      "popup_selectors": [],
+      "apply_timing": "before_load",
+      "created_at": "2025-01-28T13:30:00Z",
+      "last_used": null,
+      "use_count": 0
+    },
+    "dev.blackbook.reviews": {
+      "domain": "dev.blackbook.reviews",
+      "name": "Blackbook Reviews Cookie Banner",
+      "description": "Dismiss cookie consent banner on Blackbook Reviews",
+      "cookies": [],
+      "dismiss_actions": [
+        {
+          "type": "click",
+          "selector": ".cookie-banner__btn--accept",
+          "cookie": null,
+          "js_code": "document.querySelector('.cookie-banner__btn--accept')?.click()",
+          "wait_after": 500,
+          "description": "Click Accept button on cookie banner"
+        }
+      ],
+      "popup_selectors": [
+        ".cookie-banner",
+        "[class*='cookie-banner']"
+      ],
+      "apply_timing": "after_load",
+      "created_at": "2025-01-28T14:38:00Z",
+      "last_used": "2026-01-29T00:25:50.443534+00:00",
+      "use_count": 6
+    },
+    "blackbook.reviews": {
+      "domain": "blackbook.reviews",
+      "name": "Blackbook Reviews Cookie Banner",
+      "description": "Dismiss cookie consent banner on Blackbook Reviews",
+      "cookies": [],
+      "dismiss_actions": [
+        {
+          "type": "click",
+          "selector": ".cookie-banner__btn--accept",
+          "cookie": null,
+          "js_code": "document.querySelector('.cookie-banner__btn--accept')?.click()",
+          "wait_after": 500,
+          "description": "Click Accept button on cookie banner"
+        }
+      ],
+      "popup_selectors": [
+        ".cookie-banner",
+        "[class*='cookie-banner']"
+      ],
+      "apply_timing": "after_load",
+      "created_at": "2025-01-28T14:38:00Z",
+      "last_used": null,
+      "use_count": 0
+    }
+  }
+}

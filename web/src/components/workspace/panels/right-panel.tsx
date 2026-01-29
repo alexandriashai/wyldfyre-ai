@@ -3,11 +3,12 @@
 import { useState } from "react";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { PreviewPanel } from "../preview/preview-panel";
+import { BrowserPanel } from "../browser/browser-panel";
 import { PRPanel } from "./pr-panel";
 import { GitPanel } from "./git-panel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Globe, GitPullRequest, GitBranch } from "lucide-react";
+import { Globe, GitPullRequest, GitBranch, Monitor } from "lucide-react";
 
 export function RightPanel() {
   const { activeProjectId, gitStatus } = useWorkspaceStore();
@@ -28,6 +29,13 @@ export function RightPanel() {
           >
             <Globe className="h-3.5 w-3.5" />
             Preview
+          </TabsTrigger>
+          <TabsTrigger
+            value="browser"
+            className="gap-1.5 text-xs data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full"
+          >
+            <Monitor className="h-3.5 w-3.5" />
+            Debug
           </TabsTrigger>
           <TabsTrigger
             value="git"
@@ -52,6 +60,16 @@ export function RightPanel() {
 
         <TabsContent value="preview" className="flex-1 m-0 min-h-0">
           <PreviewPanel />
+        </TabsContent>
+
+        <TabsContent value="browser" className="flex-1 m-0 min-h-0">
+          {activeProjectId ? (
+            <BrowserPanel />
+          ) : (
+            <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+              Select a project to use browser debug
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="git" className="flex-1 m-0 min-h-0">

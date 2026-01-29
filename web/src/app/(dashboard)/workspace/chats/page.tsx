@@ -5,6 +5,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useProjectStore } from "@/stores/project-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
+import { useBrowserStore, BROWSER_TOOL_NAMES } from "@/stores/browser-store";
 import { MessageList } from "@/components/chat/message-list";
 import { MessageInput } from "@/components/chat/message-input";
 import { AgentStatus } from "@/components/chat/agent-status";
@@ -16,15 +17,21 @@ import { PlanSuggestionBanner } from "@/components/chat/plan-suggestion-banner";
 import { ConversationSidebar } from "@/components/chat/conversation-sidebar";
 import { UsageMeter } from "@/components/chat/usage-meter";
 import { AgentSelector } from "@/components/chat/agent-selector";
+import { ChatBrowserPanel } from "@/components/chat/chat-browser-panel";
 import { AIDiffEditor, AIChangesNotification } from "@/components/workspace/editor/ai-diff-editor";
 import { Button } from "@/components/ui/button";
-import { Loader2, PanelLeft, Sparkles, GripVertical } from "lucide-react";
+import { Loader2, PanelLeft, Sparkles, GripVertical, Monitor, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const SIDEBAR_MIN_WIDTH = 200;
 const SIDEBAR_MAX_WIDTH = 500;
 const SIDEBAR_DEFAULT_WIDTH = 280;
 const SIDEBAR_STORAGE_KEY = "chat-sidebar-width";
+
+const BROWSER_MIN_WIDTH = 300;
+const BROWSER_MAX_WIDTH = 800;
+const BROWSER_DEFAULT_WIDTH = 450;
+const BROWSER_STORAGE_KEY = "chat-browser-width";
 
 export default function WorkspaceChatsPage() {
   const { token } = useAuthStore();
@@ -44,6 +51,7 @@ export default function WorkspaceChatsPage() {
   } = useChatStore();
   const { selectedProject } = useProjectStore();
   const { isChatSidebarCollapsed, setChatSidebarCollapsed, openFile, setActiveFile } = useWorkspaceStore();
+  const { isConnected: isBrowserConnected, narrations, showChatBrowserPanel, setShowChatBrowserPanel } = useBrowserStore();
   const [isInitializing, setIsInitializing] = useState(true);
   const [showDiffPanel, setShowDiffPanel] = useState(false);
 
@@ -52,13 +60,25 @@ export default function WorkspaceChatsPage() {
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef<HTMLDivElement>(null);
 
-  // Load saved width on mount
+  // Resizable browser panel state
+  const [browserWidth, setBrowserWidth] = useState(BROWSER_DEFAULT_WIDTH);
+  const [isBrowserResizing, setIsBrowserResizing] = useState(false);
+  const browserResizeRef = useRef<HTMLDivElement>(null);
+
+  // Load saved widths on mount
   useEffect(() => {
-    const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
-    if (saved) {
-      const width = parseInt(saved, 10);
+    const savedSidebar = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (savedSidebar) {
+      const width = parseInt(savedSidebar, 10);
       if (width >= SIDEBAR_MIN_WIDTH && width <= SIDEBAR_MAX_WIDTH) {
         setSidebarWidth(width);
+      }
+    }
+    const savedBrowser = localStorage.getItem(BROWSER_STORAGE_KEY);
+    if (savedBrowser) {
+      const width = parseInt(savedBrowser, 10);
+      if (width >= BROWSER_MIN_WIDTH && width <= BROWSER_MAX_WIDTH) {
+        setBrowserWidth(width);
       }
     }
   }, []);
@@ -93,6 +113,37 @@ export default function WorkspaceChatsPage() {
       document.removeEventListener("mouseup", handleMouseUp);
     };
   }, [isResizing, sidebarWidth]);
+
+  // Browser panel resize handling
+  const handleBrowserMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsBrowserResizing(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isBrowserResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = Math.min(
+        BROWSER_MAX_WIDTH,
+        Math.max(BROWSER_MIN_WIDTH, window.innerWidth - e.clientX)
+      );
+      setBrowserWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsBrowserResizing(false);
+      localStorage.setItem(BROWSER_STORAGE_KEY, browserWidth.toString());
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isBrowserResizing, browserWidth]);
 
   // AI Diff handlers
   const handleAcceptChange = useCallback((changeId: string) => {
@@ -180,7 +231,7 @@ export default function WorkspaceChatsPage() {
   return (
     <div className={cn(
       "flex h-full w-full min-h-0 overflow-hidden",
-      isResizing && "select-none cursor-col-resize"
+      (isResizing || isBrowserResizing) && "select-none cursor-col-resize"
     )}>
       {/* Left: Conversation sidebar with tag filtering */}
       {/* On mobile, completely hide when collapsed; on desktop, show narrow version */}
@@ -222,11 +273,11 @@ export default function WorkspaceChatsPage() {
         )}
       </div>
 
-      {/* Right: Full chat experience */}
+      {/* Center: Full chat experience */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
-        {/* Mobile header with sidebar toggle, agent selector, and usage */}
-        {isChatSidebarCollapsed && (
-          <div className="md:hidden flex items-center gap-2 px-2 py-1.5 border-b shrink-0">
+        {/* Mobile header - always show on mobile */}
+        <div className="md:hidden flex items-center gap-2 px-2 py-1.5 border-b shrink-0">
+          {isChatSidebarCollapsed ? (
             <Button
               variant="ghost"
               size="icon"
@@ -236,13 +287,24 @@ export default function WorkspaceChatsPage() {
             >
               <PanelLeft className="h-4 w-4" />
             </Button>
-            <span className="text-sm font-medium truncate flex-1 min-w-0">
-              {currentConversation?.title || "Chat"}
-            </span>
-            <AgentSelector variant="compact" />
-            <UsageMeter variant="compact" />
-          </div>
-        )}
+          ) : (
+            <Sparkles className="h-4 w-4 text-purple-500 shrink-0" />
+          )}
+          <span className="text-sm font-medium truncate flex-1 min-w-0">
+            {currentConversation?.title || "Chat"}
+          </span>
+          <Button
+            variant={showChatBrowserPanel ? "secondary" : "ghost"}
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={() => setShowChatBrowserPanel(!showChatBrowserPanel)}
+            title={showChatBrowserPanel ? "Hide browser" : "Show browser"}
+          >
+            <Monitor className={cn("h-4 w-4", isBrowserConnected && "text-green-500")} />
+          </Button>
+          <AgentSelector variant="compact" />
+          <UsageMeter variant="compact" />
+        </div>
 
         {/* Desktop header bar with agent selector and usage */}
         <div className="hidden md:flex items-center justify-between px-3 py-1.5 border-b bg-muted/30 shrink-0">
@@ -253,6 +315,16 @@ export default function WorkspaceChatsPage() {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant={showChatBrowserPanel ? "secondary" : "ghost"}
+              size="sm"
+              className="h-7 gap-1"
+              onClick={() => setShowChatBrowserPanel(!showChatBrowserPanel)}
+              title={showChatBrowserPanel ? "Hide browser" : "Show browser"}
+            >
+              <Monitor className={cn("h-4 w-4", isBrowserConnected && "text-green-500")} />
+              <span className="hidden lg:inline">Debug</span>
+            </Button>
             <AgentSelector variant="compact" />
             <UsageMeter variant="compact" />
           </div>
@@ -301,6 +373,53 @@ export default function WorkspaceChatsPage() {
           </>
         )}
       </div>
+
+      {/* Right: Browser debug panel */}
+      {showChatBrowserPanel && (
+        <>
+          {/* Mobile: Full-screen overlay */}
+          <div className="md:hidden fixed inset-0 z-50 bg-background flex flex-col">
+            <div className="flex items-center justify-between p-2 border-b">
+              <span className="font-medium text-sm">Browser Debug</span>
+              <button
+                onClick={() => setShowChatBrowserPanel(false)}
+                className="p-1 hover:bg-muted rounded"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <ChatBrowserPanel onClose={() => setShowChatBrowserPanel(false)} />
+            </div>
+          </div>
+
+          {/* Desktop: Side panel */}
+          <div
+            className="relative shrink-0 hidden md:block"
+            style={{ width: browserWidth }}
+          >
+            {/* Resize handle */}
+            <div
+              ref={browserResizeRef}
+              className={cn(
+                "absolute top-0 left-0 w-1 h-full cursor-col-resize group flex items-center justify-center",
+                "hover:bg-primary/20 transition-colors",
+                isBrowserResizing && "bg-primary/30"
+              )}
+              onMouseDown={handleBrowserMouseDown}
+            >
+              <div className="absolute left-0 w-3 h-full flex items-center justify-center">
+                <GripVertical className={cn(
+                  "h-4 w-4 text-muted-foreground/50 opacity-0 group-hover:opacity-100 transition-opacity",
+                  isBrowserResizing && "opacity-100"
+                )} />
+              </div>
+            </div>
+
+            <ChatBrowserPanel onClose={() => setShowChatBrowserPanel(false)} />
+          </div>
+        </>
+      )}
     </div>
   );
 }

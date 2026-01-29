@@ -8,6 +8,7 @@ Provides tools for capturing browser state:
 - PDF export
 """
 
+import base64
 import os
 from datetime import datetime
 from pathlib import Path
@@ -46,7 +47,16 @@ def _generate_filename(prefix: str, extension: str) -> str:
 
 @tool(
     name="screenshot_page",
-    description="Take a screenshot of the page.",
+    description="""Take a screenshot of the page and return base64-encoded image data.
+
+Use this to:
+- Verify navigation succeeded
+- Check what's visible on the page
+- Document bugs or issues
+- Include visual evidence in your response
+
+The screenshot returns a `data_url` and `markdown` field you can include in your response:
+![Screenshot](data:image/png;base64,<data>)""",
     parameters={
         "type": "object",
         "properties": {
@@ -93,7 +103,7 @@ async def screenshot_page(
     quality: int = 80,
     omit_background: bool = False,
 ) -> ToolResult:
-    """Take a page screenshot."""
+    """Take a page screenshot and return base64 data for embedding in messages."""
     try:
         manager = get_browser_manager()
         page = manager.get_page(page_id)
@@ -129,13 +139,23 @@ async def screenshot_page(
         # Get file size
         file_size = os.path.getsize(path)
 
+        # Read file and convert to base64 for embedding in chat
+        with open(path, "rb") as f:
+            image_data = f.read()
+        base64_data = base64.b64encode(image_data).decode("utf-8")
+        mime_type = "image/png" if type == "png" else "image/jpeg"
+        data_url = f"data:{mime_type};base64,{base64_data}"
+
         return ToolResult.ok(
             {
                 "path": path,
                 "full_page": full_page,
                 "type": type,
                 "size_bytes": file_size,
-            }
+                "data_url": data_url,
+                "markdown": f"![Screenshot]({data_url})",
+            },
+            message=f"Screenshot captured. Include in your response using: ![Screenshot]({data_url[:50]}...)",
         )
 
     except Exception as e:

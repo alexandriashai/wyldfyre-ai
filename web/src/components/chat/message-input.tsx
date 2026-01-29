@@ -2,11 +2,12 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useChatStore } from "@/stores/chat-store";
+import { useBrowserStore, detectBrowserIntent } from "@/stores/browser-store";
 import { useChat } from "@/hooks/useChat";
 import { useVoice } from "@/hooks/useVoice";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Send, Paperclip, Mic, Square, Loader2, Hash, WifiOff, HelpCircle } from "lucide-react";
+import { Send, Paperclip, Mic, Square, Loader2, Hash, WifiOff, HelpCircle, Monitor } from "lucide-react";
 import { CommandSuggestions, getFilteredCommands, Command } from "./command-suggestions";
 import { CommandReferenceModal } from "./command-reference-modal";
 
@@ -19,6 +20,10 @@ export function MessageInput() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { isSending, currentConversation, prefillMessage, setPrefillMessage } = useChatStore();
+  const { showChatBrowserPanel, setShowChatBrowserPanel } = useBrowserStore();
+
+  // Track if we detected browser intent (show indicator)
+  const [browserIntentDetected, setBrowserIntentDetected] = useState(false);
 
   // Handle prefill message from external sources (e.g., "Fix with AI" button)
   useEffect(() => {
@@ -63,6 +68,9 @@ export function MessageInput() {
       setShowCommands(false);
       setCommandFilter("");
     }
+
+    // Check for browser intent (for indicator, actual opening happens on submit)
+    setBrowserIntentDetected(value.length > 5 && detectBrowserIntent(value));
   }, []);
 
   // Handle command selection
@@ -104,9 +112,15 @@ export function MessageInput() {
       return;
     }
 
+    // Auto-open browser panel if browser intent detected
+    if (detectBrowserIntent(trimmedMessage) && !showChatBrowserPanel) {
+      setShowChatBrowserPanel(true);
+    }
+
     sendMessage(trimmedMessage);
     setMessage("");
     setShowCommands(false);
+    setBrowserIntentDetected(false);
 
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -171,6 +185,21 @@ export function MessageInput() {
 
   return (
     <div className="border-t bg-card p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shrink-0">
+      {/* Browser intent indicator */}
+      {browserIntentDetected && !showChatBrowserPanel && (
+        <div className="flex items-center gap-2 mb-2 text-xs">
+          <Monitor className="h-3 w-3 text-green-500" />
+          <span className="text-muted-foreground">Browser will open automatically</span>
+          <button
+            type="button"
+            onClick={() => setShowChatBrowserPanel(true)}
+            className="text-primary hover:underline"
+          >
+            Open now
+          </button>
+        </div>
+      )}
+
       {/* Hashtag indicators */}
       {hashtags.length > 0 && (
         <div className="flex items-center gap-2 mb-2 text-xs">
